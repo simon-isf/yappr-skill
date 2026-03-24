@@ -853,7 +853,7 @@ If they want to continue with a placeholder — that's fine. Move on to Step 4. 
 
 ## Step 4: Get a Phone Number
 
-**Only Israeli phone numbers (+972) are supported.** All numbers are mobile numbers billed at **$15/month** via a recurring Stripe subscription charge on the user's saved card — make sure they understand this before purchasing.
+**Only Israeli phone numbers (+972) are supported.** All numbers are mobile numbers billed at **$10/month** via a recurring Stripe subscription charge on the user's saved card — make sure they understand this before purchasing.
 
 ### 4a. Silently check for existing numbers first
 
@@ -890,19 +890,19 @@ curl -s -X POST \
   -d '{"limit": 10}' | jq .
 ```
 
-Show the user the `numbers` array in a readable list. For each number show the `phoneNumber` and `pricing.priceDisplay` ($15/month). Ask them to pick one:
+Show the user the `numbers` array in a readable list. For each number show the `phoneNumber` and `pricing.priceDisplay` (from the API response). Ask them to pick one:
 
 > "Here are the available numbers:
-> 1. +972-54-XXX-XXXX — $15/month
-> 2. +972-54-XXX-XXXX — $15/month
-> 3. +972-54-XXX-XXXX — $15/month
+> 1. +972-54-XXX-XXXX — $10/month
+> 2. +972-54-XXX-XXXX — $10/month
+> 3. +972-54-XXX-XXXX — $10/month
 >
 > Which one would you like?"
 
 
 ### 4c. Purchase the chosen number
 
-**Before purchasing, confirm:** *"Purchasing [phone number] will start a $15/month recurring charge on your saved card. Shall I go ahead?"*
+**Before purchasing, confirm:** *"Purchasing [phone number] will start a $10/month recurring charge on your saved card. Shall I go ahead?"*
 
 ```bash
 curl -s -X POST \
@@ -914,7 +914,7 @@ curl -s -X POST \
 
 **What happens when you purchase:**
 1. The number is ordered from Telnyx (our telecom provider)
-2. A $15/month Stripe subscription is created and charged to the user's card
+2. A $10/month Stripe subscription is created and charged to the user's card
 3. The number is registered to the user's account
 4. Voice is automatically configured so it can immediately receive and make calls
 
@@ -1185,7 +1185,7 @@ Many users of this skill may not be technically experienced. Adapt your language
 - Say "creativity level" not "temperature"
 - Say "the agent's personality and instructions" not "system prompt"
 - Say "your balance" not "balance_cents"
-- When showing prices, convert cents to dollars (e.g., 1500 cents = $15.00)
+- When showing prices, convert cents to dollars (e.g., 1000 cents = $10.00)
 - If something fails, explain what happened and what they can do about it — don't just show an error code
 
 ---
