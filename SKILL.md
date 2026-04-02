@@ -33,7 +33,7 @@ Build and launch AI voice agents on the Yappr platform entirely from the command
 | **Tool config** | Webhook URL, method, headers, extraction parameters, static parameters, standard metadata |
 | **Phone numbers** | Search available Israeli numbers, purchase, assign inbound/outbound agent |
 | **Billing** | View balance/status, add payment method (Stripe setup link), top-up credits (with approval) |
-| **Testing** | Trigger outbound test call, link to web call in dashboard |
+| **Calls** | List calls with filters, view call details, trigger outbound test call, link to web call in dashboard |
 
 ### Examples of out-of-scope requests
 
@@ -108,11 +108,11 @@ For agents with multi-step conversation flows, sales scripts, objection handling
 
 | Tag | Purpose |
 |-----|---------|
-| `<variables>` | Declare and alias template variables at the top (see Template Variables below) |
 | `<identity>` | Who the agent is, what company they represent, tone and speech style |
 | `<context>` | Background info the agent needs (e.g., what kind of call this is, why they're calling) |
 | `<goals>` | Numbered list of the agent's objectives for this call |
 | `<critical_rules>` | Hard constraints — things the agent must always or never do |
+| `<tools>` | Instructions for WHEN and HOW to invoke each attached tool (see **Function Invocation Rules** below) |
 | `<conversation_flow>` | Step-by-step conversation script with branching (for sales/setter agents) |
 | `<objection_handling>` | Pre-written responses to common objections |
 | `<disqualification>` | How to gracefully end calls with unqualified leads |
@@ -121,17 +121,17 @@ For agents with multi-step conversation flows, sales scripts, objection handling
 **Example structure for a sales/outbound agent:**
 
 ```
-<variables>
-[CompanyName] = Yappr
-[LeadName] = {{LeadName}}
-[AvailableSlots] = {{AvailableSlots}}
-</variables>
-
 <identity>
-שמך הוא דניאלה, נציגת הכנסות של [CompanyName].
+שמך הוא דניאלה, נציגת הכנסות של Yappr.
+את מדברת עם {{LeadName}}.
 את מקצועית, חדה, ישירה ובעלת ביטחון עצמי שקט.
 סגנון דיבור: עברית מדוברת טבעית. משפטים קצרים.
 </identity>
+
+<context>
+תאריך ושעה: {{CurrentDateTime}}.
+משבצות פנויות לפגישות: {{AvailableSlots}}.
+</context>
 
 <goals>
 1. לגלות את הצורך של הליד
@@ -144,6 +144,16 @@ For agents with multi-step conversation flows, sales scripts, objection handling
 - תגובה קצרה, ואז שאלה. מקסימום 2 משפטים לפני שאלה פתוחה.
 - אל תציין מחירים ספציפיים.
 </critical_rules>
+
+<tools>
+יש לך גישה לכלי bookAppointment. הפעל אותו רק כאשר:
+- הליד אישר תאריך ושעה ספציפיים
+- הליד אישר את השם המלא שלו
+- הליד אמר במפורש שהוא רוצה לקבוע
+
+העבר את כל הפרטים בשפה טבעית כפי שהליד אמר אותם.
+אל תמיר תאריכים או שעות לפורמט טכני.
+</tools>
 
 <conversation_flow>
 **שלב 1 - פתיחה:** ...
@@ -170,9 +180,24 @@ For agents with multi-step conversation flows, sales scripts, objection handling
 
 ---
 
+### Template Variables vs. Functions (Tools)
+
+The system prompt has two different mechanisms for dynamic behavior. Understanding the distinction is critical for building effective agents:
+
+| | **Template Variables** | **Functions (Tools)** |
+|---|---|---|
+| **What** | Static values injected into the prompt text | Actions the AI can invoke mid-conversation |
+| **When** | Rendered once, **before** the call begins | Called **during** the call, when conditions are met |
+| **Syntax** | `{{VariableName}}` in the system prompt | Tool attached via API; AI decides when to call it |
+| **Examples** | Caller name, current date, available slots | Book appointment, log to CRM, end call |
+
+**Rule**: Use variables for **context the agent needs to know from the start**. Use tools for **actions the agent should take based on conversation**.
+
+---
+
 ### Template Variables
 
-The platform supports **dynamic variables** injected into the system prompt at call time. Use `{{VariableName}}` syntax in the prompt — the server replaces them before the call begins.
+Use `{{VariableName}}` syntax directly in the system prompt — the server replaces them before the call begins. Inject them inline wherever they're needed — no aliasing or separate declarations required.
 
 #### Reserved (automatic) variables
 
@@ -197,35 +222,122 @@ You can define **any** variable with `{{VariableName}}` syntax. Custom variables
 | `{{FirstName}}` | Personalize the greeting |
 | `{{AvailableSlots}}` | Appointment slots to offer |
 | `{{CompanyName}}` | Dynamically set per-call (if serving multiple clients) |
-| `{{Slots}}` | Short alias for available time slots |
 
-#### Variable aliasing in `<variables>` block
+#### Using variables in a prompt
 
-For complex prompts, declare a `<variables>` block at the very top to alias template variables to `[BracketNames]` used throughout the prompt. This keeps the body clean:
-
-```
-<variables>
-[CompanyName] = Yappr
-[LeadName] = {{LeadName}}
-[AvailableSlots] = {{Slots}}
-</variables>
-```
-
-Then use `[CompanyName]` and `[LeadName]` freely in `<identity>`, `<conversation_flow>`, etc. — the model will substitute them correctly.
-
-#### Using reserved variables in a prompt
-
-Example — an agent that greets by name and is aware of the current time:
+Inject variables directly where they're needed — no separate `<variables>` block:
 
 ```
 <identity>
-שמך הוא אסי, עוזר אישי של העסק.
+שמך הוא אסי, עוזר אישי של {{CompanyName}}.
 אתה מדבר עם {{CallerPhone}}.
 תאריך ושעה נוכחיים: {{CurrentDateTime}}.
 </identity>
+
+<context>
+שם הליד: {{LeadName}}.
+משבצות פנויות: {{AvailableSlots}}.
+</context>
 ```
 
 > **Rule**: If the agent needs to reference the caller's phone number, today's date/time, or call direction — always use the reserved variables. Never hardcode or guess these values.
+
+---
+
+### Function Invocation Rules (How to Write Tool Instructions in the Prompt)
+
+When an agent has tools attached (webhook tools or system tools like `endCall`), the platform automatically registers them with the AI model as callable functions. The AI model already knows the tool **name**, **description**, and **parameters** from the tool configuration — you do NOT need to repeat those in the system prompt.
+
+What you DO need to write in the system prompt is **behavioral guidance**: the conditions under which the AI should (or should not) call each tool. This is critical because the AI model may otherwise call tools prematurely or miss the right moment.
+
+#### What the platform handles automatically (do NOT repeat in the prompt):
+- Tool names, descriptions, and parameter schemas — these come from the tool config
+- Parameter extraction — the AI extracts values from the conversation based on each parameter's `description`
+- Standard metadata (call_id, agent_id, etc.) — included automatically if enabled
+- Static parameters — injected automatically from tool config
+
+#### What you MUST write in the prompt:
+- **When to call the tool** — specific conditions that must ALL be met
+- **When NOT to call the tool** — guard rails (e.g., "don't call before the customer confirms")
+- **How to pass information** — always in natural language, exactly as the caller said it
+- **What to say before/after calling** — e.g., "tell the customer you're checking availability"
+
+#### Writing a `<tools>` section
+
+For agents with attached tools, add a `<tools>` section to the system prompt with invocation rules for each tool. Reference tools by their **camelCase name** (the name you gave the tool when creating it).
+
+**Pattern:**
+
+```
+<tools>
+יש לך גישה לכלים הבאים. הפעל כלי רק כאשר כל התנאים מתקיימים.
+
+## bookAppointment
+הפעל רק כאשר:
+- הלקוח אישר תאריך ושעה ספציפיים
+- הלקוח נתן את שמו המלא
+- הלקוח אמר במפורש שהוא רוצה לקבוע
+לפני ההפעלה, אמור: "רגע, אני בודק זמינות."
+העבר תאריכים ושעות בשפה טבעית כפי שהלקוח אמר ("יום שלישי בשעה 3", לא "2026-04-08T15:00").
+
+## crmLogger
+הפעל בסוף כל שיחה, לפני endCall.
+אין צורך לבקש אישור מהלקוח — זה כלי פנימי.
+
+## endCall
+הפעל מיד כאשר:
+- הלקוח אומר "ביי", "להתראות", "שלום"
+- השיחה הושלמה והמטרה הושגה
+אחרי מילות הפרידה שלך, הפעל מיד. אל תחכה.
+</tools>
+```
+
+#### Key rules for function invocation in prompts:
+
+1. **Always require explicit confirmation before customer-facing tools** — e.g., booking, purchasing, transferring. The AI should confirm details with the caller before firing.
+2. **Internal/logging tools don't need confirmation** — CRM loggers, ticket creators, etc. can fire silently.
+3. **Pass data in natural language** — Instruct the AI to pass dates, times, and names exactly as the caller said them ("מחר בשתיים", not "2026-04-03T14:00"). The receiving webhook handles parsing.
+4. **endCall must always be last** — After all other tools have fired. Write explicit trigger conditions (goodbye phrases, task completion).
+5. **Don't redefine parameters** — The AI already knows what to extract from the tool config. The prompt should describe *when* and *how*, not *what*.
+
+#### Example: full prompt with variables AND function rules
+
+```
+<identity>
+שמך הוא נועה, מזכירה של מרפאת {{CompanyName}}.
+את חמה, מקצועית, ודוברת עברית טבעית.
+</identity>
+
+<context>
+תאריך: {{CurrentDate}}.
+שעות פעילות: ימים א׳–ה׳, 08:00–18:00.
+שירותים: טיפול שיניים כללי, אורתודנטיה, הלבנה.
+</context>
+
+<goals>
+1. לברר מה הלקוח צריך
+2. לקבוע תור אם רלוונטי
+3. לסיים את השיחה בנימוס
+</goals>
+
+<tools>
+## bookAppointment
+הפעל רק אחרי שהלקוח אישר:
+- סוג הטיפול
+- תאריך ושעה מועדפים
+- שם מלא
+אמור "רגע, אני בודקת זמינות" לפני ההפעלה.
+
+## endCall
+הפעל מיד אחרי שאמרת להתראות.
+</tools>
+
+<critical_rules>
+- שאלה אחת בכל פעם.
+- אל תציעי תורים מחוץ לשעות הפעילות.
+- אם הלקוח שואל על מחירים, אמרי שהמחירון תלוי בטיפול והפני לשיחה עם רופא.
+</critical_rules>
+```
 
 ---
 
@@ -356,16 +468,25 @@ Don't ask users to specify parameter names — they don't know what that means. 
 
 **Never ask the user to choose a voice.** Based on the use case and agent personality, pick one automatically and move on. Only change it if the user explicitly asks.
 
-**API names vs. UI display names**: The Yappr dashboard shows voices with Hebrew display names (e.g. "נועה", "יובל"), but the API always uses the original English names below. Always use the English names when making API calls.
+Use the friendly English names below in all API calls (e.g. `"voice": "Maya"`). The platform resolves them internally — you never need to know the underlying voice IDs.
 
 Pick the best fit from this mapping:
-- **Professional / corporate** → `Leda` (female) or `Orus` (male)
-- **Warm / friendly service** → `Zephyr` (female) or `Schedar` (male)
-- **Young / energetic brand** → `Puck` (male) or `Kore` (female)
-- **Authoritative / serious** → `Charon` (male) or `Fenrir` (male)
-- **Calm / reassuring** → `Aoede` (female) or `Perseus` (male)
 
-**Default**: use `Zephyr` when the use case is unclear or general. Choose the gender that matches the agent's persona in the system prompt.
+| Use case | Female | Male |
+|----------|--------|------|
+| Professional / corporate | Maya, Anat | Adam, Ariel |
+| Warm / friendly service | Michal, Liat | Omer, Tom |
+| Young / energetic brand | Rachel, Shir | Yonatan, Roi |
+| Authoritative / serious | Dvora, Ruth | David, Natan |
+| Calm / reassuring | Noa, Tamar | Alon, Yuval |
+| Sales / outbound | Yael, Anat | Gil, Nir |
+| Medical / professional | Avigail, Tamar | Yosef, Shlomo |
+
+**Full voice catalogue** (30 voices):
+Female: Michal, Rachel, Noa, Maya, Shira, Avigail, Liat, Tamar, Yael, Dvora, Shir, Anat, Dana, Ruth
+Male: Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi, Shlomo, Alon, Yuval
+
+**Default**: use `Michal` when the use case is unclear or general. Choose the gender that matches the agent's persona in the system prompt.
 
 ---
 
@@ -375,8 +496,8 @@ The platform uses **Voice Activity Detection (VAD)** to determine when a caller 
 
 | Parameter | Default | Range | What it controls |
 |-----------|---------|-------|-----------------|
-| `vad_stop_secs` | `0.2` | `0.1 – 2.0` | Seconds of silence **after speech stops** before the agent considers the turn finished and starts generating a reply. Lower = faster response; higher = more patient. |
-| `vad_start_secs` | `0.5` | `0.1 – 2.0` | Seconds of sustained speech **before** it counts as a real utterance (filters background noise and very short sounds). |
+| `vad_stop_secs` | `0.5` | `0.05 – 5.0` | Seconds of silence **after speech stops** before the agent considers the turn finished and starts generating a reply. Lower = faster response; higher = more patient. |
+| `vad_start_secs` | `0.2` | `0.05 – 2.0` | Seconds of sustained speech **before** it counts as a real utterance (filters background noise and very short sounds). |
 | `vad_confidence` | `0.7` | `0.0 – 1.0` | Confidence threshold for the speech detector. Higher = stricter (ignores faint or ambiguous audio); lower = more sensitive. |
 
 #### When to suggest tuning
@@ -408,10 +529,10 @@ curl -s -X PATCH \
 ```
 
 **Important architecture note**: The Yappr voice engine runs **two VAD layers** simultaneously:
-1. **Gemini's built-in VAD** — must always remain enabled (this is what lets the AI model "hear" the audio stream). Never disable it.
+1. **Platform VAD** — must always remain enabled (this is what lets the AI model "hear" the audio stream). Never disable it.
 2. **Local Silero VAD** — controlled by the three parameters above, used for fine-grained pipeline-level turn-taking. This is what `vad_stop_secs`, `vad_start_secs`, and `vad_confidence` configure.
 
-The three API parameters only affect the local Silero layer. The Gemini layer is always on and is not user-configurable — this is intentional and should not be changed.
+The three API parameters only affect the local Silero layer. The platform VAD layer is always on and is not user-configurable — this is intentional and should not be changed.
 
 ---
 
@@ -502,8 +623,8 @@ curl -s "https://api.goyappr.com/agents" \
 **If agents exist**, present them to the user:
 
 > "You already have the following agents:
-> 1. **Noa** — Hebrew, Zephyr voice (active)
-> 2. **Support Bot** — Hebrew, Kore voice (active)
+> 1. **Noa** — Hebrew, Noa voice (active)
+> 2. **Support Bot** — Hebrew, Michal voice (active)
 >
 > Would you like to update one of these, or create a brand new agent?"
 
@@ -545,7 +666,7 @@ curl -s -X PATCH \
   "https://api.goyappr.com/agents/AGENT_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"system_prompt": "Updated prompt...", "voice": "Zephyr"}'
+  -d '{"system_prompt": "Updated prompt...", "voice": "Maya"}'
 ```
 
 Only include fields the user actually wants to change. After patching, confirm: *"Done! I've updated [agent name] with your changes."*
@@ -629,15 +750,15 @@ import json
 payload = {
     'name': 'My Agent',
     'system_prompt': 'You are...',
-    'voice': 'Zephyr',
+    'voice': 'Michal',
     'language': 'he',
     'temperature': 0.5,
     'agent_speaks_first': True,
     'greeting_message': 'Hello! How can I help you today?',
     # VAD / turn-taking — omit these to use the platform defaults (recommended for most agents).
     # Only include if the user reports the agent cutting them off or responding too slowly.
-    # 'vad_stop_secs': 0.2,      # Silence duration before agent replies (default 0.2s)
-    # 'vad_start_secs': 0.5,     # Speech duration before it counts as an utterance (default 0.5s)
+    # 'vad_stop_secs': 0.5,      # Silence duration before agent replies (default 0.5s)
+    # 'vad_start_secs': 0.2,     # Speech duration before it counts as an utterance (default 0.2s)
     # 'vad_confidence': 0.7,     # Speech detector confidence threshold (default 0.7)
     # Include webhook_url and webhook_events ONLY if the user asked for call event notifications.
     # If they did not ask, omit both fields entirely (null is the default — no overhead).
@@ -1060,7 +1181,7 @@ curl -s -X PATCH \
   "https://api.goyappr.com/agents/AGENT_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"system_prompt": "Updated...", "voice": "Zephyr"}'
+  -d '{"system_prompt": "Updated...", "voice": "Maya"}'
 ```
 
 If the user says the agent interrupts them or responds too slowly, use the VAD fields (see **VAD / Turn-Taking Configuration** section):
@@ -1155,8 +1276,35 @@ curl -s -X POST \
   "https://api.goyappr.com/phone-numbers/configure" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"phoneNumberId": "NUMBER_UUID", "inboundAgentId": "NEW_AGENT_ID", "outboundAgentId": "NEW_AGENT_ID"}'
+  -d '{"phone_number_id": "NUMBER_UUID", "inbound_agent_id": "NEW_AGENT_ID", "outbound_agent_id": "NEW_AGENT_ID"}'
 ```
+
+---
+
+### Calls
+
+**List recent calls (with optional filters):**
+```bash
+curl -s "https://api.goyappr.com/calls?limit=20" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+
+Available query parameters:
+- `limit` (default: 20, max: 100) — number of results
+- `offset` (default: 0) — pagination offset
+- `agent_id` — filter by specific agent
+- `status` — filter by call status (e.g. `completed`, `failed`)
+- `direction` — filter by `inbound` or `outbound`
+- `from` — start date filter (calls created on or after this date)
+- `to` — end date filter (calls created on or before this date)
+
+**Get a single call's details:**
+```bash
+curl -s "https://api.goyappr.com/calls/CALL_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+
+Returns: `id`, `agent_id`, `from`, `to`, `direction`, `status`, `started_at`, `ended_at`, `duration_seconds`, `created_at`.
 
 ---
 
