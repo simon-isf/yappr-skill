@@ -72,6 +72,18 @@ Parse JSON responses with `jq` if available, raw JSON otherwise.
 
 ---
 
+## Core Principle: Execute, Don't Teach
+
+**When a user asks you to do something, DO IT — don't explain how they could do it themselves.** You have full API access. If the user says "create an agent for appointment booking", create the agent. If they say "change the voice to Michal", update the agent. If they say "attach a tool", create and attach it.
+
+Never respond with curl commands, dashboard instructions, or step-by-step guides for the user to follow manually. The only exceptions are genuinely destructive actions (deleting/deactivating) where you should confirm first, or actions explicitly outside your scope.
+
+Wrong: "To create an agent, go to the Agents page and click Create..."
+Wrong: "You can update the voice by running: curl -X PATCH..."
+Right: *[calls the API, creates the agent, reports the result]*
+
+---
+
 ## Agent Intelligence: Translating Plain Language into Great Agents
 
 Your job is not just to run API calls — it's to act as a knowledgeable voice AI consultant. When a user describes what they want in plain language, **you translate that into best-practice configurations**. Never make the user specify technical details like snake_case parameter names or exact temperature values — propose them yourself based on the use case, then confirm.
@@ -534,6 +546,40 @@ curl -s -X PATCH \
 
 The three API parameters only affect the local Silero layer. The platform VAD layer is always on and is not user-configurable — this is intentional and should not be changed.
 
+### Call Guard Settings
+
+Three additional parameters protect against wasted credits from runaway or dead calls. All are optional and have sensible defaults.
+
+| Parameter | Default | Range | What it controls |
+|-----------|---------|-------|-----------------|
+| `silence_timeout_secs` | `60` | `10 – 900` | Seconds of caller silence before auto-hangup. Prevents idle/dead calls from burning credits. |
+| `max_continuous_speech_secs` | `120` | `0 – 300` | Max seconds one party can speak non-stop before auto-hangup. Catches answering machines and IVR recordings that bypass Telnyx AMD. `0` = disabled. |
+| `max_call_duration_secs` | `600` | `0 – 3600` | Hard cap on total call length regardless of activity. Prevents runaway calls (e.g. stuck pipelines, long hold music). `0` = disabled. |
+
+#### When to suggest tuning
+
+- **Calls to voicemail boxes that play long greetings** → decrease `max_continuous_speech_secs` (e.g. `60`)
+- **Calls hang up too quickly on slow responders** → increase `silence_timeout_secs` (e.g. `120`)
+- **Agent runs up huge bills on stuck calls** → set `max_call_duration_secs` to a reasonable cap (e.g. `300` for 5 min)
+- **Agent should allow very long conversations** → increase `max_call_duration_secs` (e.g. `1800` for 30 min) or set to `0` to disable
+
+#### How to translate plain user language
+
+- "Calls are too expensive / wasting credits" → lower `max_call_duration_secs` and/or `silence_timeout_secs`
+- "The bot keeps talking to answering machines" → lower `max_continuous_speech_secs` (e.g. `30` or `60`)
+- "My calls get cut off too early" → check if `silence_timeout_secs` or `max_call_duration_secs` is too low
+- "A call ran for 20 minutes and drained my credits" → set `max_call_duration_secs` to a cap
+
+Example:
+
+```bash
+curl -s -X PATCH \
+  "https://api.goyappr.com/agents/AGENT_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"silence_timeout_secs": 30, "max_continuous_speech_secs": 60, "max_call_duration_secs": 300}'
+```
+
 ---
 
 ## Step 0: Prerequisites Check
@@ -671,7 +717,7 @@ curl -s -X PATCH \
 
 Only include fields the user actually wants to change. After patching, confirm: *"Done! I've updated [agent name] with your changes."*
 
-Patchable fields include all creation fields plus the VAD turn-taking settings: `vad_stop_secs`, `vad_start_secs`, `vad_confidence` (see **VAD / Turn-Taking Configuration** section above for when and how to tune these).
+Patchable fields include all creation fields plus the VAD turn-taking settings (`vad_stop_secs`, `vad_start_secs`, `vad_confidence`) and call guard settings (`silence_timeout_secs`, `max_continuous_speech_secs`, `max_call_duration_secs`) — see the **VAD / Turn-Taking Configuration** and **Call Guard Settings** sections above for when and how to tune these.
 
 ---
 
@@ -759,6 +805,9 @@ payload = {
     # Only include if the user reports the agent cutting them off or responding too slowly.
     # 'vad_stop_secs': 0.5,      # Silence duration before agent replies (default 0.5s)
     # 'vad_start_secs': 0.2,     # Speech duration before it counts as an utterance (default 0.2s)
+    # 'silence_timeout_secs': 60,         # Auto-hangup after N seconds of caller silence (default 60)
+    # 'max_continuous_speech_secs': 120,  # Auto-hangup after N seconds non-stop speech (default 120, 0=off)
+    # 'max_call_duration_secs': 600,      # Hard cap on total call length (default 600, 0=off)
     # 'vad_confidence': 0.7,     # Speech detector confidence threshold (default 0.7)
     # Include webhook_url and webhook_events ONLY if the user asked for call event notifications.
     # If they did not ask, omit both fields entirely (null is the default — no overhead).
@@ -1174,6 +1223,7 @@ Present the full config in plain language, including:
 - Connected tools — list each one by name, URL, and extraction parameters
 - Call event webhook (`webhook_url` + `webhook_events`), if set
 - VAD / turn-taking settings (`vad_stop_secs`, `vad_start_secs`, `vad_confidence`), if non-default
+- Call guard settings (`silence_timeout_secs`, `max_continuous_speech_secs`, `max_call_duration_secs`), if non-default
 
 Ask what to change. Then patch only the changed fields:
 ```bash
