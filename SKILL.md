@@ -1358,7 +1358,7 @@ curl -s "https://api.goyappr.com/calls/CALL_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
 ```
 
-Returns: `id`, `agent_id`, `from`, `to`, `direction`, `status`, `started_at`, `ended_at`, `duration_seconds`, `created_at`. When set, also returns a **DispositionSummary** `{id, label, color}` and a **LeadSummary** `{id, name, phone_number, email, tags[{id,name,color}]}`. These are summary subsets — use `GET /dispositions/{id}` or `GET /leads/{id}` for the full object.
+Returns: `id`, `agent_id`, `from`, `to`, `direction`, `status`, `started_at`, `ended_at`, `duration_seconds`, `created_at`. When set, also returns the full **Disposition** object `{id, label, color, position, is_protected, created_at}` and the full **Lead** object `{id, phone_number, name, email, source, tags[full LeadTag], long_term_context, metadata, created_at, updated_at}`.
 
 ---
 
