@@ -34,6 +34,9 @@ Build and launch AI voice agents on the Yappr platform entirely from the command
 | **Phone numbers** | Search available Israeli numbers, purchase, assign inbound/outbound agent |
 | **Billing** | View balance/status, add payment method (Stripe setup link), top-up credits (with approval) |
 | **Calls** | List calls with filters, view call details, trigger outbound test call, link to web call in dashboard |
+| **Dispositions** | List, create, update, delete call disposition labels |
+| **Leads** | List, create, update, delete leads; search by name/phone/email; manage long-term AI memory per lead |
+| **Lead tags** | List, create, update, delete lead tag taxonomy |
 
 ### Examples of out-of-scope requests
 
@@ -717,7 +720,7 @@ curl -s -X PATCH \
 
 Only include fields the user actually wants to change. After patching, confirm: *"Done! I've updated [agent name] with your changes."*
 
-Patchable fields include all creation fields plus the VAD turn-taking settings (`vad_stop_secs`, `vad_start_secs`, `vad_confidence`) and call guard settings (`silence_timeout_secs`, `max_continuous_speech_secs`, `max_call_duration_secs`) — see the **VAD / Turn-Taking Configuration** and **Call Guard Settings** sections above for when and how to tune these.
+Patchable fields include all creation fields plus the VAD turn-taking settings (`vad_stop_secs`, `vad_start_secs`, `vad_confidence`), call guard settings (`silence_timeout_secs`, `max_continuous_speech_secs`, `max_call_duration_secs`), and `lead_memory_enabled` — see the **VAD / Turn-Taking Configuration** and **Call Guard Settings** sections above for when and how to tune these.
 
 ---
 
@@ -809,6 +812,7 @@ payload = {
     # 'max_continuous_speech_secs': 120,  # Auto-hangup after N seconds non-stop speech (default 120, 0=off)
     # 'max_call_duration_secs': 600,      # Hard cap on total call length (default 600, 0=off)
     # 'vad_confidence': 0.7,     # Speech detector confidence threshold (default 0.7)
+    # 'lead_memory_enabled': True,        # Inject matched lead's long-term memory into system prompt (default true)
     # Include webhook_url and webhook_events ONLY if the user asked for call event notifications.
     # If they did not ask, omit both fields entirely (null is the default — no overhead).
     # 'webhook_url': 'https://their-server.com/webhook',
@@ -1354,7 +1358,125 @@ curl -s "https://api.goyappr.com/calls/CALL_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
 ```
 
-Returns: `id`, `agent_id`, `from`, `to`, `direction`, `status`, `started_at`, `ended_at`, `duration_seconds`, `created_at`.
+Returns: `id`, `agent_id`, `from`, `to`, `direction`, `status`, `started_at`, `ended_at`, `duration_seconds`, `created_at`. When set, also returns `disposition` `{id, label, color}` and `lead` `{id, name, phone_number, email, tags}`.
+
+---
+
+### Dispositions
+
+Call dispositions are outcome labels applied to calls (e.g. "Interested", "Not Interested", "Callback Requested").
+
+**List dispositions:**
+```bash
+curl -s "https://api.goyappr.com/dispositions" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+
+**Create a disposition:**
+```bash
+curl -s -X POST "https://api.goyappr.com/dispositions" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"label": "Interested", "color": "#22c55e"}'
+```
+
+**Update a disposition:**
+```bash
+curl -s -X PATCH "https://api.goyappr.com/dispositions/DISPOSITION_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"label": "Very Interested", "color": "#16a34a"}'
+```
+
+**Delete a disposition:**
+```bash
+curl -s -X DELETE "https://api.goyappr.com/dispositions/DISPOSITION_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY"
+```
+
+> Protected (system) dispositions cannot be deleted. The API returns a 403 if you try.
+
+---
+
+### Leads
+
+Leads are contacts stored in Yappr. Each lead has a phone number, optional name and email, tags, and a `long_term_context` field for AI memory that is injected into the agent's system prompt at call time.
+
+**List leads (with optional search):**
+```bash
+curl -s "https://api.goyappr.com/leads?limit=20&search=john" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+
+Query parameters: `limit` (default 20, max 100), `offset`, `search` (name/phone/email).
+
+**Get a single lead:**
+```bash
+curl -s "https://api.goyappr.com/leads/LEAD_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+
+**Create a lead:**
+```bash
+curl -s -X POST "https://api.goyappr.com/leads" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number": "+972501234567", "name": "John Smith", "email": "john@example.com", "tags": ["VIP", "Hot Lead"]}'
+```
+
+- `phone_number` is required (E.164 format)
+- `tags` accepts tag names (strings) — they are resolved to IDs server-side
+- Alternatively pass `tag_ids` (array of UUIDs)
+
+**Update a lead:**
+```bash
+curl -s -X PATCH "https://api.goyappr.com/leads/LEAD_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "John Smith", "long_term_context": "Interested in the premium plan. Prefers morning calls.", "tags": ["VIP"]}'
+```
+
+Updatable fields: `name`, `email`, `tags` (replaces all), `tag_ids` (replaces all), `long_term_context`, `metadata`.
+
+**Delete a lead (soft delete):**
+```bash
+curl -s -X DELETE "https://api.goyappr.com/leads/LEAD_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY"
+```
+
+---
+
+### Lead Tags
+
+Lead tags are a taxonomy for categorizing leads (e.g. "VIP", "Hot Lead", "Do Not Call").
+
+**List tags:**
+```bash
+curl -s "https://api.goyappr.com/lead-tags" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+
+**Create a tag:**
+```bash
+curl -s -X POST "https://api.goyappr.com/lead-tags" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "VIP", "color": "#f59e0b", "description": "High-value leads"}'
+```
+
+**Update a tag:**
+```bash
+curl -s -X PATCH "https://api.goyappr.com/lead-tags/TAG_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"color": "#d97706"}'
+```
+
+**Delete a tag:**
+```bash
+curl -s -X DELETE "https://api.goyappr.com/lead-tags/TAG_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY"
+```
 
 ---
 
