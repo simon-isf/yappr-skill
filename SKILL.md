@@ -9,6 +9,23 @@ Build and launch AI voice agents on the Yappr platform entirely from the command
 
 ---
 
+## Version Check (run every session)
+
+**Before doing anything else**, check if a newer version of this skill is available:
+
+1. Run `git -C <skill-directory> fetch origin main --quiet` to fetch the latest remote state.
+2. Run `git -C <skill-directory> rev-parse HEAD` to get the current local commit.
+3. Run `git -C <skill-directory> rev-parse origin/main` to get the latest remote commit.
+4. If they differ, tell the user:
+   > A new version of the Yappr Agent Builder skill is available. Would you like to upgrade?
+5. If the user agrees, run `git -C <skill-directory> pull origin main --ff-only`.
+6. If the user declines, continue with the current version — do not ask again during this session.
+7. If they match, proceed silently — do not mention versioning.
+
+Replace `<skill-directory>` with the actual path to this skill's directory (the folder containing this SKILL.md file).
+
+---
+
 ## Skill Scope Guardrail
 
 **This skill can only do what is explicitly documented below.** Before acting on any user request, check whether the action maps to a documented capability in this file.
@@ -37,6 +54,7 @@ Build and launch AI voice agents on the Yappr platform entirely from the command
 | **Dispositions** | List, create, update, delete call disposition labels |
 | **Leads** | List, create, update, delete leads; search by name/phone/email; manage long-term AI memory per lead |
 | **Lead tags** | List, create, update, delete lead tag taxonomy |
+| **Shared links** | Create, list, revoke shareable web-call testing links |
 
 ### Examples of out-of-scope requests
 
@@ -1358,7 +1376,12 @@ curl -s "https://api.goyappr.com/calls/CALL_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
 ```
 
-Returns: `id`, `agent_id`, `from`, `to`, `direction`, `status`, `started_at`, `ended_at`, `duration_seconds`, `created_at`. When set, also returns the full **Disposition** object `{id, label, color, position, is_protected, created_at}` and the full **Lead** object `{id, phone_number, name, email, source, tags[full LeadTag], long_term_context, metadata, created_at, updated_at}`.
+Returns: `id`, `agent_id`, `from`, `to`, `direction`, `status`, `started_at`, `ended_at`, `duration_seconds`, `created_at`, `recording_url`. When set, also returns the full **Disposition** object `{id, label, color, position, is_protected, created_at}` and the full **Lead** object `{id, phone_number, name, email, source, tags[full LeadTag], long_term_context, metadata, created_at, updated_at}`.
+
+**Call recordings:**
+- `recording_url` is a permanent signed URL included in call responses when a recording exists.
+- Opening the URL (in a browser or via fetch) returns a JSON object with a fresh temporary download link — no Authorization header needed.
+- The URL contains a cryptographic signature (`?sig=...`) — do not modify or construct these URLs manually.
 
 ---
 
@@ -1476,6 +1499,45 @@ curl -s -X PATCH "https://api.goyappr.com/lead-tags/TAG_ID" \
 ```bash
 curl -s -X DELETE "https://api.goyappr.com/lead-tags/TAG_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY"
+```
+
+### Shared Links
+
+Shared links let users generate shareable URLs that allow anyone to test a voice agent via the browser without logging in. Calls are billed to the link creator's company.
+
+**URL format:** `https://app.goyappr.com/share/{token}`
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/shared-links` | List all shared links. Optional `?agent_id=` filter |
+| `POST` | `/shared-links` | Create a shared link |
+| `GET` | `/shared-links/:id` | Get a specific shared link |
+| `PATCH` | `/shared-links/:id` | Revoke a shared link |
+
+**Create shared link — `POST /shared-links`**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `agent_id` | uuid | Yes | The agent to create a share link for |
+| `expires_at` | ISO 8601 timestamp | No | When the link expires. Omit for never-expiring links |
+
+**Response fields:**
+
+| Field | Description |
+|-------|-------------|
+| `id` | Shared link ID |
+| `token` | URL token |
+| `url` | Full shareable URL |
+| `agent_id` | Agent ID |
+| `expires_at` | Expiry timestamp or null |
+| `is_revoked` | Whether the link has been revoked |
+| `status` | Computed: "active", "expired", or "revoked" |
+| `created_at` | Creation timestamp |
+
+**Revoke a shared link — `PATCH /shared-links/:id`**
+
+```json
+{ "is_revoked": true }
 ```
 
 ---
