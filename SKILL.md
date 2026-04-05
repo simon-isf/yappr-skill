@@ -1380,7 +1380,8 @@ Returns: `id`, `agent_id`, `from`, `to`, `direction`, `status`, `started_at`, `e
 
 **Call recordings:**
 - `recording_url` is a permanent signed URL included in call responses when a recording exists.
-- Opening the URL (in a browser or via fetch) returns a JSON object with a fresh temporary download link — no Authorization header needed.
+- Opening the URL redirects (302) directly to the audio file — no Authorization header needed. Use it as a direct download link, `<audio>` src, or fetch with redirect-following.
+- The redirect target is short-lived (~10 minutes). If expired, fetch the `recording_url` again for a new redirect.
 - The URL contains a cryptographic signature (`?sig=...`) — do not modify or construct these URLs manually.
 
 ---
