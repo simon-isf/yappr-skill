@@ -132,6 +132,38 @@ Voice is fundamentally different from text. When writing a `system_prompt`, foll
 - **Handle edge cases explicitly** — What to do when the caller asks something out of scope, is rude, or wants to speak to a human.
 - **Use present-tense role instructions** — "You are Maya, a receptionist at..." not "You should act as..."
 
+---
+
+### Conversational Quality — Humanize AI Agents Playbook
+
+For any complex agent (outbound sales, qualification calls, multi-step flows), read **`HUMANIZE_PLAYBOOK.md`** in this skill directory before building the prompt. It contains research-backed principles from NLP dialogue theory, sales psychology, and voice AI platform docs.
+
+**Key principles to apply to every complex prompt:**
+
+**1. Goals, not scripts.** Write stages as goals to accomplish, not lines to say. Over-scripting forces the LLM to choose between following instructions and responding to the user — it picks instructions, which sounds robotic.
+
+**2. Respond to what was actually said.** The single most important rule. Before any forward move, the agent must address the user's last message — not the expected one. Three failure modes to prevent explicitly in every prompt:
+- Ignoring a direct question and continuing the script
+- Fake-acknowledging an answer that wasn't given ("fascinating!" when no answer came)
+- Advancing stages as if the user answered when they didn't
+
+**3. Threading.** When a user digresses, the agent answers fully, then bridges back: "Anyway, going back to [topic]..." Never write "stay on topic" or "don't deviate" — this causes the agent to ignore user questions entirely.
+
+**4. Forbid robotic transitions.** Explicitly prohibit phrases like "Moving on," "Great!", "Certainly," and "Of course" — they are the clearest AI tells. Add to every complex prompt: *"Do not use filler transition phrases. Move between topics naturally."*
+
+**5. Emotional acknowledgment before content.** When the user expresses frustration or hesitation, reference what they specifically said before addressing the content. Generic phrases ("I understand your concern") are worse than nothing.
+
+**6. One question at a time. Then stop.** Never queue the next thing before getting an answer. Silence after a question is normal — the agent should not fill it.
+
+**Prompt shipping checklist:**
+- [ ] Stages written as goals, not scripts
+- [ ] Explicit threading instruction included
+- [ ] Rule against fake acknowledgment present
+- [ ] Robotic transition phrases explicitly forbidden
+- [ ] Emotional acknowledgment instruction present
+- [ ] Most critical rules stated at the top of `<critical_rules>`
+
+---
 
 ### Structured Prompt Architecture (recommended for complex agents)
 
