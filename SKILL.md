@@ -1,541 +1,1109 @@
 ---
 name: yappr-agent-builder
-description: Create, configure, and launch Yappr AI voice agents from scratch. Use when users want to build a voice agent, set up a phone number, configure webhooks, manage their Yappr account, or test their agent with a call. Guides non-technical users through the entire process conversationally.
+description: Build, configure, and launch complete Yappr AI voice agent systems end-to-end. Use when users want to create a voice agent, set up outbound call dispatch, configure post-call automation, manage leads, or go live with a phone number. Discovery-driven — queries the live account before asking the user anything.
 ---
 
-# Yappr Agent Builder
+# Yappr Super Voice AI Agent Builder
 
-Build and launch AI voice agents on the Yappr platform entirely from the command line. This skill walks users through every step — from account setup to a live phone number answering calls with their custom AI agent.
+This skill takes a coding agent through building a complete, production-ready voice AI system on Yappr — from discovery through agent creation, tooling, call dispatch, post-call automation, and going live. Every decision flows from what the user tells you and from live data fetched from their account.
+
+---
+
+## How to Use This Skill
+
+This skill is organized into phases. Work through them sequentially. Each phase's output feeds the next.
+
+**Before writing any code or making any API call**, run Phase 0 discovery — query the live account and ask the user the questions. The answers determine everything that follows.
+
+### Core files in this skill directory
+
+| File / Directory | When to open it |
+|------|----------------|
+| `yappr-api.md` | Anytime you need an exact endpoint shape, request/response fields, validation rules, or error codes |
+| `HUMANIZE_PLAYBOOK.md` | When writing or reviewing any agent system prompt — research-backed principles for voice AI dialogue |
+| `SKILL.md` (this file) | The journey guide — what to build, in what order, and why |
+| `integrations/_overview.md` | Decide which integration to use for a given task — maps use cases to file names |
+| `integrations/{name}.md` | Auth, base URL, all key endpoints, gotchas, and rate limits for a specific platform |
+| `templates/integrations/{name}.ts` | **Ready-to-use Deno TypeScript client** for that platform — import directly into edge functions |
+
+### Shared Integration Clients
+
+Every integration has a typed TypeScript client in `templates/integrations/`. Use them instead of writing raw `fetch` calls.
+
+**Import pattern** (from a Supabase edge function or template function):
+
+```typescript
+import { HubSpotClient } from "../../integrations/hubspot/index.ts";
+// or copy the file into your edge function's directory
+
+const crm = new HubSpotClient(Deno.env.get("HUBSPOT_TOKEN")!);
+const contact = await crm.createContact({ email: "customer@example.com", phone: "+972501234567" });
+```
+
+**Available clients** (76 total — one per integration):
+
+| Category | Clients |
+|---|---|
+| Messaging | `greenapi-whatsapp`, `whatsapp-business`, `viber`, `slack`, `discord`, `microsoft-teams` |
+| SMS | `twilio-sms`, `vonage-sms`, `sinch` |
+| CRM | `hubspot`, `pipedrive`, `monday-com`, `zoho-crm`, `salesforce`, `freshsales`, `copper-crm`, `close-crm`, `kommo-crm`, `intercom`, `apollo-io`, `keap`, `drift`, `gohighlevel`, `activecampaign`, `wix-crm` |
+| Scheduling | `google-calendar`, `cal-com`, `calendly`, `acuity-scheduling`, `mindbody`, `square-appointments`, `booksy`, `setmore`, `simplybook-me`, `zoho-bookings`, `zoom` |
+| Israeli market | `green-invoice`, `icount`, `priority-erp`, `cardcom`, `meshulam`, `pelecard`, `bit-pay`, `tranzila` |
+| Lead sources / Forms | `facebook-lead-ads`, `tally-forms`, `typeform`, `jotform`, `google-lead-forms`, `linkedin-lead-gen`, `tiktok-lead-gen`, `google-forms-sheets` |
+| Email & Marketing | `resend-email`, `sendgrid`, `mailchimp`, `klaviyo`, `mailerlite`, `brevo`, `convertkit` |
+| Automation | `make-com`, `n8n`, `zapier`, `pluga` |
+| Data / Spreadsheets | `google-sheets`, `notion`, `airtable`, `supabase` |
+| E-commerce | `shopify`, `woocommerce` |
+| Helpdesk | `freshdesk`, `zendesk` |
+| Project management | `asana`, `clickup`, `jira` |
+| HR | `hibob` |
+| Enrichment | `clearbit` |
+
+**Client constructor patterns** — each client takes credentials + an optional `fetchFn` for testing:
+
+```typescript
+// Simple API key
+new HubSpotClient(apiKey)
+new MailerLiteClient(apiKey)
+
+// Subdomain-scoped
+new FreshdeskClient(apiKey, subdomain)
+new ZendeskClient(subdomain, email, apiToken)
+new KommoClient(subdomain, accessToken)
+new ActiveCampaignClient(accountUrl, apiKey)
+
+// Multi-credential
+new GreenApiClient(instanceId, apiToken)
+new WixCrmClient(apiKey, siteId)
+new AcuitySchedulingClient(userId, apiKey)
+new MindbodyClient(apiKey, siteId, username, password)
+
+// OAuth (caller manages token refresh)
+new ZohoCrmClient(accessToken, datacenter)
+new SalesforceClient(accessToken, instanceUrl)
+new KeapClient(accessToken)
+
+// Auto-refreshing token (managed internally)
+new GreenInvoiceClient(apiId, apiSecret)   // 30-min JWT, auto-refreshes
+new ICountClient(companyId, username, password)  // session-based, auto-refreshes
+new SimplyBookMeClient(company, loginName, password)  // X-Token, auto-refreshes
+new ZoomClient(accountId, clientId, clientSecret)  // 1h OAuth, auto-refreshes
+
+// Webhook-based (no class, export functions)
+// facebook-lead-ads: verifyFacebookSignature(), parseFacebookLeadPayload()
+// tally-forms: verifyTallySignature(), parseTallyPayload()
+// typeform: verifyTypeformSignature(), parseTypeformWebhookPayload()
+// linkedin-lead-gen: verifyLinkedInSignature(), parseLinkedInWebhookPayload()
+// tiktok-lead-gen: verifyTikTokSignature() + TikTokLeadApiClient
+// google-lead-forms: parseGoogleLeadFormPayload()
+// zapier, n8n, make-com, pluga: webhook sender clients
+```
+
+**Dependencies:**
+
+75 of 76 clients are **zero-dependency** — they use only Deno's built-in Web APIs (`fetch`, `URL`, `Headers`, `URLSearchParams`, `crypto`). No install step, no `node_modules`.
+
+The single exception is `mailchimp.ts`, which uses `npm:md5` to compute subscriber hashes. In Deno 2, `npm:` specifiers are resolved automatically — no manual install required. Just make sure the project's `deno.json` includes:
+```json
+{ "nodeModulesDir": "auto" }
+```
+This is already set in `templates/integrations/deno.json`. If you copy `mailchimp.ts` into a Supabase edge function project, that project's `deno.json` will handle it — Supabase's Deno runtime resolves `npm:` imports natively.
+
+**Type-checking:**
+
+```bash
+# From templates/integrations/ — verifies all clients compile cleanly
+deno check *.ts
+```
+
+### Principle: Execute, Don't Teach
+
+When a user asks you to do something, DO IT — don't explain how they could do it themselves. You have full API access. Create the agent, attach the tool, trigger the call. The only exceptions are genuinely destructive actions (deleting/deactivating) where you confirm first, and billing charges where you always get explicit approval.
+
+### Principle: Discovery First
+
+Never guess at what the user needs. Query the live account before asking anything. Present what you find ("you already have 2 agents and 3 tools — here's what they are"), then ask only the questions that the account data doesn't already answer.
+
+### Principle: Verify After Changes
+
+After any state-changing operation (create, patch, attach, delete), silently verify it worked using the appropriate GET endpoint. Report the confirmed result, not just the success response.
 
 ---
 
 ## Version Check (run every session)
 
-**Before doing anything else**, check if a newer version of this skill is available:
+Before doing anything else, check if a newer version of this skill is available:
 
-1. Run `git -C <skill-directory> fetch origin main --quiet` to fetch the latest remote state.
-2. Run `git -C <skill-directory> rev-parse HEAD` to get the current local commit.
-3. Run `git -C <skill-directory> rev-parse origin/main` to get the latest remote commit.
-4. If they differ, tell the user:
-   > A new version of the Yappr Agent Builder skill is available. Would you like to upgrade?
-5. If the user agrees, run `git -C <skill-directory> pull origin main --ff-only`.
-6. If the user declines, continue with the current version — do not ask again during this session.
-7. If they match, proceed silently — do not mention versioning.
-
-Replace `<skill-directory>` with the actual path to this skill's directory (the folder containing this SKILL.md file).
+1. `git -C <skill-directory> fetch origin main --quiet`
+2. `git -C <skill-directory> rev-parse HEAD` — local commit
+3. `git -C <skill-directory> rev-parse origin/main` — remote commit
+4. If they differ: *"A new version of the Yappr Agent Builder skill is available. Would you like to upgrade?"*
+5. If yes: `git -C <skill-directory> pull origin main --ff-only`
+6. If no: continue with current version, don't ask again this session
+7. If they match: proceed silently
 
 ---
 
-## Skill Scope Guardrail
+## PHASE 0: Discovery
 
-**This skill can only do what is explicitly documented below.** Before acting on any user request, check whether the action maps to a documented capability in this file.
+**Run this before asking the user anything.** Make 3 API calls in parallel, then present what you found, then ask your questions.
 
-### How to handle out-of-scope requests
+### Step 0.1 — Live Account Discovery
 
-1. **Scan this skill file** for any section, endpoint, or configuration option that could address the request.
-2. **If found** — proceed with the documented approach.
-3. **If not found** — do not improvise, guess at undocumented API parameters, or attempt workarounds. Instead, tell the user clearly:
-
-   > "That's not something I'm able to do through this skill. The Yappr Agent Builder skill covers: creating and updating agents, configuring webhook tools, purchasing and assigning phone numbers, managing billing, and testing calls. [Requested thing] isn't part of what I can configure from here."
-
-   Then offer the **Free Developer Help** option (see end of this document) if the request sounds like something a Yappr developer could assist with.
-
-### What this skill covers (full scope)
-
-| Category | Capabilities |
-|----------|-------------|
-| **Agents** | Create, update (PATCH), deactivate, list, view full config |
-| **Agent config** | Name, system prompt, voice, language, temperature, greeting, event webhook, VAD/turn-taking settings |
-| **Tools** | Create webhook tools, attach/detach to agents, update, test, deactivate |
-| **Tool config** | Webhook URL, method, headers, extraction parameters, static parameters, standard metadata |
-| **Phone numbers** | Search available Israeli numbers, purchase, assign inbound/outbound agent |
-| **Billing** | View balance/status, add payment method (Stripe setup link), top-up credits (with approval) |
-| **Calls** | List calls with filters, view call details, trigger outbound test call, link to web call in dashboard |
-| **Dispositions** | List, create, update, delete call disposition labels |
-| **Leads** | List, create, update, delete leads; search by name/phone/email; manage long-term AI memory per lead |
-| **Lead tags** | List, create, update, delete lead tag taxonomy |
-| **Shared links** | Create, list, revoke shareable web-call testing links |
-
-### Examples of out-of-scope requests
-
-- "Can you set up a custom SIP trunk?" — Not configurable via this skill.
-- "Can you add a new user to my account?" — User/team management is not in this skill.
-- "Can you connect my agent to WhatsApp?" — Only phone calls are supported.
-- "Can you train the model on my data?" — Model training is not available.
-
-If a request sounds adjacent to something in scope, try to address the closest supported thing and explain the limitation: *"I can't reduce network latency, but I can tune the agent's turn-taking sensitivity (VAD settings) and prompt structure which can affect perceived responsiveness."*
-
----
-
-## API Configuration
-
-- **Base URL**: `https://api.goyappr.com`
-- **Docs**: `https://docs.goyappr.com`
-- **Auth**: `Authorization: Bearer $YAPPR_API_KEY`
-- **Content-Type**: `application/json`
-
-All API calls use `curl` via the Bash tool with the pattern:
+Run these simultaneously:
 
 ```bash
-curl -s -X {METHOD} \
-  "https://api.goyappr.com/{resource}" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{...}'
+# Fetch existing agents
+curl -s "https://api.goyappr.com/agents" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '[.data[] | {id, name, voice, language, is_active}]'
+
+# Fetch existing dispositions
+curl -s "https://api.goyappr.com/dispositions" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '[.data[] | {id, label, is_protected}]'
+
+# Fetch billing status and phone numbers
+curl -s "https://api.goyappr.com/billing" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+curl -s "https://api.goyappr.com/phone-numbers" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '[.data[] | {id, number, status, inbound_agent_id, outbound_agent_id}]'
 ```
 
-Parse JSON responses with `jq` if available, raw JSON otherwise.
+Summarize what you found and present it to the user before asking any questions. Example:
 
-> **API Discovery**: A `GET https://api.goyappr.com` (no path, no auth) returns a full list of all available endpoints. Use this if you're ever unsure what routes exist.
-> ```bash
-> curl -s https://api.goyappr.com | jq .
-> ```
+> "I've checked your account. You have 2 agents (Maya — Hebrew, Michal — Hebrew), 3 phone numbers (one unassigned), and a $45.20 balance. Your dispositions are: Interested, Not Interested, Callback Requested, Appointment Set, No Answer, Failed, Voicemail, Wrong Number, Do Not Call.
+>
+> Now — tell me about the voice agent system you want to build."
 
----
+If this is a fresh account (no agents, no tools), say nothing about it — just go straight to the questions.
 
-## Core Principle: Execute, Don't Teach
+### Step 0.2 — Discovery Questions
 
-**When a user asks you to do something, DO IT — don't explain how they could do it themselves.** You have full API access. If the user says "create an agent for appointment booking", create the agent. If they say "change the voice to Michal", update the agent. If they say "attach a tool", create and attach it.
+Ask these in a natural conversation, not as a form. Group related questions. Adapt based on what you already know from the account data.
 
-Never respond with curl commands, dashboard instructions, or step-by-step guides for the user to follow manually. The only exceptions are genuinely destructive actions (deleting/deactivating) where you should confirm first, or actions explicitly outside your scope.
+**Business & call type:**
+1. What is the primary goal of this agent? (appointment booking / lead qualification / outbound sales / inbound support / survey / other)
+2. Call direction: inbound, outbound, or both?
+3. Language: Hebrew, English, or both?
+4. Do you need multiple agents for different use cases — e.g., a sales agent and a support agent with different prompts, voices, or tools?
 
-Wrong: "To create an agent, go to the Agents page and click Create..."
-Wrong: "You can update the voice by running: curl -X PATCH..."
-Right: *[calls the API, creates the agent, reports the result]*
+**Persona & voice:**
+5. Agent name, role, and company context (one sentence: "Maya, sales rep at Acme Ltd")
+6. Gender and tone: professional / warm / energetic / authoritative / calm?
+7. Any required phrases or forbidden phrases?
 
----
+**Tools & systems:**
+8. What should the agent do during a call? (book appointment / log lead / check availability / transfer to human / update CRM / send WhatsApp)
+9. What scheduling system, if any? (Google Calendar / Calendly / Cal.com / Monday / custom API / none)
+10. What other systems need updating after calls? (HubSpot / Monday / Pipedrive / Google Sheets / none)
+11. Post-call messaging? (WhatsApp via Green API / email / none)
+12. Do you have a Supabase project? (if yes: URL, anon key, service key — needed for call queue and edge function templates)
 
-## Agent Intelligence: Translating Plain Language into Great Agents
+**Lead intake:**
+13. Where do leads come from? (Facebook Lead Ads / website form / CRM export / automation platform / manual)
+14. Expected daily call volume? (1–50 / 50–500 / 500+)
+15. Should the agent remember returning callers across multiple calls? (lead memory)
 
-Your job is not just to run API calls — it's to act as a knowledgeable voice AI consultant. When a user describes what they want in plain language, **you translate that into best-practice configurations**. Never make the user specify technical details like snake_case parameter names or exact temperature values — propose them yourself based on the use case, then confirm.
+**Post-call routing — for each non-protected disposition found in 0.1:**
+16. What should happen on each disposition? Ask per-disposition:
+    - Appointment Set: send confirmation message to the caller?
+    - Not Interested: mark as do-not-call?
+    - Callback Requested: auto-schedule a follow-up call?
+    - Interested (but no booking): notify sales team? How?
+17. No Answer: retry? How many attempts? What intervals?
 
-### Verify Changes After Making Them
+### Step 0.3 — Discovery Config Object
 
-After any change that modifies state — creating, updating, attaching, or deleting something — **silently verify it worked** using the appropriate GET endpoint, then tell the user the confirmed result. Don't announce you're verifying; just do it and report the outcome.
+After gathering answers, output a discovery config you'll use throughout the remaining phases. This is your working document — update it as you learn more.
 
-**The principle:** use the API to confirm reality, not just trust the success response.
-
-A few examples of what this looks like in practice:
-- After attaching a tool to an agent → `GET /agents/:id` and confirm the tool appears in the agent's tool list
-- After creating or patching an agent → `GET /agents/:id` and confirm the fields match what was set
-
-Apply the same logic to any change — if there's a natural GET call that lets you confirm the change took effect, make it. Skip the verification only if the user explicitly asks you not to, or if the change is obviously read-only.
-
-### Voice AI System Prompt Best Practices
-
-Voice is fundamentally different from text. When writing a `system_prompt`, follow these rules:
-
-- **No markdown, no lists, no bullet points** — The AI speaks its responses aloud. Formatting becomes meaningless noise.
-- **Be concise by default** — Instruct the agent to keep responses to 1–3 sentences unless more detail is genuinely needed.
-- **Be explicit about identity** — Always specify who the agent is, what company they represent, and what they can and cannot help with.
-- **Specify tone with concrete words** — Not "be professional" but "use a warm, friendly tone, like talking to a helpful neighbor."
-- **Handle edge cases explicitly** — What to do when the caller asks something out of scope, is rude, or wants to speak to a human.
-- **Use present-tense role instructions** — "You are Maya, a receptionist at..." not "You should act as..."
-
----
-
-### Conversational Quality — Humanize AI Agents Playbook
-
-For any complex agent (outbound sales, qualification calls, multi-step flows), read **`HUMANIZE_PLAYBOOK.md`** in this skill directory before building the prompt. It contains research-backed principles from NLP dialogue theory, sales psychology, and voice AI platform docs.
-
-**Key principles to apply to every complex prompt:**
-
-**1. Goals, not scripts.** Write stages as goals to accomplish, not lines to say. Over-scripting forces the LLM to choose between following instructions and responding to the user — it picks instructions, which sounds robotic.
-
-**2. Respond to what was actually said.** The single most important rule. Before any forward move, the agent must address the user's last message — not the expected one. Three failure modes to prevent explicitly in every prompt:
-- Ignoring a direct question and continuing the script
-- Fake-acknowledging an answer that wasn't given ("fascinating!" when no answer came)
-- Advancing stages as if the user answered when they didn't
-
-**3. Threading.** When a user digresses, the agent answers fully, then bridges back: "Anyway, going back to [topic]..." Never write "stay on topic" or "don't deviate" — this causes the agent to ignore user questions entirely.
-
-**4. Forbid robotic transitions.** Explicitly prohibit phrases like "Moving on," "Great!", "Certainly," and "Of course" — they are the clearest AI tells. Add to every complex prompt: *"Do not use filler transition phrases. Move between topics naturally."*
-
-**5. Emotional acknowledgment before content.** When the user expresses frustration or hesitation, reference what they specifically said before addressing the content. Generic phrases ("I understand your concern") are worse than nothing.
-
-**6. One question at a time. Then stop.** Never queue the next thing before getting an answer. Silence after a question is normal — the agent should not fill it.
-
-**Prompt shipping checklist:**
-- [ ] Stages written as goals, not scripts
-- [ ] Explicit threading instruction included
-- [ ] Rule against fake acknowledgment present
-- [ ] Robotic transition phrases explicitly forbidden
-- [ ] Emotional acknowledgment instruction present
-- [ ] Most critical rules stated at the top of `<critical_rules>`
+```
+DISCOVERY CONFIG
+================
+Agents needed: [list each agent with its purpose, language, tone]
+Call direction: inbound / outbound / both
+Languages: he / en
+Tools needed: [list tool names and their integrations]
+Scheduling system: [name or none]
+Lead source: [source name]
+Daily volume: [range]
+Lead memory: yes / no
+Supabase available: yes (url: ...) / no
+Post-call routing:
+  - Appointment Set → [action]
+  - Not Interested → [action]
+  - Callback Requested → [action]
+  - No Answer → retry [N] times, [interval] apart
+Dispositions to create: [any gaps between current dispositions and what's needed]
+```
 
 ---
 
-### Structured Prompt Architecture (recommended for complex agents)
+## PHASE 1: Agent Creation
 
-For agents with multi-step conversation flows, sales scripts, objection handling, or specific behavioral rules, use **XML-style section tags** inside the system prompt. This helps the STS model parse different parts of a long prompt cleanly and follow each section's instructions accurately.
+For each agent identified in discovery, run this phase. If multiple agents are needed, complete one at a time.
 
-**Recommended sections (use only the ones that apply):**
+### Step 1.1 — Check for Existing Agents
 
-| Tag | Purpose |
-|-----|---------|
-| `<identity>` | Who the agent is, what company they represent, tone and speech style |
-| `<context>` | Background info the agent needs (e.g., what kind of call this is, why they're calling) |
-| `<goals>` | Numbered list of the agent's objectives for this call |
-| `<critical_rules>` | Hard constraints — things the agent must always or never do |
-| `<tools>` | Instructions for WHEN and HOW to invoke each attached tool (see **Function Invocation Rules** below) |
-| `<conversation_flow>` | Step-by-step conversation script with branching (for sales/setter agents) |
-| `<objection_handling>` | Pre-written responses to common objections |
-| `<disqualification>` | How to gracefully end calls with unqualified leads |
-| `<important_rules>` | Catch-all rules that don't fit elsewhere |
+Already done in Phase 0. If the user wants to update an existing agent instead of creating a new one:
 
-**Example structure for a sales/outbound agent:**
+1. Fetch its full config: `GET /api-v1/agents/:id` (see `yappr-api.md`)
+2. Present the current config in plain language: prompt, voice, tools, webhook settings
+3. Ask what they want to change
+4. PATCH only the changed fields
+5. Verify via GET after patching
+
+### Step 1.2 — Build the System Prompt
+
+**Before writing the prompt, read `HUMANIZE_PLAYBOOK.md`.** Then apply these rules:
+
+- Write stages as goals, not scripts
+- Include an explicit threading instruction
+- Forbid fake acknowledgment
+- Forbid robotic transition phrases ("Great!", "Moving on", "Certainly", "Of course")
+- Emotional acknowledgment instruction: reference what was specifically said
+- One question at a time, then stop
+- No markdown, no bullet points — voice only
+- Use XML section tags for complex agents (see below)
+
+**Recommended structure for complex agents (outbound sales, multi-step flows):**
 
 ```
 <identity>
-שמך הוא דניאלה, נציגת הכנסות של Yappr.
-את מדברת עם {{LeadName}}.
-את מקצועית, חדה, ישירה ובעלת ביטחון עצמי שקט.
-סגנון דיבור: עברית מדוברת טבעית. משפטים קצרים.
+Who the agent is, what company they represent, tone and speech style.
 </identity>
 
 <context>
-תאריך ושעה: {{CurrentDateTime}}.
-משבצות פנויות לפגישות: {{AvailableSlots}}.
+Background the agent needs. Pre-loaded variables go here.
+{{CurrentDateTime}}
+{{LeadName}}
+{{AvailableSlots}}
 </context>
 
 <goals>
-1. לגלות את הצורך של הליד
-2. להציג את הפתרון בצורה ממוקדת
-3. לתאם שיחת אפיון עם יועץ בכיר
+1. Goal one
+2. Goal two
+3. Goal three
 </goals>
 
 <critical_rules>
-- שאל שאלה אחת בכל פעם. אסור לשאול רצף שאלות.
-- תגובה קצרה, ואז שאלה. מקסימום 2 משפטים לפני שאלה פתוחה.
-- אל תציין מחירים ספציפיים.
+- One question at a time. Never queue the next question before getting an answer.
+- Before moving forward, address what was actually said — not the expected answer.
+- Never say "Great!", "Moving on", "Certainly", or "Of course".
+- If the caller goes off-topic, answer fully, then bridge back: "Anyway, going back to..."
 </critical_rules>
 
 <tools>
-יש לך גישה לכלי bookAppointment. הפעל אותו רק כאשר:
-- הליד אישר תאריך ושעה ספציפיים
-- הליד אישר את השם המלא שלו
-- הליד אמר במפורש שהוא רוצה לקבוע
-
-העבר את כל הפרטים בשפה טבעית כפי שהליד אמר אותם.
-אל תמיר תאריכים או שעות לפורמט טכני.
+Instructions for when and how to call each tool.
 </tools>
 
 <conversation_flow>
-**שלב 1 - פתיחה:** ...
-**שלב 2 - גילוי:** ...
-**שלב 3 - סגירה לפגישה:** ...
+Stages as goals.
 </conversation_flow>
 
 <objection_handling>
-"אני עסוק/ה עכשיו" → "אין שום בעיה. מתי יהיה לכם נוח שאחזור?"
-"כמה זה עולה?" → "המחיר תלוי בהיקף. בשיחת האפיון היועץ יתאים הצעה בדיוק למה שאתם צריכים."
+How to respond to common objections.
 </objection_handling>
 ```
 
-**When to use structured sections:**
-- Outbound sales or setter agents with a defined call flow
-- Agents with objection-handling scripts
-- Agents with strict behavioral rules ("never mention prices", "always speak in Hebrew")
-- Any agent where the system prompt exceeds ~200 words
+**For simple agents** (inbound support, FAQ, short-lived): a few focused paragraphs are fine. No XML required.
 
-**When to use a simple paragraph prompt:**
-- Inbound customer service or support (reactive, not scripted)
-- Simple Q&A or FAQ agents
-- Short-lived demo agents
+**Hebrew agents:** after drafting the prompt, run the Hebrew Pronunciation Protocol (Step 1.3).
 
----
+### Step 1.3 — Hebrew Pronunciation Protocol
 
-### Template Variables vs. Functions (Tools)
+Required for all Hebrew agents (`language: "he"`). Do this silently — no user confirmation needed.
 
-The system prompt has two different mechanisms for dynamic behavior. Understanding the distinction is critical for building effective agents:
+**Step 1:** Scan the drafted prompt for pronunciation risks:
+- Agent name (if Hebrew — e.g., נועה, חיים, מיכל)
+- Company or business name
+- Product or service names
+- Place names (cities, streets, neighborhoods)
+- Any word with ח, כ/ך, or unusual vowel patterns
 
-| | **Template Variables** | **Functions (Tools)** |
-|---|---|---|
-| **What** | Static values injected into the prompt text | Actions the AI can invoke mid-conversation |
-| **When** | Rendered once, **before** the call begins | Called **during** the call, when conditions are met |
-| **Syntax** | `{{VariableName}}` in the system prompt | Tool attached via API; AI decides when to call it |
-| **Examples** | Caller name, current date, available slots | Book appointment, log to CRM, end call |
-
-**Rule**: Use variables for **context the agent needs to know from the start**. Use tools for **actions the agent should take based on conversation**.
-
----
-
-### Template Variables
-
-Use `{{VariableName}}` syntax directly in the system prompt — the server replaces them before the call begins. Inject them inline wherever they're needed — no aliasing or separate declarations required.
-
-#### Reserved (automatic) variables
-
-These are always available — no setup needed:
-
-| Variable | Value injected |
-|----------|---------------|
-| `{{CallerPhone}}` | The caller's phone number (inbound calls) |
-| `{{CurrentDate}}` | Today's date (e.g., "March 21, 2026") |
-| `{{CurrentTime}}` | Current time in the company's timezone |
-| `{{CurrentDateTime}}` | Full date and time combined |
-| `{{CallDirection}}` | `"inbound"` or `"outbound"` |
-| `{{Timezone}}` | The company's configured timezone |
-
-#### Custom variables
-
-You can define **any** variable with `{{VariableName}}` syntax. Custom variables must be supplied when triggering the call (via API or test panel). Common patterns:
-
-| Variable | Typical use case |
-|----------|-----------------|
-| `{{LeadName}}` | The lead's name for outbound calls |
-| `{{FirstName}}` | Personalize the greeting |
-| `{{AvailableSlots}}` | Appointment slots to offer |
-| `{{CompanyName}}` | Dynamically set per-call (if serving multiple clients) |
-
-#### Using variables in a prompt
-
-Inject variables directly where they're needed — no separate `<variables>` block:
-
-```
-<identity>
-שמך הוא אסי, עוזר אישי של {{CompanyName}}.
-אתה מדבר עם {{CallerPhone}}.
-תאריך ושעה נוכחיים: {{CurrentDateTime}}.
-</identity>
-
-<context>
-שם הליד: {{LeadName}}.
-משבצות פנויות: {{AvailableSlots}}.
-</context>
-```
-
-> **Rule**: If the agent needs to reference the caller's phone number, today's date/time, or call direction — always use the reserved variables. Never hardcode or guess these values.
-
----
-
-### Function Invocation Rules (How to Write Tool Instructions in the Prompt)
-
-When an agent has tools attached (webhook tools or system tools like `endCall`), the platform automatically registers them with the AI model as callable functions. The AI model already knows the tool **name**, **description**, and **parameters** from the tool configuration — you do NOT need to repeat those in the system prompt.
-
-What you DO need to write in the system prompt is **behavioral guidance**: the conditions under which the AI should (or should not) call each tool. This is critical because the AI model may otherwise call tools prematurely or miss the right moment.
-
-#### What the platform handles automatically (do NOT repeat in the prompt):
-- Tool names, descriptions, and parameter schemas — these come from the tool config
-- Parameter extraction — the AI extracts values from the conversation based on each parameter's `description`
-- Standard metadata (call_id, agent_id, etc.) — included automatically if enabled
-- Static parameters — injected automatically from tool config
-
-#### What you MUST write in the prompt:
-- **When to call the tool** — specific conditions that must ALL be met
-- **When NOT to call the tool** — guard rails (e.g., "don't call before the customer confirms")
-- **How to pass information** — always in natural language, exactly as the caller said it
-- **What to say before/after calling** — e.g., "tell the customer you're checking availability"
-
-#### Writing a `<tools>` section
-
-For agents with attached tools, add a `<tools>` section to the system prompt with invocation rules for each tool. Reference tools by their **camelCase name** (the name you gave the tool when creating it).
-
-**Pattern:**
-
-```
-<tools>
-יש לך גישה לכלים הבאים. הפעל כלי רק כאשר כל התנאים מתקיימים.
-
-## bookAppointment
-הפעל רק כאשר:
-- הלקוח אישר תאריך ושעה ספציפיים
-- הלקוח נתן את שמו המלא
-- הלקוח אמר במפורש שהוא רוצה לקבוע
-לפני ההפעלה, אמור: "רגע, אני בודק זמינות."
-העבר תאריכים ושעות בשפה טבעית כפי שהלקוח אמר ("יום שלישי בשעה 3", לא "2026-04-08T15:00").
-
-## crmLogger
-הפעל בסוף כל שיחה, לפני endCall.
-אין צורך לבקש אישור מהלקוח — זה כלי פנימי.
-
-## endCall
-הפעל מיד כאשר:
-- הלקוח אומר "ביי", "להתראות", "שלום"
-- השיחה הושלמה והמטרה הושגה
-אחרי מילות הפרידה שלך, הפעל מיד. אל תחכה.
-</tools>
-```
-
-#### Key rules for function invocation in prompts:
-
-1. **Always require explicit confirmation before customer-facing tools** — e.g., booking, purchasing, transferring. The AI should confirm details with the caller before firing.
-2. **Internal/logging tools don't need confirmation** — CRM loggers, ticket creators, etc. can fire silently.
-3. **Pass data in natural language** — Instruct the AI to pass dates, times, and names exactly as the caller said them ("מחר בשתיים", not "2026-04-03T14:00"). The receiving webhook handles parsing.
-4. **endCall must always be last** — After all other tools have fired. Write explicit trigger conditions (goodbye phrases, task completion).
-5. **Don't redefine parameters** — The AI already knows what to extract from the tool config. The prompt should describe *when* and *how*, not *what*.
-
-#### Example: full prompt with variables AND function rules
-
-```
-<identity>
-שמך הוא נועה, מזכירה של מרפאת {{CompanyName}}.
-את חמה, מקצועית, ודוברת עברית טבעית.
-</identity>
-
-<context>
-תאריך: {{CurrentDate}}.
-שעות פעילות: ימים א׳–ה׳, 08:00–18:00.
-שירותים: טיפול שיניים כללי, אורתודנטיה, הלבנה.
-</context>
-
-<goals>
-1. לברר מה הלקוח צריך
-2. לקבוע תור אם רלוונטי
-3. לסיים את השיחה בנימוס
-</goals>
-
-<tools>
-## bookAppointment
-הפעל רק אחרי שהלקוח אישר:
-- סוג הטיפול
-- תאריך ושעה מועדפים
-- שם מלא
-אמור "רגע, אני בודקת זמינות" לפני ההפעלה.
-
-## endCall
-הפעל מיד אחרי שאמרת להתראות.
-</tools>
-
-<critical_rules>
-- שאלה אחת בכל פעם.
-- אל תציעי תורים מחוץ לשעות הפעילות.
-- אם הלקוח שואל על מחירים, אמרי שהמחירון תלוי בטיפול והפני לשיחה עם רופא.
-</critical_rules>
-```
-
----
-
-### Hebrew Pronunciation Protocol (mandatory for Hebrew agents)
-
-When creating or updating a system prompt for a Hebrew-speaking agent (`language: "he"`), **always perform a pronunciation audit before finalizing the prompt**. The underlying STS (Speech-to-Speech) model reads what it sees — if the prompt contains ambiguous transliteration or relies on the model to "figure out" a business name, it will often get it wrong.
-
-#### Why it matters
-
-The STS engine commonly mispronounces:
-- Business names, brand names, and product names
-- Agent names and staff names (especially those with gutturals)
-- Hebrew words with ח or כ — rendered as English "H"/"K" instead of the correct guttural
-- Place names (cities, neighborhoods, streets)
-- Domain-specific terms (medical, legal, real estate, food, etc.)
-
-The solution is to move pronunciation logic **into the system prompt itself**, so the model always outputs phonetic English instead of ambiguous Hebrew or romanization.
-
-#### Transliteration rules
+**Step 2:** Transliterate each risk word using these rules:
 
 | Sound | Rule | Example |
 |-------|------|---------|
-| Gutturals (ח, כ/ך) | → `kh` (guttural, like Scottish "loch") | חיים → KHAI-eem |
-| `a` sound | → `ah` | שבת → sha-BAHT |
-| `i` sound | → `ee` | ישראל → yis-ra-EHL |
-| `e` sound | → `eh` | ארץ → EH-rehtz |
-| `o` sound | → `oh` | שלום → sha-LOHM |
-| `u` sound | → `oo` | לחיים → le-KHAI-eem |
-| Stress | ALL CAPS on the stressed syllable (usually the last in Hebrew) | פגישה → pgi-SHA |
-| Ayin (ע) / Aleph (א) | Omit or use a natural English vowel — never use an apostrophe | עמי → ah-MEE |
+| Gutturals ח, כ/ך | → `kh` (guttural, like Scottish "loch") | חיים → KHAI-eem |
+| `a` | → `ah` | שבת → sha-BAHT |
+| `i` | → `ee` | ישראל → yis-ra-EHL |
+| `e` | → `eh` | ארץ → EH-rehtz |
+| `o` | → `oh` | שלום → sha-LOHM |
+| `u` | → `oo` | לחיים → le-KHAI-eem |
+| Stress | ALL CAPS on stressed syllable | פגישה → pgi-SHA |
+| Ayin ע / Aleph א | Omit or use natural English vowel | עמי → ah-MEE |
 
-**Conversion examples:**
-
-| Input | ❌ Wrong | ✅ Correct |
-|-------|---------|-----------|
-| שַׁבָּת שָׁלוֹם | "Shabbat Shalom" | "sha-BAHT sha-LOHM" |
-| לְחַיִּים | "L'chaim" | "le-KHAI-eem" |
-| אֶרֶץ יִשְׂרָאֵל | "Eretz Yisrael" | "EH-rehtz yis-ra-EHL" |
-| חַיִּים | "Haim" | "KHAI-eem" |
-| מִיכָל | "Michal" | "mee-KHAHL" |
-| רְחוֹב דִּיזֶנְגׁוֹף | "Dizengoff Street" | "dee-zen-GOFF" |
-
-#### Step-by-step process
-
-**Step 1 — Identify pronunciation risks in the draft prompt.** After writing the system prompt, scan it for:
-- The **agent's name** (if Hebrew — e.g., נועה, חיים, מיכל)
-- The **company / business name**
-- **Product or service names**
-- **Staff names** mentioned in the prompt
-- **Place names** (cities, streets, neighborhoods)
-- Any word containing ח, כ, or unusual vowel patterns
-
-**Step 2 — Transliterate each risk word** using the rules above.
-
-**Step 3 — Append a pronunciation block at the end of the system prompt:**
+**Step 3:** Append this block at the end of the system prompt:
 
 ```
 ## Pronunciation Guide — Phonetic Spellings (Read These Exactly)
 When saying any of the following words or names, use ONLY the phonetic spelling shown.
 Never use the Hebrew script or standard English spelling — always use the phonetic version:
 
-- [Word/name] → "[phonetic]"
-- [Word/name] → "[phonetic]"
+- [Word] → "[phonetic]"
 
 Remember: ALL CAPS = stressed syllable. "kh" = guttural (like "loch"), not "k" or "h".
 ```
 
-**Step 4 — Include the block in the final prompt.** This is a silent, automatic step — do not ask the user to confirm or review the phonetic list. Simply append it to the system prompt before creating or updating the agent.
+Skip common English words and everyday Hebrew words (שולחן, פגישה, חשבון). Skip numbers — the server handles those.
 
-#### What to always include (minimum)
-- The agent's name if it's Hebrew
-- The company / business name
-- Any product, service, or location names mentioned in the prompt
+### Step 1.4 — Variable Injection Strategy
 
-#### What to skip
-- Common English words (the STS engine handles these)
-- Everyday Hebrew words already covered by the server's global guide (שולחן, פגישה, חשבון, etc.)
-- Numbers — the server already enforces Hebrew number pronunciation
+Use `{{VariableName}}` syntax directly in the system prompt. Variables are substituted before the call begins.
+
+**Built-in variables (always available — no setup needed):**
+
+| Variable | Value |
+|----------|-------|
+| `{{CallerPhone}}` | Caller's phone number (E.164) |
+| `{{CurrentDate}}` | Today's date (e.g., "March 21, 2026") |
+| `{{CurrentTime}}` | Current time in company timezone |
+| `{{CurrentDateTime}}` | Full ISO timestamp |
+| `{{CurrentDateTime.Asia/Jerusalem}}` | With timezone override (dot notation) |
+| `{{CallDirection}}` | `"inbound"`, `"outbound"`, or `"web_call"` |
+| `{{Timezone}}` | Company's configured timezone |
+
+**Custom variables:** any `{{VariableName}}` you add to the prompt. Must be supplied in the `variables` dict when creating the call (`POST /api-v1/calls`). See Appendix D for the pre-fetch pattern.
+
+**When to use variables vs. tools:**
+
+| | Variables | Tools |
+|---|-----------|-------|
+| Timing | Injected once, before call starts | Called during the call |
+| Use for | Context the agent needs to know from the start | Actions to take based on conversation |
+| Examples | Lead name, available slots, date | Book appointment, log lead, end call |
+
+### Step 1.5 — Voice Selection
+
+**Never ask the user to choose a voice.** Pick one based on use case and persona, then mention it briefly ("I'll give it a warm, friendly voice"). Only change if the user pushes back.
+
+See Appendix A for the full voice selection guide.
+
+Default: `Michal` when use case is unclear.
+
+### Step 1.6 — VAD Presets
+
+Use the right preset for the call type. See Appendix B for values.
+
+- Consultative (medical, legal, slow-paced) → Consultative preset
+- Sales / energetic → Sales preset
+- Outbound (often noisy environments) → Outbound preset
+- High-volume / fast → High-volume preset
+
+### Step 1.7 — Call Guard Presets
+
+Set limits to prevent runaway calls. See Appendix C for values.
+
+- Outbound sales → Outbound sales preset
+- Inbound support → Inbound support preset
+- Lead qualification → Lead qualification preset
+
+### Step 1.8 — API Calls to Make
+
+**Create the agent** — use the file-based payload approach (required for Hebrew/special characters):
+
+```bash
+python3 -c "
+import json, uuid
+payload = {
+    'name': 'Agent Name',
+    'system_prompt': '...',
+    'voice': 'Michal',
+    'language': 'he',
+    'temperature': 0.5,
+    'agent_speaks_first': True,
+    'greeting_message': '...',
+    # VAD: include only if deviating from defaults
+    # 'vad_stop_secs': 0.5,
+    # 'vad_start_secs': 0.2,
+    # 'vad_confidence': 0.7,
+    # Call guards: include only if deviating from defaults
+    # 'silence_timeout_secs': 60,
+    # 'max_continuous_speech_secs': 120,
+    # 'max_call_duration_secs': 600,
+    # Webhook: only include if the user asked for call event notifications
+    # 'webhook_url': 'https://...',
+    # 'webhook_events': ['call.no_answer', 'call.failed', 'call.analyzed'],
+    'idempotency_key': str(uuid.uuid4())
+}
+with open('/tmp/agent-payload.json', 'w', encoding='utf-8') as f:
+    json.dump(payload, f, ensure_ascii=False)
+"
+curl -s -X POST 'https://api.goyappr.com/agents' \
+  -H 'Authorization: Bearer $YAPPR_API_KEY' \
+  -H 'Content-Type: application/json' \
+  --data-binary @/tmp/agent-payload.json | jq .
+```
+
+Save the returned `id`.
+
+**Attach the end_call system tool (required for every agent):**
+
+```bash
+# Find the end_call system tool for this company
+curl -s "https://api.goyappr.com/tools" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  | jq '.data[] | select(.type == "system") | {id, name}'
+```
+
+Then attach it with `execution_order: 999` so it's always last:
+
+```bash
+curl -s -X POST "https://api.goyappr.com/tools/attach" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "AGENT_ID", "tool_id": "END_CALL_TOOL_ID", "execution_order": 999}'
+```
+
+Do this silently — no explanation needed unless the user asks.
+
+### Step 1.9 — Disposition Gap Check
+
+Compare dispositions needed (from discovery config) against dispositions that already exist (from Phase 0). Create any that are missing:
+
+```bash
+curl -s -X POST "https://api.goyappr.com/dispositions" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"label": "Appointment Set", "color": "#22c55e"}'
+```
+
+**Default dispositions already seeded per company** (do not recreate):
+Interested, Not Interested, Callback Requested, Appointment Set, Issue Resolved, Voicemail, Wrong Number, Do Not Call, No Answer, Failed
+
+Protected dispositions (cannot be deleted, API returns 403): No Answer, Failed, Do Not Call, Voicemail, Wrong Number.
+
+No Answer and Failed are auto-set by the system. The AI classifier sets all others. If classification fails, disposition is null.
 
 ---
 
-### Common Agent Types — Ready-to-Use Configurations
+## PHASE 2: Tooling
 
-When a user describes their use case, map it to one of these patterns and propose the full config:
+Tools are webhook endpoints the agent can call during a conversation. This phase has two layers:
 
-**Customer Service**
-- Temperature: 0.4 | `agent_speaks_first: true`
-- System prompt should include: company name, services offered, what NOT to help with, and an escalation path ("take name and callback number")
-- Suggest extraction params: `callerName`, `issueType`, `resolutionOffered`
+- **Layer 1 — Blueprint**: what tools to build and why (platform-agnostic)
+- **Layer 2 — Implementation**: actual code, using Supabase edge functions if available
 
-**Appointment Booking**
-- Temperature: 0.3 (bookings need accuracy) | `agent_speaks_first: true`
-- System prompt should include: available services, booking hours, what info to collect before ending the call
-- Suggest extraction params: `callerName`, `phoneNumber`, `serviceType`, `preferredDate`, `preferredTime`, `notes`
+### Layer 1 — Tool Philosophy
 
-**Lead Qualification**
-- Temperature: 0.5 | `agent_speaks_first: true`
-- System prompt should include: qualifying questions (budget, timeline, use case), how to handle disqualified leads gracefully, what a "hot lead" looks like
-- Suggest extraction params: `companyName`, `contactName`, `useCase`, `teamSize`, `budgetRange`, `timeline`, `nextStep`
+Apply these rules before deciding what tools to build:
 
-**Order / Delivery Support**
-- Temperature: 0.3 | `agent_speaks_first: false` (let caller explain their issue first)
-- System prompt should include: what the agent can look up, how to handle missing order info, refund/complaint escalation path
-- Suggest extraction params: `orderNumber`, `callerName`, `issueType`, `resolution`
+**Rule 1: Bundle secondaries.** Booking an appointment + sending a WhatsApp confirmation + updating the CRM = one edge function, one Yappr tool. The agent sees ONE tool (`bookAppointment`). Secondary actions happen inside the function invisibly. This reduces tool calls, which reduces latency and complexity.
 
-**Restaurant Reservations**
-- Temperature: 0.4 | `agent_speaks_first: true`
-- System prompt should include: restaurant name, cuisine, hours, party size limits, cancellation policy
-- Suggest extraction params: `callerName`, `partySize`, `preferredDate`, `preferredTime`, `specialRequests`, `phoneNumber`
+**Rule 2: Pre-fetch + CRUD safeguard.** Pre-fetch calendar availability at dispatch time → inject as `{{AvailableSlots}}` variable. This reduces how often `checkAvailability` is called during the call. But `checkAvailability` MUST still exist as a tool — pre-fetched slots can be stale, and the caller may ask about a time not in the list. The variable is the fast path. The tool is the fallback.
 
-### Translating User Language to Extraction Parameters
+**Rule 3: Full CRUD when the domain is relevant.** If the use case involves appointments → build `checkAvailability`, `bookAppointment`, and (if inbound/support) `cancelAppointment` and `rescheduleAppointment`. Don't create tools that won't be used, but don't skip the safeguards.
 
-Don't ask users to specify parameter names — they don't know what that means. Instead:
+**Rule 4: `endCall` is always last.** The system tool is already attached in Phase 1. Write explicit trigger conditions in the system prompt.
 
-1. Ask: **"After each call, what information would you want saved?"**
-2. Translate their answer into camelCase English parameter names and propose the full list:
-   - "who called" → `callerName`, `phoneNumber`
-   - "why they called" → `callReason` or `issueType`
-   - "whether it was resolved" → `resolutionStatus`
-   - "their order number" → `orderNumber`
-   - "when they want to come in" → `preferredDate`, `preferredTime`
-3. Show them the proposed list: *"Based on what you described, I'll configure the tool to capture: caller name, reason for the call, and whether it was resolved. Does that sound right?"*
-4. Adjust based on their feedback, then create the tool.
+### Layer 2 — Tool Decision Tree
 
-> **Parameter naming rule**: Tool names and parameter names must always be in **camelCase English** (e.g. `callerName`, `issueType`, `orderNumber`). Descriptions can be in any language including Hebrew.
+| Use case | Tools to create |
+|----------|----------------|
+| Appointment booking | `checkAvailability` (always), `bookAppointment` (always), `cancelAppointment` (if inbound), `rescheduleAppointment` (if inbound) |
+| Lead qualification only | `logLead` — bundle: save lead + apply tags + update CRM |
+| Human escalation | `transferToHuman` |
+| Outbound sales + CRM | `logOutcome` — bundle: save disposition + update CRM + trigger notification |
+| Post-call WhatsApp | Bundle into `bookAppointment` or `logOutcome` — not a standalone tool |
 
-### Voice Selection Guide
+**When Supabase is available:** write each tool as a Deno edge function. The Yappr tool's `config.url` points to the edge function. The edge function handles all secondary actions and responds back to Yappr.
 
-**Never ask the user to choose a voice.** Based on the use case and agent personality, pick one automatically and move on. Only change it if the user explicitly asks.
+**Use the shared integration clients** from `templates/integrations/` — don't write raw `fetch` calls. Copy the relevant `.ts` file into your edge function's `_shared/` directory or import it relatively:
 
-Use the friendly English names below in all API calls (e.g. `"voice": "Maya"`). The platform resolves them internally — you never need to know the underlying voice IDs.
+```typescript
+// supabase/functions/book-appointment/index.ts
+import { GoogleCalendarClient } from "../_shared/integrations/google-calendar.ts";
+import { GreenApiClient } from "../_shared/integrations/greenapi-whatsapp.ts";
+import { HubSpotClient } from "../_shared/integrations/hubspot.ts";
 
-Pick the best fit from this mapping:
+const calendar = new GoogleCalendarClient(Deno.env.get("GOOGLE_ACCESS_TOKEN")!);
+const whatsapp = new GreenApiClient(Deno.env.get("GREEN_API_INSTANCE")!, Deno.env.get("GREEN_API_TOKEN")!);
+const crm = new HubSpotClient(Deno.env.get("HUBSPOT_TOKEN")!);
+```
+
+The client constructor's optional `fetchFn` parameter means the same code works in tests (injected mock) and production (real `globalThis.fetch`).
+
+**When Supabase is not available:** give the user the webhook URL pattern and the expected payload shape. They wire up their own backend.
+
+### Step 2.1 — Creating Tools via Yappr API
+
+For each tool, use the file-based approach:
+
+```bash
+python3 -c "
+import json, uuid
+payload = {
+    'name': 'bookAppointment',
+    'description': 'Book an appointment. Call only after the caller has confirmed a specific date, time, and their full name.',
+    'type': 'webhook',
+    'config': {
+        'url': 'https://YOUR_EDGE_FUNCTION_URL',
+        'method': 'POST',
+        'headers': {},
+        'payload_config': {
+            'include_standard_metadata': True,
+            'static_parameters': [],
+            'extraction_parameters': [
+                {'name': 'callerName', 'description': 'Full name of the caller as stated'},
+                {'name': 'preferredDate', 'description': 'Requested appointment date in natural language'},
+                {'name': 'preferredTime', 'description': 'Requested appointment time in natural language'},
+                {'name': 'serviceType', 'description': 'Type of service or appointment requested'}
+            ]
+        }
+    },
+    'idempotency_key': str(uuid.uuid4())
+}
+with open('/tmp/tool-payload.json', 'w', encoding='utf-8') as f:
+    json.dump(payload, f, ensure_ascii=False)
+"
+curl -s -X POST 'https://api.goyappr.com/tools' \
+  -H 'Authorization: Bearer $YAPPR_API_KEY' \
+  -H 'Content-Type: application/json' \
+  --data-binary @/tmp/tool-payload.json | jq .
+```
+
+**Tool naming rules:**
+- Name MUST be camelCase English: `bookAppointment`, `logLead`, `checkAvailability`
+- No snake_case, no spaces, no Hebrew in the name
+- Descriptions can be in Hebrew
+- All parameter names are normalized to camelCase automatically
+
+**Attach to agent:**
+```bash
+curl -s -X POST "https://api.goyappr.com/tools/attach" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "AGENT_ID", "tool_id": "TOOL_ID", "execution_order": 0}'
+```
+
+One tool per attach call. Increment `execution_order` by 1 for each additional tool.
+
+### Step 2.2 — Writing Tool Instructions in the Prompt
+
+The platform auto-registers tool names, descriptions, and parameter schemas with the AI. Do NOT repeat these in the prompt.
+
+What you MUST write in the `<tools>` section of the prompt:
+- **When to call the tool** — specific conditions that must ALL be met
+- **When NOT to call the tool** — guard rails
+- **How to pass information** — always in natural language, exactly as the caller said it
+- **What to say before/after** — e.g., "tell the caller you're checking availability"
+
+**Example `<tools>` section:**
+```
+<tools>
+You have access to the following tools. Only invoke a tool when ALL conditions are met.
+
+## bookAppointment
+Invoke only when:
+- The caller has confirmed a specific date AND time
+- The caller has given their full name
+- The caller explicitly said they want to book
+Before invoking, say: "One moment, let me check availability."
+Pass dates and times in natural language exactly as the caller said them ("Tuesday at three", not "2026-04-08T15:00").
+
+## endCall
+Invoke immediately when:
+- The caller says goodbye, bye, talk later, or similar
+- The call goal has been achieved and farewell has been said
+After your farewell words, invoke immediately — do not wait.
+</tools>
+```
+
+### Step 2.3 — Test the Tool Webhook
+
+After creating each tool, test delivery:
+
+```bash
+curl -s -X POST "https://api.goyappr.com/tools/TOOL_ID/test" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+
+- `"success": true` + `status_code: 200` → show the user the `payload_sent` field
+- `"error": ...` → explain clearly and give options (fix URL now, or continue and fix later)
+
+---
+
+## PHASE 3: Call Dispatch
+
+How calls get initiated. Choose the right pattern based on the user's lead source and volume.
+
+### Layer 1 — Three Dispatch Patterns
+
+**Pattern 1: Direct API**
+Best for: low volume, ad-hoc calls, testing, simple automation.
+The caller calls `POST /api-v1/calls` directly from their server, script, or automation.
+
+```bash
+curl -s -X POST "https://api.goyappr.com/calls" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "AGENT_ID",
+    "to": "+972XXXXXXXXX",
+    "from": "+972YYYYYYYYY",
+    "metadata": { "lead_id": "...", "source": "facebook" },
+    "variables": {
+      "LeadName": "ישראל כהן",
+      "AvailableSlots": "ב׳ 10:00, ג׳ 14:00"
+    }
+  }'
+```
+
+CRITICAL: `to` and `from` must never be the same number.
+
+**Pattern 2: Supabase Call Queue**
+Best for: high volume, scheduled/batched outbound, retry logic, deduplication.
+A `call_queue` table in Supabase holds pending calls. A cron job or edge function drains the queue, fetching pre-call data and calling the Yappr API per lead.
+
+```typescript
+// dispatch-calls.ts (Supabase edge function or Node.js script)
+// 1. Fetch pending leads from queue
+// 2. For each lead, fetch pre-call data (calendar slots, CRM context)
+// 3. Format variables
+// 4. POST /api-v1/calls with variables injected
+// 5. Mark lead as dispatched in queue
+```
+
+If Supabase is available, scaffold this function. The schema for the queue table:
+
+```sql
+create table call_queue (
+  id uuid primary key default gen_random_uuid(),
+  lead_id uuid references leads(id),
+  agent_id uuid not null,
+  phone_number text not null,
+  variables jsonb default '{}',
+  metadata jsonb default '{}',
+  status text default 'pending', -- pending, dispatched, failed
+  attempt_count int default 0,
+  scheduled_for timestamptz,
+  dispatched_at timestamptz,
+  created_at timestamptz default now()
+);
+```
+
+**Pattern 3: Automation Platform (Make / n8n)**
+Best for: lead sources that already use Make/n8n (e.g., Facebook Lead Ads → Make → Yappr).
+A Make scenario or n8n workflow fires when a new lead arrives, pre-fetches data, and calls the Yappr API.
+
+Walk the user through the Make/n8n HTTP module configuration:
+- Method: POST
+- URL: `https://api.goyappr.com/calls`
+- Headers: `Authorization: Bearer {{YAPPR_API_KEY}}`
+- Body: JSON with `agent_id`, `to`, `from`, `metadata`, `variables`
+
+### Step 3.1 — Variable Pre-Fetch
+
+When using Pattern 2 or 3, pre-fetch data BEFORE calling the Yappr API and inject it as variables. See Appendix D for the full pre-fetch pattern.
+
+The most common pre-fetched variables:
+- `{{AvailableSlots}}` — formatted string of open calendar slots for the next 2–3 days
+- `{{LeadName}}` — lead's name from the CRM or lead source
+- `{{CompanyName}}` — company context if serving multiple clients
+
+---
+
+## PHASE 4: Post-Call Automation
+
+What happens after a call ends. Configure this based on per-disposition routing answers from Phase 0.
+
+### Layer 1 — Webhook Event Guide
+
+Configure the agent's `webhook_url` and `webhook_events` (via PATCH /api-v1/agents/:id or at creation time).
+
+**Event reference:**
+
+| Event | When it fires | Best use |
+|-------|---------------|----------|
+| `call.no_answer` | Fires immediately when no one picks up | Trigger retry logic |
+| `call.failed` | Fires on connection error | Log failure, alert ops |
+| `call.analyzed` | Fires when full AI pipeline completes: transcript + disposition + summary | Main post-call automation trigger |
+| `transcript.ready` | Legacy — fires when transcript is saved | Use `call.analyzed` instead |
+
+**Recommended default event set:** `call.no_answer`, `call.failed`, `call.analyzed`
+
+The `call.analyzed` payload includes: `direction`, `status`, `from`, `to`, `duration_seconds`, `disposition` (label string or null), `summary`, `transcript`.
+
+### CRITICAL — Webhook Payload Blind Spot
+
+> **WARNING:** The `call.analyzed` payload is minimal. It does NOT include:
+> - The lead object (name, tags, history, metadata)
+> - Metadata passed at call creation time (`metadata` field from POST /api-v1/calls)
+> - Cost data
+> - The full disposition object — only the label string is included, and it may be `null` if AI classification failed
+>
+> **To get the full call record** including resolved lead, full disposition object, and all metadata: `GET /api-v1/calls/:id` after receiving the webhook.
+>
+> **Pattern for needing the lead's name in a post-call WhatsApp:**
+> - Option A: pass `"name": "ישראל כהן"` in `metadata` when creating the call → read from webhook's call record after fetching `GET /api-v1/calls/:id`
+> - Option B: fetch `GET /api-v1/calls/:id` immediately after receiving the webhook — the response includes the full lead object
+
+### Step 4.1 — Disposition Routing Architecture
+
+Based on the per-disposition routing answers from Phase 0, wire up a routing handler in the webhook receiver:
+
+```typescript
+// webhook-handler.ts
+async function handleCallAnalyzed(payload: WebhookPayload) {
+  const { call_id, data } = payload;
+  const disposition = data.disposition; // label string or null
+
+  // Always fetch full call for lead context
+  const call = await yapprApi.getCall(call_id);
+
+  switch (disposition) {
+    case 'Appointment Set':
+      await sendWhatsAppConfirmation(call.lead, call.metadata);
+      await updateCrmAppointmentSet(call);
+      break;
+
+    case 'Not Interested':
+      await markDoNotCall(call.lead);
+      break;
+
+    case 'Callback Requested':
+      await scheduleFollowUpCall(call.lead, hoursFromNow(4));
+      break;
+
+    case 'Interested':
+      await notifySalesTeam(call);
+      break;
+
+    case null:
+      // Classification failed — log for manual review
+      await flagForManualReview(call);
+      break;
+  }
+}
+```
+
+If Supabase is available, scaffold this as an edge function.
+
+### Step 4.2 — Retry Logic for No-Answer
+
+Configure based on discovery answers. Standard retry pattern:
+
+```typescript
+// On call.no_answer webhook:
+async function handleNoAnswer(payload: WebhookPayload) {
+  const call = await yapprApi.getCall(payload.call_id);
+  const lead = call.lead;
+
+  // Check attempt count (store in call_queue or lead metadata)
+  const attempts = await getAttemptCount(lead.id);
+
+  if (attempts < MAX_RETRIES) {
+    await scheduleRetryCall(lead, RETRY_INTERVALS[attempts]);
+  } else {
+    await markLeadExhausted(lead.id);
+  }
+}
+
+const MAX_RETRIES = 3; // from discovery config
+const RETRY_INTERVALS = [
+  4 * 60 * 60 * 1000,  // 4 hours after first no-answer
+  24 * 60 * 60 * 1000, // 24 hours after second
+  48 * 60 * 60 * 1000, // 48 hours after third
+];
+```
+
+---
+
+## PHASE 5: Going Live
+
+### Step 5.1 — Phone Number Setup
+
+Check what's already there (done in Phase 0). If the user needs a new number:
+
+**Search:**
+```bash
+curl -s -X POST "https://api.goyappr.com/phone-numbers/search" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"limit": 10}' | jq .
+```
+
+Present the list with numbers and pricing. Ask which they want.
+
+**Confirm before purchasing:** *"Purchasing [number] will start a $10/month recurring charge on your saved card. Shall I go ahead?"*
+
+**Purchase:**
+```bash
+curl -s -X POST "https://api.goyappr.com/phone-numbers/purchase" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number": "+972XXXXXXXXX"}' | jq .
+```
+
+The purchased number may differ from what was selected (race condition fallback). Always show the `phoneNumber` from the response.
+
+**Assign:**
+```bash
+# Get the number's internal UUID
+curl -s "https://api.goyappr.com/phone-numbers" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '.data[] | select(.number == "+972XXXXXXXXX") | .id'
+
+# Assign agents — use snake_case field names (camelCase returns 400)
+curl -s -X POST "https://api.goyappr.com/phone-numbers/configure" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phone_number_id": "UUID",
+    "inbound_agent_id": "AGENT_ID",
+    "outbound_agent_id": "AGENT_ID"
+  }' | jq .
+```
+
+Status `pending_requirements`: regulatory approval needed (Israeli numbers, 1–3 business days). Number is reserved and subscription is active — it will start working once approved.
+
+### Step 5.2 — Pre-Launch Checklist
+
+Before telling the user they're live, verify each item:
+
+- [ ] Agent exists and `is_active: true` (GET /agents/:id)
+- [ ] `end_call` system tool is attached to every agent
+- [ ] All webhook tools created, attached, and tested (POST /tools/:id/test)
+- [ ] Phone number is active (or pending regulatory approval with explanation)
+- [ ] Phone number is assigned to the correct agent(s)
+- [ ] Billing balance is above $5 (GET /billing)
+- [ ] Webhook URL is set on the agent if post-call automation is needed
+- [ ] `call.no_answer` and `call.analyzed` events are in the `webhook_events` list
+- [ ] Any custom variables used in the system prompt are documented — caller must supply them at call creation time
+- [ ] Dispositions needed for routing are created
+
+### Step 5.3 — Test the Agent
+
+Two options — offer both:
+
+**Option A: Web Call (recommended — no phone needed)**
+
+```
+https://app.goyappr.com/he/agents/AGENT_ID
+```
+
+Direct link to the agent's page in the Yappr dashboard. Click "Test Call" to speak with the agent in the browser.
+
+**Option B: Phone Call (requires purchased number)**
+
+Check for custom variables in the system prompt. Any `{{VariableName}}` not in the reserved list (`CallerPhone`, `CurrentDate`, `CurrentTime`, `CurrentDateTime`, `CallDirection`, `Timezone`) must be supplied as test values.
+
+```bash
+curl -s -X POST "https://api.goyappr.com/calls" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "AGENT_ID",
+    "to": "+972XXXXXXXXX",
+    "from": "+972YYYYYYYYY",
+    "variables": {
+      "LeadName": "ישראל",
+      "AvailableSlots": "יום שני 10:00, יום שלישי 14:00"
+    }
+  }'
+```
+
+### Step 5.4 — Monitoring
+
+After launch, check recent calls:
+
+```bash
+curl -s "https://api.goyappr.com/calls?limit=20&agent_id=AGENT_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '[.data[] | {id, status, direction, duration_seconds, disposition}]'
+```
+
+If the user reports the agent cutting callers off → increase `vad_stop_secs` (PATCH /agents/:id)
+If the agent responds too slowly → decrease `vad_stop_secs`
+If the agent triggers on background noise → increase `vad_confidence`
+
+---
+
+## Managing Existing Resources
+
+When a user asks to change, view, or manage something — always fetch and present the options first, then act on their selection. Never ask them to provide an ID manually.
+
+### Agents
+
+```bash
+# List agents
+curl -s "https://api.goyappr.com/agents" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  | jq '[.data[] | {id, name, voice, language, is_active}]'
+
+# Get full config
+curl -s "https://api.goyappr.com/agents/AGENT_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Patch (only changed fields)
+curl -s -X PATCH "https://api.goyappr.com/agents/AGENT_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"voice": "Maya"}'
+
+# Deactivate
+curl -s -X DELETE "https://api.goyappr.com/agents/AGENT_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY"
+```
+
+### Tools
+
+```bash
+# List webhook tools
+curl -s "https://api.goyappr.com/tools" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  | jq '[.data[] | select(.type == "webhook") | {id, name, description}]'
+
+# Get full config
+curl -s "https://api.goyappr.com/tools/TOOL_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Patch
+curl -s -X PATCH "https://api.goyappr.com/tools/TOOL_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"config": {"url": "https://new-url.com/webhook", "method": "POST"}}'
+
+# Test webhook
+curl -s -X POST "https://api.goyappr.com/tools/TOOL_ID/test" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Get tools attached to a specific agent
+curl -s "https://api.goyappr.com/tools?agent_id=AGENT_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  | jq '[.data[] | {id, name, type, execution_order}]'
+
+# Detach from agent
+curl -s -X POST "https://api.goyappr.com/tools/detach" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "AGENT_ID", "tool_id": "TOOL_ID"}'
+
+# Deactivate
+curl -s -X DELETE "https://api.goyappr.com/tools/TOOL_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY"
+```
+
+### Leads
+
+```bash
+# List / search
+curl -s "https://api.goyappr.com/leads?limit=20&search=john" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Create
+curl -s -X POST "https://api.goyappr.com/leads" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number": "+972501234567", "name": "John Smith", "tags": ["Hot Lead"]}'
+
+# Update (tags replaces all)
+curl -s -X PATCH "https://api.goyappr.com/leads/LEAD_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"long_term_context": "Interested in premium plan. Prefers morning calls."}'
+
+# Soft delete
+curl -s -X DELETE "https://api.goyappr.com/leads/LEAD_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY"
+```
+
+### Dispositions
+
+```bash
+# List
+curl -s "https://api.goyappr.com/dispositions" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Create
+curl -s -X POST "https://api.goyappr.com/dispositions" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"label": "Qualified Lead", "color": "#22c55e"}'
+
+# Update
+curl -s -X PATCH "https://api.goyappr.com/dispositions/DISPOSITION_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"label": "Very Interested", "color": "#16a34a"}'
+
+# Delete (403 if protected)
+curl -s -X DELETE "https://api.goyappr.com/dispositions/DISPOSITION_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY"
+```
+
+---
+
+## Billing
+
+```bash
+# Check balance
+curl -s "https://api.goyappr.com/billing" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Generate Stripe Checkout link (for adding payment method)
+curl -s -X POST "https://api.goyappr.com/billing/setup" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{}' | jq .checkoutUrl
+```
+
+For top-ups, **always get explicit confirmation** before charging:
+
+> "Your balance is low ($X). Would you like to add $20 to your account? This will charge your saved card."
+
+Only after explicit yes:
+
+```bash
+curl -s -X POST "https://api.goyappr.com/billing/topup" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"amount_cents": 2000}'
+```
+
+---
+
+## Skill Scope
+
+This skill covers: agents, tools, phone numbers, calls, dispositions, leads, lead tags, shared links, billing.
+
+Out of scope: custom SIP trunks, team/user management, WhatsApp directly (only via webhook to an external service), model training, non-Israeli phone numbers.
+
+If a request is out of scope, say so clearly and offer the developer consultation link: **https://cal.com/yappr/skill-dev-consultation**
+
+Offer the consultation whenever the user has tried something 2+ times without success, expresses confusion or frustration, or asks for help.
+
+---
+
+## Error Handling
+
+For exact error codes and HTTP status meanings, see `yappr-api.md`. Quick reference:
+
+| Status | Meaning |
+|--------|---------|
+| 400 | Bad request — check field names and values |
+| 401 | Auth failed — verify API key and scopes |
+| 402 | Billing — add balance or payment method |
+| 403 | Forbidden — resource not found or protected |
+| 429 | Rate limit or concurrent call limit — wait and retry |
+| 500 | Server error — retry once |
+
+Always translate errors for the user. Don't show raw JSON to non-technical users.
+
+---
+
+## Communication Style
+
+Adapt language for non-technical users:
+- "phone number" not "E.164 format"
+- "creativity level" not "temperature"
+- "the agent's personality and instructions" not "system prompt"
+- "your balance" not "balance_cents"
+- Show prices in dollars, not cents (1000 cents = $10.00)
+- Explain what went wrong and what they can do about it — don't just show error codes
+
+---
+
+## Appendix A: Voice Selection Guide
+
+**Never ask the user to choose a voice.** Pick one based on use case and persona, mention it briefly, move on.
 
 | Use case | Female | Male |
 |----------|--------|------|
@@ -547,1076 +1115,181 @@ Pick the best fit from this mapping:
 | Sales / outbound | Yael, Anat | Gil, Nir |
 | Medical / professional | Avigail, Tamar | Yosef, Shlomo |
 
-**Full voice catalogue** (30 voices):
-Female: Michal, Rachel, Noa, Maya, Shira, Avigail, Liat, Tamar, Yael, Dvora, Shir, Anat, Dana, Ruth
-Male: Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi, Shlomo, Alon, Yuval
+**Full catalog (30 voices):**
+- Female (14): Michal, Rachel, Noa, Maya, Shira, Avigail, Liat, Tamar, Yael, Dvora, Shir, Anat, Dana, Ruth
+- Male (16): Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi, Shlomo, Alon, Yuval
 
-**Default**: use `Michal` when the use case is unclear or general. Choose the gender that matches the agent's persona in the system prompt.
-
----
-
-### VAD / Turn-Taking Configuration
-
-The platform uses **Voice Activity Detection (VAD)** to determine when a caller has finished speaking and the agent should respond. Three parameters control this behaviour — they are optional on all agents and have sensible defaults, but can be tuned when users report the agent cutting them off too early or waiting too long before responding.
-
-| Parameter | Default | Range | What it controls |
-|-----------|---------|-------|-----------------|
-| `vad_stop_secs` | `0.5` | `0.05 – 5.0` | Seconds of silence **after speech stops** before the agent considers the turn finished and starts generating a reply. Lower = faster response; higher = more patient. |
-| `vad_start_secs` | `0.2` | `0.05 – 2.0` | Seconds of sustained speech **before** it counts as a real utterance (filters background noise and very short sounds). |
-| `vad_confidence` | `0.7` | `0.0 – 1.0` | Confidence threshold for the speech detector. Higher = stricter (ignores faint or ambiguous audio); lower = more sensitive. |
-
-#### When to suggest tuning
-
-- **Agent cuts the caller off mid-sentence** → increase `vad_stop_secs` (e.g. `0.5` or `0.8`)
-- **Agent waits too long before replying** → decrease `vad_stop_secs` (e.g. `0.15`)
-- **Agent triggers on background noise** → increase `vad_confidence` (e.g. `0.85`) and/or increase `vad_start_secs`
-- **Agent misses short, clipped speech** → decrease `vad_start_secs` (e.g. `0.2`) or decrease `vad_confidence`
-
-#### How to translate plain user language
-
-- "The agent keeps interrupting me" → increase `vad_stop_secs`
-- "The agent is slow to respond" → decrease `vad_stop_secs`
-- "The agent speaks over background noise" → increase `vad_confidence`
-- "The agent doesn't hear me sometimes" → decrease `vad_confidence` or `vad_start_secs`
-
-**Do not ask the user for parameter names or values.** They describe the symptom; you choose the adjustment and propose it:
-
-> *"It sounds like the agent is cutting you off. I'll increase the pause threshold so it waits a bit longer after you stop speaking before replying — does that sound right?"*
-
-Then apply the change:
-
-```bash
-curl -s -X PATCH \
-  "https://api.goyappr.com/agents/AGENT_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"vad_stop_secs": 0.6}'
-```
-
-**Important architecture note**: The Yappr voice engine runs **two VAD layers** simultaneously:
-1. **Platform VAD** — must always remain enabled (this is what lets the AI model "hear" the audio stream). Never disable it.
-2. **Local Silero VAD** — controlled by the three parameters above, used for fine-grained pipeline-level turn-taking. This is what `vad_stop_secs`, `vad_start_secs`, and `vad_confidence` configure.
-
-The three API parameters only affect the local Silero layer. The platform VAD layer is always on and is not user-configurable — this is intentional and should not be changed.
-
-### Call Guard Settings
-
-Three additional parameters protect against wasted credits from runaway or dead calls. All are optional and have sensible defaults.
-
-| Parameter | Default | Range | What it controls |
-|-----------|---------|-------|-----------------|
-| `silence_timeout_secs` | `60` | `10 – 900` | Seconds of caller silence before auto-hangup. Prevents idle/dead calls from burning credits. |
-| `max_continuous_speech_secs` | `120` | `0 – 300` | Max seconds one party can speak non-stop before auto-hangup. Catches answering machines and IVR recordings that bypass Telnyx AMD. `0` = disabled. |
-| `max_call_duration_secs` | `600` | `0 – 3600` | Hard cap on total call length regardless of activity. Prevents runaway calls (e.g. stuck pipelines, long hold music). `0` = disabled. |
-
-#### When to suggest tuning
-
-- **Calls to voicemail boxes that play long greetings** → decrease `max_continuous_speech_secs` (e.g. `60`)
-- **Calls hang up too quickly on slow responders** → increase `silence_timeout_secs` (e.g. `120`)
-- **Agent runs up huge bills on stuck calls** → set `max_call_duration_secs` to a reasonable cap (e.g. `300` for 5 min)
-- **Agent should allow very long conversations** → increase `max_call_duration_secs` (e.g. `1800` for 30 min) or set to `0` to disable
-
-#### How to translate plain user language
-
-- "Calls are too expensive / wasting credits" → lower `max_call_duration_secs` and/or `silence_timeout_secs`
-- "The bot keeps talking to answering machines" → lower `max_continuous_speech_secs` (e.g. `30` or `60`)
-- "My calls get cut off too early" → check if `silence_timeout_secs` or `max_call_duration_secs` is too low
-- "A call ran for 20 minutes and drained my credits" → set `max_call_duration_secs` to a cap
-
-Example:
-
-```bash
-curl -s -X PATCH \
-  "https://api.goyappr.com/agents/AGENT_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"silence_timeout_secs": 30, "max_continuous_speech_secs": 60, "max_call_duration_secs": 300}'
-```
+**Default:** `Michal` when use case is unclear. Match gender to the agent's persona in the system prompt.
 
 ---
 
-## Step 0: Prerequisites Check
+## Appendix B: VAD Presets
 
-Before anything else, verify the user has completed these browser-based steps. Ask them directly — do not assume.
+VAD (Voice Activity Detection) controls when the agent considers the caller done speaking.
 
-### What the user needs to do in their browser (one-time setup):
+| Setting | What it does |
+|---------|-------------|
+| `vad_stop_secs` | Seconds of silence after speech stops before agent replies. Lower = faster; higher = more patient. |
+| `vad_start_secs` | Seconds of sustained speech before it counts as a real utterance (filters noise). |
+| `vad_confidence` | Speech detector confidence threshold. Higher = stricter. |
+| `silence_timeout_secs` | Auto-hangup after N seconds of caller silence. |
 
-1. **Create an account** at the Yappr dashboard (ask the user for the URL or check if they already have one)
-2. **Confirm their email** (check inbox for verification link)
-3. **Complete onboarding**: create a company, fill in company details
-4. **Add a payment method**: connect a credit/debit card via Stripe during onboarding or in Settings > Billing
-5. **Create an API key**: go to Settings > API Keys, create a new key with all scopes enabled
-6. **Save the API key**: the full key is shown only once — they need to copy it
+**Presets:**
 
-If the user hasn't done these steps yet, walk them through it clearly. Do NOT try to automate account creation — it must be done in the browser.
+| Preset | `vad_stop_secs` | `vad_start_secs` | `vad_confidence` | `silence_timeout_secs` |
+|--------|----------------|-----------------|-----------------|----------------------|
+| Consultative (medical, legal, slow-paced) | 0.8 | 0.3 | 0.6 | 90 |
+| Sales / energetic | 0.5 | 0.2 | 0.7 | 60 |
+| Outbound (often noisy) | 0.6 | 0.25 | 0.75 | 45 |
+| High-volume / fast | 0.4 | 0.15 | 0.8 | 30 |
 
-### Store the API key
+**Symptom translation:**
+- "Agent cuts callers off" → increase `vad_stop_secs`
+- "Agent is slow to respond" → decrease `vad_stop_secs`
+- "Agent triggers on background noise" → increase `vad_confidence` and/or `vad_start_secs`
+- "Agent doesn't hear short responses" → decrease `vad_confidence` or `vad_start_secs`
 
-Once the user has their key, save it:
-
-```bash
-export YAPPR_API_KEY="ypr_live_..."
-```
-
-Or store it in a `.env` file in the working directory for persistence.
-
-### Validate the key
-
-```bash
-curl -s "https://api.goyappr.com/billing" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
-```
-
-This should return their billing status. If it returns an auth error, the key is invalid — ask them to double-check.
-
-Check the response:
-- `has_payment_method: true` — good, they can proceed
-- `has_payment_method: false` — they need to add a payment method first (see Step 1)
-- `balance_cents` — show them their current credit balance
+**Architecture note:** The Yappr voice engine runs two VAD layers simultaneously. Platform VAD must always remain enabled — it's what lets the AI hear the audio stream. The three parameters above only affect the local Silero VAD layer used for pipeline-level turn-taking. Do not attempt to disable Platform VAD.
 
 ---
 
-## Step 1: Billing Setup (if needed)
+## Appendix C: Call Guard Presets
 
-If the user has no payment method, generate a Stripe Checkout link:
+Protect against wasted credits from runaway or dead calls.
 
-```bash
-curl -s -X POST \
-  "https://api.goyappr.com/billing/setup" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
+| Setting | Default | What it controls |
+|---------|---------|-----------------|
+| `max_call_duration_secs` | 600 | Hard cap on total call length. `0` = disabled. |
+| `max_continuous_speech_secs` | 120 | Max seconds one party can speak non-stop before hangup. Catches answering machines. `0` = disabled. |
+| `silence_timeout_secs` | 60 | Seconds of caller silence before auto-hangup. Prevents idle/dead calls. |
 
-Tell the user to open the `checkoutUrl` from the response in their browser to add their card. Then poll billing status until `has_payment_method` becomes `true`.
+**Presets:**
 
-If their balance is low (under $1), suggest a top-up — but **always ask for explicit confirmation before charging their card**:
+| Preset | `max_call_duration_secs` | `max_continuous_speech_secs` | `silence_timeout_secs` |
+|--------|------------------------|---------------------------|----------------------|
+| Outbound sales | 600 | 120 | 45 |
+| Inbound support | 900 | 0 (disabled) | 120 |
+| Lead qualification | 480 | 90 | 60 |
 
-> "Your balance is low ($X). Would you like to add $20 to your account? This will charge your saved card."
-
-Only proceed with the top-up API call **after** the user explicitly says yes:
-
-```bash
-curl -s -X POST \
-  "https://api.goyappr.com/billing/topup" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"amount_cents": 2000}'
-```
-
-> ⚠️ **Never trigger a top-up without explicit user approval** — this charges their saved payment method.
+**Symptom translation:**
+- "Calls are expensive / wasting credits" → lower `max_call_duration_secs` and/or `silence_timeout_secs`
+- "Agent keeps talking to answering machines" → lower `max_continuous_speech_secs` to 30–60
+- "Calls get cut off too early" → check if `silence_timeout_secs` or `max_call_duration_secs` is too low
+- "A call ran for 20 minutes and drained credits" → set `max_call_duration_secs` to a reasonable cap
 
 ---
 
-## Step 2: Create or Update an Agent
+## Appendix D: Variable Injection Reference
 
-### 2a. Check for existing agents first
+### Built-in Variables (always available)
 
-**Always silently fetch existing agents before asking anything:**
+| Variable | Value injected |
+|----------|---------------|
+| `{{CallerPhone}}` | Caller's phone number (E.164) |
+| `{{CurrentDate}}` | Today's date (e.g., "March 21, 2026") |
+| `{{CurrentTime}}` | Current time in company timezone |
+| `{{CurrentDateTime}}` | Full ISO timestamp |
+| `{{CurrentDateTime.Asia/Jerusalem}}` | With timezone override (dot notation) |
+| `{{CallDirection}}` | `"inbound"`, `"outbound"`, or `"web_call"` |
+| `{{Timezone}}` | Company's configured timezone |
 
-```bash
-curl -s "https://api.goyappr.com/agents" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '[.data[] | {id, name, voice, language, is_active}]'
+### Pre-Fetch Pattern
+
+Pre-fetch data before calling the Yappr API, inject as variables. This reduces in-call tool usage and latency.
+
+```
+How it works:
+1. dispatch-calls.ts fetches data BEFORE calling POST /api-v1/calls
+2. Data is formatted as a string and passed in the variables dict
+3. Variables are substituted into the system prompt before the call starts
+4. Agent uses pre-loaded data from the prompt; tool is only called as fallback
 ```
 
-**If agents exist**, present them to the user:
-
-> "You already have the following agents:
-> 1. **Noa** — Hebrew, Noa voice (active)
-> 2. **Support Bot** — Hebrew, Michal voice (active)
->
-> Would you like to update one of these, or create a brand new agent?"
-
-- If they want to **update an existing agent** → fetch its full config, show the user what it currently looks like, ask what they want to change, then use `PATCH /agents/:id`. Skip to the patch block below.
-- If they want to **create a new agent** → continue to **step 2b**.
-
-**If no agents exist** → say nothing about it, proceed directly to **step 2b**.
-
-#### Fetching and showing a single agent's full details:
-
-```bash
-curl -s "https://api.goyappr.com/agents/AGENT_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '.'
-```
-
-This returns the **complete agent config** — do not filter fields. The response includes:
-- `name`, `voice`, `language`, `temperature`, `agent_speaks_first`, `greeting_message`
-- `system_prompt` — the full personality/instructions
-- `tools[]` — every attached tool with its full config, including:
-  - `id`, `name`, `type` (`webhook` or `system`)
-  - `config.url`, `config.method`
-  - `config.extraction_parameters[]` — each parameter's `name` and `description`
-  - `execution_order`
-- `webhook_url`, `webhook_events` — call event notifications
-- `is_active`, `created_at`, `updated_at`
-
-Present the relevant fields in plain language:
-- `system_prompt` → "personality/instructions"
-- `temperature` → "creativity level (0 = focused, 1 = creative)"
-- `tools` → "connected webhooks / actions"
-- `extraction_parameters` → "data fields it captures after calls"
-
-If the agent has tools, list each one by name and URL so the user can see exactly what's connected. Then ask what they'd like to change.
-
-#### Update an existing agent:
-
-```bash
-curl -s -X PATCH \
-  "https://api.goyappr.com/agents/AGENT_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"system_prompt": "Updated prompt...", "voice": "Maya"}'
-```
-
-Only include fields the user actually wants to change. After patching, confirm: *"Done! I've updated [agent name] with your changes."*
-
-Patchable fields include all creation fields plus the VAD turn-taking settings (`vad_stop_secs`, `vad_start_secs`, `vad_confidence`), call guard settings (`silence_timeout_secs`, `max_continuous_speech_secs`, `max_call_duration_secs`), and `lead_memory_enabled` — see the **VAD / Turn-Taking Configuration** and **Call Guard Settings** sections above for when and how to tune these.
-
----
-
-### 2b. Configure and create a new agent
-
-This is the core step. Have a conversation with the user to understand what they want their agent to do, then build the configuration.
-
-### Detecting and confirming the agent's language
-
-**The platform is used exclusively by Hebrew speakers.** Most users will want their agent to speak Hebrew — but some may want English or another language for specific use cases.
-
-**How to handle this:**
-
-1. **Detect the language the user is speaking to you in** — if they're writing in Hebrew, assume `language: "he"`. If they're writing in English, assume `language: "en"`.
-2. **Always confirm your assumption explicitly before creating the agent.** Say something like:
-   - (if user wrote in Hebrew) — *"אני מניח שהסוכן ידבר עברית עם המתקשרים — זה נכון, או שתרצה שידבר שפה אחרת?"*
-   - (if user wrote in English) — *"I'll set the agent to speak English — is that right, or should it speak Hebrew or another language?"*
-3. **Only set the language after the user confirms.** Do not silently default.
-
-Supported languages: `he` (Hebrew), `en` (English). Hebrew is the most common choice for this platform.
-
-> **Important for Hebrew agents**: The `system_prompt` and `greeting_message` should be written in Hebrew. The agent's instructions are part of its identity — writing them in English for a Hebrew-speaking agent creates a mismatch. Craft all prompts in the confirmed language.
-
-### Questions to ask (adapt based on context):
-
-1. **"What should your voice agent do?"** — Use their answer to craft a `system_prompt`. Write it in the confirmed language. Write it as instructions to the AI ("אתה נציג שירות לקוחות של..."). Be detailed and specific.
-
-   **For Hebrew agents**: after drafting the prompt, silently apply the **Hebrew Pronunciation Protocol** (see section above) — scan for business names, agent names, and any words with gutturals (ח/כ), generate phonetic transliterations, and append the pronunciation block to the prompt before submitting. This is an automatic prompt-engineering step; no user confirmation needed.
-
-2. **Voice** — Do not ask the user to choose. Use the **Voice Selection Guide** above to pick the best voice for the use case automatically. Mention your choice as a brief statement, not a question: *"I'll give it a warm, friendly voice."* Only offer to change it if the user pushes back.
-
-3. **"Should the agent greet callers first, or wait for them to speak?"**
-   - If yes: ask what the greeting should be — and write it in the agent's confirmed language
-   - `agent_speaks_first: true` + `greeting_message: "..."`
-
-4. **"How creative should responses be?"** — Explain in simple terms:
-   - Low (0.2-0.4): Consistent, predictable responses — good for factual tasks
-   - Medium (0.5): Balanced (default)
-   - High (0.7-1.0): More varied, creative responses — good for casual conversation
-
-5. **"Do you want to be notified when calls happen?"** — This is the **agent-level event webhook**. It's separate from tool webhooks (which fire to log call data). The event webhook notifies *your server or automation platform* in real-time as calls progress.
-
-   Explain it in plain terms:
-   > "If you have a backend system, CRM, or automation (like Make.com or Zapier), I can have the agent send it a notification every time something happens on a call — like when a call starts, ends, or if a transcript is ready."
-
-   **Available events:**
-   - `call.started` — fires when a call begins (inbound ring or outbound dial)
-   - `call.answered` — fires when the caller connects and the AI starts talking
-   - `call.ended` — fires when the call finishes (includes duration)
-   - `call.failed` — fires if the call fails to connect
-   - `call.no_answer` — fires if the call rings but nobody picks up
-   - `transcript.ready` — fires after the call ends with the full conversation transcript
-
-   **Default set** (if they say yes and don't have a preference): `call.started`, `call.answered`, `call.ended`, `call.failed`
-
-   **How to ask intelligently:**
-   - If the user is clearly non-technical ("just set it up for me") → skip this question entirely; leave `webhook_url` as null
-   - If the user mentioned a CRM, backend, or automation tool → proactively ask: *"Would you like the agent to send call events to your [CRM/system]? If so, what URL should it post to?"*
-   - If the user seems technical or is building an integration → ask which events they care about; `transcript.ready` is especially useful for post-call processing
-
-   If they want it, add to the payload:
-   ```python
-   'webhook_url': 'https://their-server.com/webhook',
-   'webhook_events': ['call.started', 'call.answered', 'call.ended', 'call.failed']
-   ```
-   If they don't need it, omit both fields entirely (null is the default).
-
-### Create the agent:
-
-> ⚠️ **Always use the file-based approach** for agent creation. Inline `-d '{...}'` in curl is prone to JSON encoding errors, especially when the system prompt contains Hebrew, special characters, or apostrophes. Write the payload to a temp file with Python, then pass it to curl.
-
-```bash
-# Step 1: Write the payload to a temp file (safe for any characters including Hebrew)
-python3 -c "
-import json
-payload = {
-    'name': 'My Agent',
-    'system_prompt': 'You are...',
-    'voice': 'Michal',
-    'language': 'he',
-    'temperature': 0.5,
-    'agent_speaks_first': True,
-    'greeting_message': 'Hello! How can I help you today?',
-    # VAD / turn-taking — omit these to use the platform defaults (recommended for most agents).
-    # Only include if the user reports the agent cutting them off or responding too slowly.
-    # 'vad_stop_secs': 0.5,      # Silence duration before agent replies (default 0.5s)
-    # 'vad_start_secs': 0.2,     # Speech duration before it counts as an utterance (default 0.2s)
-    # 'silence_timeout_secs': 60,         # Auto-hangup after N seconds of caller silence (default 60)
-    # 'max_continuous_speech_secs': 120,  # Auto-hangup after N seconds non-stop speech (default 120, 0=off)
-    # 'max_call_duration_secs': 600,      # Hard cap on total call length (default 600, 0=off)
-    # 'vad_confidence': 0.7,     # Speech detector confidence threshold (default 0.7)
-    # 'lead_memory_enabled': True,        # Inject matched lead's long-term memory into system prompt (default true)
-    # Include webhook_url and webhook_events ONLY if the user asked for call event notifications.
-    # If they did not ask, omit both fields entirely (null is the default — no overhead).
-    # 'webhook_url': 'https://their-server.com/webhook',
-    # 'webhook_events': ['call.started', 'call.answered', 'call.ended', 'call.failed'],
-    'idempotency_key': 'unique-key-here'
-}
-with open('/tmp/agent-payload.json', 'w', encoding='utf-8') as f:
-    json.dump(payload, f, ensure_ascii=False, indent=2)
-print('Payload written to /tmp/agent-payload.json')
-"
-
-# Step 2: Send the request
-curl -s -X POST \
-  "https://api.goyappr.com/agents" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  --data-binary @/tmp/agent-payload.json | jq .
-```
-
-Save the returned `id` — you'll need it for everything that follows.
-
-Always generate a unique `idempotency_key` (e.g., a UUID) so retries are safe.
-
-### Attach the end_call system tool (required for every agent)
-
-Every agent **must** have the `end_call` system tool attached — this is what allows the agent to hang up the call cleanly. Without it, calls will never terminate properly.
-
-The `end_call` tool UUID is **different per company** — do not hardcode it. Fetch it every time:
-
-```bash
-# Find the end_call system tool for this company
-curl -s "https://api.goyappr.com/tools" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  | jq '.data[] | select(.type == "system") | {id, name}'
-```
-
-Copy the `id` of the tool with `type: "system"` (it will be named something like "End Call"). Then attach it:
-
-```bash
-curl -s -X POST \
-  "https://api.goyappr.com/tools/attach" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"agent_id": "AGENT_ID", "tool_id": "END_CALL_TOOL_ID", "execution_order": 999}'
-```
-
-> Set `execution_order: 999` so the end_call tool is always last in the chain. Do this silently — you don't need to explain it to the user unless they ask. Just confirm: *"Your agent is set up and ready to handle calls."*
-
----
-
-## Step 3: Configure Tools (Optional)
-
-Ask: **"Should your agent send data to a webhook during calls? For example, to log information, create a ticket, or trigger an action in another system?"**
-
-If yes, **silently fetch the user's existing tools first** before creating anything new:
-
-```bash
-curl -s "https://api.goyappr.com/tools" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  | jq '[.data[] | select(.type == "webhook") | {id, name, description}]'
-```
-
-**If webhook tools already exist**, present them:
-
-> "You already have these webhook tools set up:
-> 1. **CRM Logger** — Logs call details to your CRM
-> 2. **Ticket Creator** — Creates a support ticket after each call
->
-> Want to reuse one of these for this agent, or create a new tool?"
-
-- If they want to **reuse an existing tool** → just attach it directly (skip to the attach step). You can also fetch its full config to show the user if they want to review it: `GET /tools/:id`
-- If they want to **update an existing tool** → fetch it, show current config, ask what to change, then `PATCH /tools/:id`
-- If they want to **create a new tool** → continue to **step 3a** below
-
-**If no webhook tools exist** → proceed directly to **step 3a**.
-
-### 3a. Gather configuration from the user
-
-Ask these questions one by one:
-
-1. **"What is the webhook URL?"** — This must be a real, publicly accessible HTTPS URL that accepts POST requests. It cannot be localhost or an internal network address.
-   - If they don't have one yet, suggest a free testing tool: **https://webhook.site** — they open it in a browser and get a unique URL instantly. Great for verifying the payload before wiring up their real system.
-   - If they insist on using a placeholder for now, that's okay — just make sure they understand the tool won't fire during calls until the URL is updated to a real one.
-
-2. **"What information should the agent extract from the conversation?"** — These are **extraction parameters**: pieces of information the AI listens for and pulls out of the conversation. Each one needs:
-   - `name`: a short camelCase English key (e.g. `callerName`, `issueType`) — always camelCase, always English
-   - `description`: a clear instruction to the AI (e.g. "The caller's full name as stated during the call") — can be in Hebrew
-   - Ask the user in plain language: *"What information do you want captured after each call?"* — then translate their answers into extraction parameters.
-   - Common examples: `callerName`, `reason`, `urgency`, `email`, `orderNumber`, `appointmentDate`, `productInterest`
-
-3. **"Do you have any fixed values that should always be sent in the webhook payload?"** — These are **static parameters**: key-value pairs that are always included in the payload regardless of what was said during the call.
-
-   **Each static parameter must be a JSON object with both a `name` and a `value` field:**
-   ```json
-   {"name": "source", "value": "yappr-agent"}
-   {"name": "formId", "value": "contact-form"}
-   {"name": "apiKey", "value": "abc123"}
-   ```
-   ❌ **Wrong** — never write just a value without a name (e.g. `"yappr-agent"` alone, or `{"value": "foo"}`)
-   ✅ **Correct** — always `{"name": "...", "value": "..."}` — both fields are required.
-
-   Useful for things like identifying the agent/channel, or passing API keys required by the receiving service. Most users won't need this — only ask if they mention a CRM integration, form submission, or multi-channel setup. If they don't need it, skip this question silently and omit `static_parameters` from the payload (or pass an empty list).
-
-4. **"Should the payload also include standard call metadata?"** — This is `include_standard_metadata`. When enabled, every webhook payload automatically includes:
-   - `call_id`, `agent_id`, `agent_name`, `company_id`
-   - `call_direction` (inbound / outbound)
-   - `caller_number`, `callee_number`
-   - Default: **yes** — only disable if the user specifically doesn't want it.
-
-5. **"Does your webhook require any custom headers?"** (e.g. `Authorization: Bearer secret123`) — Default: none.
-
-Once you have all the answers, create the tool:
-
-> ⚠️ **Always use the file-based approach** for tool creation — same reason as agents: inline JSON in curl breaks easily with nested structures, special characters, or long descriptions. Use Python to write the payload safely.
-
-> ⚠️ **Payload structure**: `extraction_parameters`, `static_parameters`, and `include_standard_metadata` must be nested inside a `payload_config` object within `config`. Do NOT put them directly in `config` — the API will ignore them and the tool will not work correctly.
-
-```bash
-# Step 1: Write the payload to a temp file
-python3 -c "
-import json
-payload = {
-    # Tool name MUST be camelCase English — e.g. 'crmLogger', 'leadCapture', 'supportTicket'
-    # Do NOT use snake_case ('crm_logger'), spaces ('CRM Logger'), or other formats.
-    'name': 'crmLogger',
-    'description': 'Logs call details to our CRM',
-    'type': 'webhook',
-    'config': {
-        'url': 'https://YOUR_REAL_WEBHOOK_URL',
-        'method': 'POST',
-        'headers': {},
-        'payload_config': {
-            'include_standard_metadata': True,
-            # static_parameters: fixed key-value pairs always sent in the payload.
-            # Each entry MUST have both 'name' and 'value'. Omit the list if none needed.
-            'static_parameters': [
-                {'name': 'source', 'value': 'yappr-agent'},
-                # {'name': 'formId', 'value': 'contact-form'},
-            ],
-            'extraction_parameters': [
-                {'name': 'callerName', 'description': 'The callers full name as stated during the call'},
-                {'name': 'reason', 'description': 'The main reason for the call'}
-            ]
-        }
+**Example — calendar availability:**
+
+```typescript
+// dispatch-calls.ts
+async function dispatchCall(lead: Lead) {
+  // 1. Pre-fetch data
+  const slots = await getAvailableSlots(googleCalendarApi, { days: 3 });
+  const formatted = formatSlots(slots);
+  // e.g. "Mon Apr 14: 10:00, 14:00, 16:00 | Tue Apr 15: 09:00, 11:00"
+
+  // 2. Dispatch call with variables
+  await yapprApi.createCall({
+    agent_id: AGENT_ID,
+    to: lead.phone_number,
+    from: YAPPR_NUMBER,
+    metadata: {
+      lead_id: lead.id,
+      source: lead.source
     },
-    'idempotency_key': 'unique-key-here'
+    variables: {
+      LeadName: lead.name,
+      AvailableSlots: formatted
+    }
+  });
 }
-with open('/tmp/tool-payload.json', 'w', encoding='utf-8') as f:
-    json.dump(payload, f, ensure_ascii=False, indent=2)
-print('Payload written to /tmp/tool-payload.json')
-"
-
-# Step 2: Send the request
-curl -s -X POST \
-  "https://api.goyappr.com/tools" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  --data-binary @/tmp/tool-payload.json | jq .
 ```
 
-Then attach it to the agent:
-
-```bash
-curl -s -X POST \
-  "https://api.goyappr.com/tools/attach" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"agent_id": "AGENT_ID", "tool_id": "TOOL_ID", "execution_order": 0}'
+**In the system prompt:**
+```
+<context>
+Pre-loaded available slots: {{AvailableSlots}}.
+Offer these to the caller first.
+If they ask for a time not listed, use checkAvailability.
+</context>
 ```
 
-> **Multiple tools?** The API accepts **one tool per attach call** — no arrays. If the user wants more than one tool, repeat the full create → attach flow for each one, incrementing `execution_order` by 1 each time (0 for the first tool, 1 for the second, etc.). The `execution_order` controls which tool fires first during a call. Ask the user: *"Should one webhook fire before the other, or does the order not matter?"* — and set `execution_order` accordingly.
+The variable reduces how often the agent needs to call `checkAvailability`. The tool still exists as a fallback for stale data or out-of-list requests.
 
-### 3b. Verify the tool webhook works
+### Passing Variables in metadata vs. variables
 
-Send a test delivery — it hits the tool's configured webhook URL with a sample payload built from the tool's `extraction_parameters`:
-
-```bash
-curl -s -X POST \
-  "https://api.goyappr.com/tools/TOOL_ID/test" \
-  -H "Authorization: Bearer $YAPPR_API_KEY"
+```
+variables  → injected into the system prompt (agent sees this as context)
+metadata   → stored on the call record for post-call automation (agent does NOT see this)
 ```
 
-**Interpreting the result:**
-- `"success": true` + `status_code: 200` → ✅ The webhook URL received the payload successfully. Show the user the `payload_sent` field so they can confirm the shape.
-- `"error": "Webhook delivery failed"` → ❌ The URL did not respond with a 2xx status. Common causes:
-  - The URL doesn't exist or is a placeholder — the tool will silently fail during real calls. Suggest updating it with `PATCH /tools/:id` once they have a real URL.
-  - The server rejected the request (auth header missing, wrong method) — check if custom headers are needed.
-  - The server is down or unreachable — ask the user to verify the URL works independently.
-
-**If the test fails**, explain what it means and let the user decide:
-
-> "Your webhook URL isn't reachable right now, so the tool won't send data during calls. You can update it any time — the agent will still work fine, the tool just won't fire until the URL is valid. Want to fix the URL now, or continue and come back to it later?"
-
-If they want to fix it now, update the tool and re-test:
-
-```bash
-curl -s -X PATCH \
-  "https://api.goyappr.com/tools/TOOL_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"config": {"url": "https://NEW_REAL_URL", "method": "POST"}}'
-
-# Then test again:
-curl -s -X POST \
-  "https://api.goyappr.com/tools/TOOL_ID/test" \
-  -H "Authorization: Bearer $YAPPR_API_KEY"
-```
-
-If they want to continue with a placeholder — that's fine. Move on to Step 4. Remind them they can update the tool URL at any time using `PATCH /tools/:id`.
+Use `metadata` for tracking data (lead IDs, source, CRM record IDs). Use `variables` for per-call context the agent needs to know (lead name, available slots, company context).
 
 ---
 
-## Step 4: Get a Phone Number
+## Appendix E: Disposition Reference
 
-**Only Israeli phone numbers (+972) are supported.** All numbers are mobile numbers billed at **$10/month** via a recurring Stripe subscription charge on the user's saved card — make sure they understand this before purchasing.
+### Default Dispositions (seeded per company)
 
-### 4a. Silently check for existing numbers first
+| Label | Protected | Set by |
+|-------|-----------|--------|
+| No Answer | Yes | System (automatic — set when call is not answered) |
+| Failed | Yes | System (automatic — set on connection error) |
+| Voicemail | Yes | System |
+| Wrong Number | Yes | System |
+| Do Not Call | Yes | System |
+| Interested | No | AI classifier |
+| Not Interested | No | AI classifier |
+| Callback Requested | No | AI classifier |
+| Appointment Set | No | AI classifier |
+| Issue Resolved | No | AI classifier |
 
-**Do not ask the user** if they have a number — just fetch it silently:
+**Protected dispositions:** cannot be deleted. Attempting to delete returns 403. Do not try to recreate them.
 
-```bash
-curl -s "https://api.goyappr.com/phone-numbers" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
-```
+**No Answer and Failed:** auto-set by the platform. The AI classifier does not set these.
 
-**If the response contains existing numbers** (`data` array is non-empty), present them to the user:
+**null disposition:** if AI classification fails (e.g., very short call, unclear outcome), the disposition field is null. Always handle the null case in post-call automation.
 
-> "You already have the following Yappr phone numbers:
-> - +972-50-XXX-XXXX (active)
-> - +972-54-XXX-XXXX (active)
->
-> Would you like to use one of these for your agent, or get a new number?"
+### Custom Dispositions
 
-- If they choose an existing number → skip to **step 4d** (assign the agent).
-- If they want a new number → continue to **step 4b**.
+Create custom dispositions to match your specific use case. Examples:
+- "Qualified Lead" — outbound sales (interested but needs follow-up)
+- "Proposal Sent" — sales pipeline
+- "Escalated" — support triage
+- "Survey Complete" — research campaigns
 
-**If the response has no numbers** (`data` is empty) → say nothing about this, move straight to **step 4b**.
+Colors are optional but help with dashboard readability. Use hex colors.
 
-### 4b. Search for available numbers
-
-omit `areaCode` entirely to get all available Israeli mobile numbers
-
-```bash
-# Without prefix preference — show all available Israeli mobile numbers
-curl -s -X POST \
-  "https://api.goyappr.com/phone-numbers/search" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"limit": 10}' | jq .
-```
-
-Show the user the `numbers` array in a readable list. For each number show the `phoneNumber` and `pricing.priceDisplay` (from the API response). Ask them to pick one:
-
-> "Here are the available numbers:
-> 1. +972-54-XXX-XXXX — $10/month
-> 2. +972-54-XXX-XXXX — $10/month
-> 3. +972-54-XXX-XXXX — $10/month
->
-> Which one would you like?"
-
-
-### 4c. Purchase the chosen number
-
-**Before purchasing, confirm:** *"Purchasing [phone number] will start a $10/month recurring charge on your saved card. Shall I go ahead?"*
-
-```bash
-curl -s -X POST \
-  "https://api.goyappr.com/phone-numbers/purchase" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"phone_number": "+972XXXXXXXXX"}' | jq .
-```
-
-**What happens when you purchase:**
-1. The number is ordered from Telnyx (our telecom provider)
-2. A $10/month Stripe subscription is created and charged to the user's card
-3. The number is registered to the user's account
-4. Voice is automatically configured so it can immediately receive and make calls
-
-> **Note:** If the exact number gets taken between search and purchase (race condition), the system automatically finds an alternative with the same prefix. The purchased number in the response may differ slightly from what was selected — always show the user the actual `phoneNumber` from the response.
-
-**Interpreting the response:**
-- `"status": "active"` → ✅ The number is ready immediately. Move to the configure step.
-- `"status": "pending_requirements"` → ⏳ Regulatory approval is required (standard for Israeli numbers, usually 1–3 business days). The number is reserved and the subscription is active — it will start working once approved. The user can check back later.
-
-### 4d. Assign the agent to the number
-
-The purchase response does not include the number's internal UUID — fetch it from the list:
-
-```bash
-curl -s "https://api.goyappr.com/phone-numbers" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '.data[0]'
-```
-
-Find the record matching the purchased phone number and copy its `id`. Then assign the agent:
-
-```bash
-curl -s -X POST \
-  "https://api.goyappr.com/phone-numbers/configure" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "phone_number_id": "PHONE_NUMBER_UUID",
-    "inbound_agent_id": "AGENT_ID",
-    "outbound_agent_id": "AGENT_ID"
-  }' | jq .
-```
-
-> **Important**: The configure endpoint uses **snake_case** field names — `phone_number_id`, `inbound_agent_id`, `outbound_agent_id`. Using camelCase (`phoneNumberId`) will return a 400 error.
-
-Once configured, tell the user: **"Your agent is now live! Anyone who calls [phone number] will be connected to your AI agent."**
-
-If status was `pending_requirements`, add: **"The number is pending regulatory approval — it should be active within 1–3 business days. Once approved, calls will route to your agent automatically."**
-
----
-
-## Step 5: Test Your Agent (Optional)
-
-There are **two ways** to test the agent. Offer both options:
-
----
-
-### Option A: Web Call (Recommended — no phone number needed)
-
-The easiest way to test. The user opens their agent's page in the Yappr dashboard and clicks the **"Test Call"** button to speak with the agent directly in the browser — no phone required.
-
-Give them the direct link:
-```
-https://app.goyappr.com/he/agents/AGENT_ID
-```
-Replace `AGENT_ID` with the actual agent ID. The page has a built-in call interface — they just click to start talking.
-
-This is the fastest way to hear the agent in action before wiring up a real phone number.
-
----
-
-### Option B: Phone Call (requires a purchased Yappr number)
-
-Ask: **"Want me to call your phone so you can test the agent? What's your number?"**
-
-**Before making the call**, check whether the agent's `system_prompt` contains any custom variables (i.e. `{{VariableName}}` placeholders that are NOT in the reserved list: `CallerPhone`, `CurrentDate`, `CurrentTime`, `CurrentDateTime`, `CallDirection`, `Timezone`).
-
-- **If custom variables are found** — you must ask the user for test values before triggering the call. Example:
-  > "This agent uses `{{LeadName}}` and `{{AvailableSlots}}` in its prompt. What values should I use for this test call? For example: LeadName = 'ישראל', AvailableSlots = 'יום שני 10:00, יום שלישי 14:00'."
-
-  Then include a `variables` object in the call payload:
-
-  ```bash
-  curl -s -X POST \
-    "https://api.goyappr.com/calls" \
-    -H "Authorization: Bearer $YAPPR_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "agent_id": "AGENT_ID",
-      "to": "+972XXXXXXXXX",
-      "from": "+972YYYYYYYYY",
-      "variables": {
-        "LeadName": "ישראל",
-        "AvailableSlots": "יום שני 10:00, יום שלישי 14:00"
-      }
-    }'
-  ```
-
-- **If no custom variables are found** — send the call without a `variables` field:
-
-  ```bash
-  curl -s -X POST \
-    "https://api.goyappr.com/calls" \
-    -H "Authorization: Bearer $YAPPR_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "agent_id": "AGENT_ID",
-      "to": "+972XXXXXXXXX",
-      "from": "+972YYYYYYYYY"
-    }'
-  ```
-
-The `from` number must be the purchased Yappr number. The `to` number is the user's personal phone.
-
-> ⚠️ **CRITICAL**: `to` and `from` must NEVER be the same number. Calling a number from itself creates an infinite call loop. The API will reject this with a 400 error, but always verify these are different before making the call.
-
-Check call status:
-
-```bash
-curl -s "https://api.goyappr.com/calls?limit=1" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '.data[0].status'
-```
-
----
-
-## Managing Existing Resources
-
-When a user asks to change, view, or manage something they already have — always **fetch and present the options first**, then act on their selection. Never ask them to provide an ID manually.
-
-### Agents
-
-**Fetch all agents (summary list):**
-```bash
-curl -s "https://api.goyappr.com/agents" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  | jq '[.data[] | {id, name, voice, language, is_active}]'
-```
-Present the list, let the user pick by name. Then fetch the **complete config** of the chosen one — do not filter fields:
-```bash
-curl -s "https://api.goyappr.com/agents/AGENT_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  | jq '.'
-```
-Present the full config in plain language, including:
-- Personality/instructions (`system_prompt`)
-- Voice, language, greeting, creativity level
-- Connected tools — list each one by name, URL, and extraction parameters
-- Call event webhook (`webhook_url` + `webhook_events`), if set
-- VAD / turn-taking settings (`vad_stop_secs`, `vad_start_secs`, `vad_confidence`), if non-default
-- Call guard settings (`silence_timeout_secs`, `max_continuous_speech_secs`, `max_call_duration_secs`), if non-default
-
-Ask what to change. Then patch only the changed fields:
-```bash
-curl -s -X PATCH \
-  "https://api.goyappr.com/agents/AGENT_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"system_prompt": "Updated...", "voice": "Maya"}'
-```
-
-If the user says the agent interrupts them or responds too slowly, use the VAD fields (see **VAD / Turn-Taking Configuration** section):
-```bash
-# Example: agent cuts callers off → increase vad_stop_secs
-curl -s -X PATCH \
-  "https://api.goyappr.com/agents/AGENT_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"vad_stop_secs": 0.6}'
-```
-
-**Deactivate an agent** (user asks to "disable" or "turn off" an agent):
-```bash
-curl -s -X DELETE \
-  "https://api.goyappr.com/agents/AGENT_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY"
-```
-
----
-
-### Tools
-
-**Fetch all tools** (excluding system tools — those are internal):
-```bash
-curl -s "https://api.goyappr.com/tools" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  | jq '[.data[] | select(.type == "webhook") | {id, name, description}]'
-```
-Present the list, let the user pick. Fetch the chosen tool's **full config** — do not filter fields:
-```bash
-curl -s "https://api.goyappr.com/tools/TOOL_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '.'
-```
-Show the webhook URL, method, and all `payload_config` contents in plain language:
-- Extraction parameters — what the AI captures from the call
-- Static parameters — fixed values always sent
-- Standard metadata — whether call/agent metadata is included
-
-Ask what to change. Then update:
-```bash
-curl -s -X PATCH \
-  "https://api.goyappr.com/tools/TOOL_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"config": {"url": "https://new-url.com/webhook", "method": "POST"}}'
-```
-
-**Test a tool webhook** (after updating, always offer to re-test):
-```bash
-curl -s -X POST \
-  "https://api.goyappr.com/tools/TOOL_ID/test" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
-```
-
-**See which tools are attached to a specific agent:**
-```bash
-curl -s "https://api.goyappr.com/tools?agent_id=AGENT_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  | jq '[.data[] | select(.type == "webhook") | {id, name, execution_order}]'
-```
-
-**Detach a tool from an agent:**
-```bash
-curl -s -X POST \
-  "https://api.goyappr.com/tools/detach" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"agent_id": "AGENT_ID", "tool_id": "TOOL_ID"}'
-```
-
-**Deactivate a tool** (user asks to "remove" or "disable" a tool):
-```bash
-curl -s -X DELETE \
-  "https://api.goyappr.com/tools/TOOL_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY"
-```
-
----
-
-### Phone Numbers
-
-**Fetch all owned numbers:**
-```bash
-curl -s "https://api.goyappr.com/phone-numbers" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  | jq '[.data[] | {id, number, status, agent_id}]'
-```
-Present the list. If the user wants to reassign a number to a different agent:
-```bash
-curl -s -X POST \
-  "https://api.goyappr.com/phone-numbers/configure" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"phone_number_id": "NUMBER_UUID", "inbound_agent_id": "NEW_AGENT_ID", "outbound_agent_id": "NEW_AGENT_ID"}'
-```
-
----
-
-### Calls
-
-**List recent calls (with optional filters):**
-```bash
-curl -s "https://api.goyappr.com/calls?limit=20" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
-```
-
-Available query parameters:
-- `limit` (default: 20, max: 100) — number of results
-- `offset` (default: 0) — pagination offset
-- `agent_id` — filter by specific agent
-- `status` — filter by call status (e.g. `completed`, `failed`)
-- `direction` — filter by `inbound` or `outbound`
-- `from` — start date filter (calls created on or after this date)
-- `to` — end date filter (calls created on or before this date)
-
-**Get a single call's details:**
-```bash
-curl -s "https://api.goyappr.com/calls/CALL_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
-```
-
-Returns: `id`, `agent_id`, `from`, `to`, `direction`, `status`, `started_at`, `ended_at`, `duration_seconds`, `created_at`, `recording_url`. When set, also returns the full **Disposition** object `{id, label, color, position, is_protected, created_at}` and the full **Lead** object `{id, phone_number, name, email, source, tags[full LeadTag], long_term_context, metadata, created_at, updated_at}`.
-
-**Call recordings:**
-- `recording_url` is a permanent signed URL included in call responses when a recording exists.
-- Opening the URL redirects (302) directly to the audio file — no Authorization header needed. Use it as a direct download link, `<audio>` src, or fetch with redirect-following.
-- The redirect target is short-lived (~10 minutes). If expired, fetch the `recording_url` again for a new redirect.
-- The URL contains a cryptographic signature (`?sig=...`) — do not modify or construct these URLs manually.
-
----
-
-### Dispositions
-
-Call dispositions are outcome labels applied to calls (e.g. "Interested", "Not Interested", "Callback Requested").
-
-**List dispositions:**
-```bash
-curl -s "https://api.goyappr.com/dispositions" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
-```
-
-**Create a disposition:**
 ```bash
 curl -s -X POST "https://api.goyappr.com/dispositions" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"label": "Interested", "color": "#22c55e"}'
+  -d '{"label": "Qualified Lead", "color": "#f59e0b"}'
 ```
-
-**Update a disposition:**
-```bash
-curl -s -X PATCH "https://api.goyappr.com/dispositions/DISPOSITION_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"label": "Very Interested", "color": "#16a34a"}'
-```
-
-**Delete a disposition:**
-```bash
-curl -s -X DELETE "https://api.goyappr.com/dispositions/DISPOSITION_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY"
-```
-
-> Protected (system) dispositions cannot be deleted. The API returns a 403 if you try.
-
----
-
-### Leads
-
-Leads are contacts stored in Yappr. Each lead has a phone number, optional name and email, tags, and a `long_term_context` field for AI memory that is injected into the agent's system prompt at call time.
-
-**List leads (with optional search):**
-```bash
-curl -s "https://api.goyappr.com/leads?limit=20&search=john" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
-```
-
-Query parameters: `limit` (default 20, max 100), `offset`, `search` (name/phone/email).
-
-**Get a single lead:**
-```bash
-curl -s "https://api.goyappr.com/leads/LEAD_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
-```
-
-**Create a lead:**
-```bash
-curl -s -X POST "https://api.goyappr.com/leads" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"phone_number": "+972501234567", "name": "John Smith", "email": "john@example.com", "tags": ["VIP", "Hot Lead"]}'
-```
-
-- `phone_number` is required (E.164 format)
-- `tags` accepts tag names (strings) — they are resolved to IDs server-side
-- Alternatively pass `tag_ids` (array of UUIDs)
-
-**Update a lead:**
-```bash
-curl -s -X PATCH "https://api.goyappr.com/leads/LEAD_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "John Smith", "long_term_context": "Interested in the premium plan. Prefers morning calls.", "tags": ["VIP"]}'
-```
-
-Updatable fields: `name`, `email`, `tags` (replaces all), `tag_ids` (replaces all), `long_term_context`, `metadata`.
-
-**Delete a lead (soft delete):**
-```bash
-curl -s -X DELETE "https://api.goyappr.com/leads/LEAD_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY"
-```
-
----
-
-### Lead Tags
-
-Lead tags are a taxonomy for categorizing leads (e.g. "VIP", "Hot Lead", "Do Not Call").
-
-**List tags:**
-```bash
-curl -s "https://api.goyappr.com/lead-tags" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
-```
-
-**Create a tag:**
-```bash
-curl -s -X POST "https://api.goyappr.com/lead-tags" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "VIP", "color": "#f59e0b", "description": "High-value leads"}'
-```
-
-**Update a tag:**
-```bash
-curl -s -X PATCH "https://api.goyappr.com/lead-tags/TAG_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"color": "#d97706"}'
-```
-
-**Delete a tag:**
-```bash
-curl -s -X DELETE "https://api.goyappr.com/lead-tags/TAG_ID" \
-  -H "Authorization: Bearer $YAPPR_API_KEY"
-```
-
-### Shared Links
-
-Shared links let users generate shareable URLs that allow anyone to test a voice agent via the browser without logging in. Calls are billed to the link creator's company.
-
-**URL format:** `https://app.goyappr.com/share/{token}`
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/shared-links` | List all shared links. Optional `?agent_id=` filter |
-| `POST` | `/shared-links` | Create a shared link |
-| `GET` | `/shared-links/:id` | Get a specific shared link |
-| `PATCH` | `/shared-links/:id` | Revoke a shared link |
-
-**Create shared link — `POST /shared-links`**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `agent_id` | uuid | Yes | The agent to create a share link for |
-| `expires_at` | ISO 8601 timestamp | No | When the link expires. Omit for never-expiring links |
-
-**Response fields:**
-
-| Field | Description |
-|-------|-------------|
-| `id` | Shared link ID |
-| `token` | URL token |
-| `url` | Full shareable URL |
-| `agent_id` | Agent ID |
-| `expires_at` | Expiry timestamp or null |
-| `is_revoked` | Whether the link has been revoked |
-| `status` | Computed: "active", "expired", or "revoked" |
-| `created_at` | Creation timestamp |
-
-**Revoke a shared link — `PATCH /shared-links/:id`**
-
-```json
-{ "is_revoked": true }
-```
-
----
-
-## Error Handling
-
-When an API call fails, check the HTTP status:
-
-| Status | Meaning | What to do |
-|--------|---------|------------|
-| 400 | Bad request | Check the error message — a field is missing or invalid |
-| 401 | Auth failed | API key is invalid, expired, or missing required scopes |
-| 402 | Billing error | Insufficient balance or no payment method — guide to billing setup |
-| 404 | Not found | The resource doesn't exist or doesn't belong to this company |
-| 429 | Rate limit | Wait a moment and retry |
-| 500 | Server error | Retry once. If persistent, suggest checking back later |
-
-Always show the error message from the response body to the user in plain language. Don't show raw JSON errors to non-technical users — translate them.
-
----
-
-## Communication Style
-
-Many users of this skill may not be technically experienced. Adapt your language:
-
-- Say "phone number" not "E.164 format"
-- Say "creativity level" not "temperature"
-- Say "the agent's personality and instructions" not "system prompt"
-- Say "your balance" not "balance_cents"
-- When showing prices, convert cents to dollars (e.g., 1000 cents = $10.00)
-- If something fails, explain what happened and what they can do about it — don't just show an error code
-
----
-
-## Free Developer Help
-
-If the user seems **frustrated, stuck, or blocked** at any point — whether it's a configuration issue, an API error they can't resolve, or they just don't know how to proceed — offer them a free consultation call with Yappr's senior developers:
-
-> "It looks like you're running into something tricky. I can connect you with one of Yappr's senior developers for a **free consultation call** — they'll help you get everything set up at no charge. Want to book a time?"
-
-Booking link: **https://cal.com/yappr/skill-dev-consultation**
-
-This offer is appropriate when:
-- The user has tried something 2+ times and it still isn't working
-- They express confusion, frustration, or say things like "I give up", "I don't understand", "this isn't working"
-- They're dealing with a technical issue outside the scope of this skill (e.g., custom webhook configuration, Stripe issues, complex agent logic)
-- They ask "can someone help me?" or "is there support?"
-
-Always frame it as a genuine offer of help, not a sales pitch.
