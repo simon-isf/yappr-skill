@@ -211,13 +211,16 @@ Deno.serve(async (req: Request) => {
 
   switch (event) {
     case "call.analyzed": {
-      // Fetch full call data — webhook payload is minimal
-      // (no lead object, no full disposition, no metadata)
+      // Webhook payload includes: direction, status, from/to numbers, duration,
+      // disposition, summary, transcript, and extracted_data (if extraction
+      // parameters are configured on the agent).
+      // For the full call record (lead object, metadata, cost): GET /calls/:id.
       const callData = await fetchYapprCall(callId);
       if (!callData) {
         console.error(`Could not fetch call ${callId} from Yappr`);
         return new Response(JSON.stringify({ ok: false, error: "call fetch failed" }), { status: 200 });
       }
+      // Access extracted values: payload.data?.extracted_data?.customerName, etc.
       await handleCallCompleted(callData, supabase);
       break;
     }

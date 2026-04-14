@@ -124,6 +124,7 @@ Fetch complete config of a single agent.
   "greeting_message": "string | null",
   "webhook_url": "string | null",
   "webhook_events": ["call.started", "call.answered", "call.ended", "call.failed", "call.no_answer", "transcript.ready", "call.analyzed"],
+  "extraction_parameters": [{"name": "camelCaseName", "description": "AI instruction for what to extract from the call"}],
   "vad_stop_secs": 0.5,
   "vad_start_secs": 0.2,
   "vad_confidence": 0.7,
@@ -168,6 +169,7 @@ Create a new agent.
 | `greeting_message` | string | no | Required if `agent_speaks_first: true` |
 | `webhook_url` | string | no | Valid HTTPS URL |
 | `webhook_events` | string[] | no | Array of valid event names |
+| `extraction_parameters` | array | no | Each item: `{ "name": "camelCase", "description": "what to extract" }`. Values extracted from call transcript and included in `call.analyzed` webhook + stored on call log. |
 | `vad_stop_secs` | float | no | 0.05–5.0, default 0.5 |
 | `vad_start_secs` | float | no | 0.05–2.0, default 0.2 |
 | `vad_confidence` | float | no | 0.0–1.0, default 0.7 |
@@ -1014,7 +1016,7 @@ Configure on agent: `webhook_url` (HTTPS URL) + `webhook_events` (array of event
 | `call.no_answer` | Call rings but nobody picks up | `direction`, `from_number`, `to_number` |
 | `call.failed` | Call fails to connect or errors | `direction`, `from_number`, `to_number`, `error` |
 | `transcript.ready` | Transcript saved after call ends (legacy — prefer `call.analyzed`) | `transcript` |
-| `call.analyzed` | Full AI pipeline complete: transcript + disposition + summary | `direction`, `status`, `from_number`, `to_number`, `duration_seconds`, `disposition` (label string or null), `summary`, `transcript` |
+| `call.analyzed` | Full AI pipeline complete: transcript + disposition + summary + extraction | `direction`, `status`, `from_number`, `to_number`, `duration_seconds`, `disposition` (label string or null), `summary`, `transcript`, `extracted_data` (object with agent's extraction parameter values, or absent if none configured) |
 
 **Default recommended set:** `call.no_answer`, `call.failed`, `call.analyzed`
 
