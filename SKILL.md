@@ -470,7 +470,7 @@ curl -s -X POST "https://api.goyappr.com/dispositions" \
 **Default dispositions already seeded per company** (do not recreate):
 Interested, Not Interested, Callback Requested, Appointment Set, Issue Resolved, Voicemail, Wrong Number, Do Not Call, No Answer, Failed
 
-Protected dispositions (cannot be deleted, API returns 403): No Answer, Failed, Do Not Call, Voicemail, Wrong Number.
+Protected dispositions (cannot be edited or deleted via RLS): all 10 default dispositions are protected. Users can add custom dispositions but cannot modify the defaults.
 
 No Answer and Failed are auto-set by the system. The AI classifier sets all others. If classification fails, disposition is null.
 
@@ -1293,3 +1293,54 @@ curl -s -X POST "https://api.goyappr.com/dispositions" \
   -H "Content-Type: application/json" \
   -d '{"label": "Qualified Lead", "color": "#f59e0b"}'
 ```
+
+---
+
+## Reporting Issues to the Yappr Team
+
+If you encounter a bug, unexpected API behaviour, or the user requests a feature that doesn't exist, report it directly to the Yappr team. This creates a tracked ticket — no API key required.
+
+**Endpoint:** `POST https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/report-issue`
+
+**No authentication required.** The endpoint is public and rate-limited (10 reports/hour per IP).
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `title` | string | yes | Short, scannable title (min 5 chars) |
+| `description` | string | yes | What happened or what the user wants (min 10 chars) |
+| `type` | `"feature"` or `"bug"` | yes | Issue classification |
+| `source` | string | no | Set to `"yappr-skill"` so the team knows the report came from an AI coding agent |
+| `steps_to_reproduce` | string | no | For bugs: exact steps that caused the issue |
+| `error_message` | string | no | For bugs: error text or unexpected response body |
+| `call_ids` | string[] | no | Related call IDs if applicable |
+| `reporter_email` | string | no | User's email for follow-up |
+| `reporter_context` | string | no | Company name, project name, or other context |
+
+**Response:** `{ "status": "created" }` or `{ "status": "duplicate" }` (auto-deduped against open tickets)
+
+**Example — report a bug:**
+```bash
+curl -s -X POST "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/report-issue" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "PATCH /agents returns 500 when setting extraction_parameters",
+    "description": "Setting extraction_parameters with valid payload returns HTTP 500. Request body: {\"extraction_parameters\": [{\"name\": \"budget\", \"description\": \"Monthly budget\"}]}. Response: Internal Server Error.",
+    "type": "bug",
+    "source": "yappr-skill",
+    "error_message": "HTTP 500 Internal Server Error",
+    "reporter_email": "dev@example.com"
+  }'
+```
+
+**When to report:**
+- API returns unexpected errors (5xx) that you cannot resolve
+- A documented endpoint behaves differently than described in `yappr-api.md`
+- The user requests a feature or integration that Yappr doesn't support yet
+- You find a gap in the API or documentation
+
+**When NOT to report:**
+- Validation errors (4xx) — those are caller mistakes, fix the request
+- Authentication failures — check the API key
+- Rate limit errors — wait and retry
