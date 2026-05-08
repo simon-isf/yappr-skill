@@ -1,0 +1,155 @@
+{
+  "_template_meta": {
+    "name": "lead-qualification",
+    "description": "Outbound lead-qualification call. Routes the caller to hot/warm/cold paths based on their answers, then either books a follow-up, schedules a callback, or marks them DNC. Webhook fires post-call to update CRM.",
+    "required_tools": [
+      { "placeholder": "<TOOL_ID_NOTIFY_CRM>", "type": "webhook", "method": "POST" }
+    ]
+  },
+  "flow_config_version": "1",
+  "metadata": { "purpose": "BANT-lite qualification + handoff" },
+  "nodes": [
+    { "id": "start", "type": "start", "next_step_id": "greet_and_introduce" },
+
+    {
+      "id": "greet_and_introduce",
+      "type": "conversation",
+      "name": "Greet and introduce why you're calling",
+      "instructions": "Greet by name. State who you are and the ONE-line reason for the call. Ask if it's a good time to talk for 2 minutes.",
+      "transitions": [
+        { "id": "yes_good_time",  "label": "Caller said yes, has 2 minutes", "next_step_id": "qualify_pain" },
+        { "id": "no_call_back",   "label": "Caller is busy, asked to be called another time", "next_step_id": "schedule_callback" },
+        { "id": "not_interested", "label": "Caller is not interested at all, wants to be removed", "next_step_id": "mark_dnc_and_end" },
+        { "id": "wrong_person",   "label": "Wrong person, ask for the right one", "next_step_id": "polite_end_wrong_person" }
+      ]
+    },
+
+    {
+      "id": "qualify_pain",
+      "type": "conversation",
+      "name": "Probe the pain / need",
+      "instructions": "Ask one open-ended question about their current situation related to our offering. Listen for: signal of pain, scale (small/mid/large), and timing (now/soon/later). Capture into slots: 'pain_signal' (string), 'scale' (string), 'timing' (string).",
+      "transitions": [
+        { "id": "hot",    "label": "Caller has a clear pain AND timing is now/soon", "next_step_id": "hot_path" },
+        { "id": "warm",   "label": "Caller has some interest but no urgency", "next_step_id": "warm_path" },
+        { "id": "cold",   "label": "Caller has no real need or fit", "next_step_id": "cold_path" }
+      ]
+    },
+
+    {
+      "id": "hot_path",
+      "type": "conversation",
+      "name": "Hot lead — book a follow-up",
+      "instructions": "The caller is qualified. Briefly confirm the value prop, then propose a 15-min discovery call with a sales rep. Get their preferred time.",
+      "transitions": [
+        { "id": "booked",        "label": "Caller agreed to a follow-up call and gave a time", "next_step_id": "hot_end" },
+        { "id": "wants_info",    "label": "Caller wants to receive info first by email/WhatsApp", "next_step_id": "warm_path" },
+        { "id": "objection",     "label": "Caller has an objection that needs handling", "next_step_id": "handle_objection" }
+      ]
+    },
+
+    {
+      "id": "handle_objection",
+      "type": "conversation",
+      "name": "Acknowledge and respond to objection",
+      "instructions": "Acknowledge the objection without saying 'I understand' robotically. Respond once. Then ask: would they like to learn more, or should we end here?",
+      "transitions": [
+        { "id": "convinced", "label": "Caller is convinced, willing to book", "next_step_id": "hot_path" },
+        { "id": "still_no",  "label": "Caller still says no", "next_step_id": "cold_path" }
+      ]
+    },
+
+    {
+      "id": "warm_path",
+      "type": "conversation",
+      "name": "Warm lead — schedule callback later",
+      "instructions": "Thank them. Ask when would be a better time to follow up (in days/weeks). Get a specific window.",
+      "transitions": [
+        { "id": "got_window", "label": "Caller gave a callback window", "next_step_id": "warm_end" },
+        { "id": "no_window",  "label": "Caller declined to give a window", "next_step_id": "cold_path" }
+      ]
+    },
+
+    {
+      "id": "cold_path",
+      "type": "conversation",
+      "name": "Cold — polite close",
+      "instructions": "Thank them politely. Ask if it's ok to remove them from outreach, OR if they'd prefer occasional updates.",
+      "transitions": [
+        { "id": "remove",   "label": "Caller wants to be removed from all outreach", "next_step_id": "mark_dnc_and_end" },
+        { "id": "keep_low", "label": "Caller is fine with occasional updates", "next_step_id": "cold_end" }
+      ]
+    },
+
+    {
+      "id": "schedule_callback",
+      "type": "conversation",
+      "name": "Schedule a callback",
+      "instructions": "Apologize for the bad timing. Ask for a specific day and time to call back. Confirm before ending.",
+      "transitions": [
+        { "id": "got_callback", "label": "Caller gave a callback time", "next_step_id": "callback_end" }
+      ]
+    },
+
+    {
+      "id": "hot_end",
+      "type": "end",
+      "farewell": "Excellent. You'll get a calendar invite shortly. Talk to you then.",
+      "post_end_step_ids": ["extract_outcome", "notify_crm"]
+    },
+    {
+      "id": "warm_end",
+      "type": "end",
+      "farewell": "Thanks for the time. We'll be in touch.",
+      "post_end_step_ids": ["extract_outcome", "notify_crm"]
+    },
+    {
+      "id": "cold_end",
+      "type": "end",
+      "farewell": "Thanks for chatting. Have a great day.",
+      "post_end_step_ids": ["extract_outcome", "notify_crm"]
+    },
+    {
+      "id": "callback_end",
+      "type": "end",
+      "farewell": "Got it, I'll call you back then. Have a great day.",
+      "post_end_step_ids": ["extract_outcome", "notify_crm"]
+    },
+    {
+      "id": "mark_dnc_and_end",
+      "type": "end",
+      "farewell": "Understood, I'll remove you from our list. Sorry for the disturbance.",
+      "post_end_step_ids": ["extract_outcome", "notify_crm"]
+    },
+    {
+      "id": "polite_end_wrong_person",
+      "type": "end",
+      "farewell": "Sorry to bother you, have a great day.",
+      "post_end_step_ids": ["extract_outcome", "notify_crm"]
+    },
+
+    {
+      "id": "extract_outcome",
+      "type": "structured_output",
+      "name": "qualification_outcome",
+      "extraction_prompt": "Classify the outcome and extract qualification signals.",
+      "schema_fields": [
+        { "name": "outcome", "type": "string", "required": true, "description": "hot_booked | warm_callback | cold | dnc | wrong_person | no_answer" },
+        { "name": "callback_iso", "type": "string", "required": false },
+        { "name": "pain_signal", "type": "string", "required": false },
+        { "name": "scale", "type": "string", "required": false },
+        { "name": "timing", "type": "string", "required": false },
+        { "name": "objection", "type": "string", "required": false }
+      ]
+    },
+
+    {
+      "id": "notify_crm",
+      "type": "webhook",
+      "webhook_url": "<WEBHOOK_URL_NOTIFY_CRM>",
+      "method": "POST",
+      "include_transcription": true,
+      "include_structured_output": true
+    }
+  ]
+}

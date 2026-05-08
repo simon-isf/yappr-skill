@@ -1,0 +1,186 @@
+{
+  "_template_meta": {
+    "name": "booking-google-calendar",
+    "description": "Inbound appointment booking with Google Calendar availability check + create. Hebrew-friendly. Replace the GCal tool_id placeholders with the IDs returned by your /tools POSTs.",
+    "required_tools": [
+      { "placeholder": "<TOOL_ID_CHECK_AVAILABILITY>", "type": "integration", "action": "check_availability" },
+      { "placeholder": "<TOOL_ID_CREATE_EVENT>", "type": "integration", "action": "create_event" },
+      { "placeholder": "<TOOL_ID_NOTIFY_HUMAN>", "type": "webhook", "method": "POST" }
+    ]
+  },
+  "flow_config_version": "1",
+  "metadata": {
+    "purpose": "Book a 30-min appointment in the company calendar",
+    "expected_call_duration_secs": 120
+  },
+  "nodes": [
+    { "id": "start", "type": "start", "next_step_id": "greet_and_collect_intent" },
+
+    {
+      "id": "greet_and_collect_intent",
+      "type": "conversation",
+      "name": "Greet and ask what's needed",
+      "instructions": "Greet the caller warmly. Ask what kind of appointment they need and roughly when. ONE question at a time, no list.",
+      "transitions": [
+        { "id": "got_topic_and_window", "label": "Caller said what they need AND a time window", "next_step_id": "collect_specific_time" },
+        { "id": "only_topic",           "label": "Caller said what they need but no time window", "next_step_id": "collect_specific_time" },
+        { "id": "wants_human",          "label": "Caller wants to talk to a human, not book", "next_step_id": "transfer_to_team" },
+        { "id": "wrong_number",         "label": "Caller dialed by mistake or has the wrong company", "next_step_id": "polite_end" }
+      ]
+    },
+
+    {
+      "id": "collect_specific_time",
+      "type": "conversation",
+      "name": "Get a specific date and time",
+      "instructions": "Get a SPECIFIC date and time (not a range). If the caller says 'sometime next week', narrow them down to a day. Capture the requested datetime into slot 'requested_start_iso' (ISO-8601 in caller's timezone). Confirm back what you heard before proceeding.",
+      "transitions": [
+        { "id": "got_specific", "label": "Caller gave a specific date and time, confirmed", "next_step_id": "check_avail" },
+        { "id": "still_vague",  "label": "Caller is still vague or needs help deciding", "next_step_id": "suggest_default_slots" }
+      ]
+    },
+
+    {
+      "id": "suggest_default_slots",
+      "type": "conversation",
+      "name": "Offer 2-3 default slots",
+      "instructions": "Offer 2-3 sensible default slots within business hours over the next 5 business days. Pick one with the caller.",
+      "transitions": [
+        { "id": "picked_slot", "label": "Caller picked one of the suggested slots", "next_step_id": "check_avail" },
+        { "id": "all_no_good", "label": "None of the suggested slots work for the caller", "next_step_id": "transfer_to_team" }
+      ]
+    },
+
+    {
+      "id": "check_avail",
+      "type": "tool_call",
+      "name": "Check calendar availability",
+      "tool_id": "<TOOL_ID_CHECK_AVAILABILITY>",
+      "args_template": {
+        "start_time": "{{requested_start_iso}}",
+        "end_time": "{{requested_end_iso}}"
+      },
+      "transitions": {
+        "success_next_step_id": "confirm_with_caller",
+        "error_next_step_id": "apologize_and_handoff",
+        "custom": [
+          {
+            "id": "no_avail",
+            "label": "Slot is not available",
+            "jsonpath": "$.available",
+            "equals": "false",
+            "next_step_id": "suggest_default_slots"
+          }
+        ]
+      }
+    },
+
+    {
+      "id": "confirm_with_caller",
+      "type": "conversation",
+      "name": "Confirm before booking",
+      "instructions": "Read back the date, time, and purpose. Ask the caller to confirm before we book it.",
+      "transitions": [
+        { "id": "confirmed", "label": "Caller confirmed", "next_step_id": "create_event_node" },
+        { "id": "wants_change", "label": "Caller wants to change the date or time", "next_step_id": "collect_specific_time" }
+      ]
+    },
+
+    {
+      "id": "create_event_node",
+      "type": "tool_call",
+      "name": "Create the calendar event",
+      "tool_id": "<TOOL_ID_CREATE_EVENT>",
+      "args_template": {
+        "summary": "{{appointment_topic}} — {{lead.name}}",
+        "start_time": "{{requested_start_iso}}",
+        "end_time": "{{requested_end_iso}}",
+        "description": "Booked by Yappr voice agent.",
+        "attendees": ["{{lead.email}}"]
+      },
+      "transitions": {
+        "success_next_step_id": "say_done",
+        "error_next_step_id": "apologize_and_handoff"
+      }
+    },
+
+    {
+      "id": "say_done",
+      "type": "conversation",
+      "name": "Confirm and offer next steps",
+      "instructions": "Confirm the booking is done. Tell them they'll get a calendar invite by email. Ask if there's anything else.",
+      "transitions": [
+        { "id": "all_good", "label": "Caller has nothing else, ready to hang up", "next_step_id": "polite_end" },
+        { "id": "more_question", "label": "Caller has another question or request", "next_step_id": "transfer_to_team" }
+      ]
+    },
+
+    {
+      "id": "transfer_to_team",
+      "type": "transfer",
+      "transfer_to": "+972000000000",
+      "transfer_message": "One moment, connecting you to our team."
+    },
+
+    {
+      "id": "apologize_and_handoff",
+      "type": "conversation",
+      "name": "Apologize for tool failure",
+      "instructions": "The calendar action failed. Apologize briefly, take down the caller's preferred date/time, tell them someone will call back to confirm.",
+      "transitions": [
+        { "id": "got_handoff_info", "label": "Caller gave their preferred time and is ok with callback", "next_step_id": "handoff_end" }
+      ]
+    },
+
+    {
+      "id": "handoff_end",
+      "type": "end",
+      "farewell": "Thank you for calling. Someone will call you back to confirm your appointment shortly. Have a great day.",
+      "is_literal": false,
+      "post_end_step_ids": ["extract_handoff_summary", "notify_human_handoff"]
+    },
+
+    {
+      "id": "polite_end",
+      "type": "end",
+      "farewell": "Thanks for calling, have a great day.",
+      "is_literal": false,
+      "post_end_step_ids": ["extract_booking_summary"]
+    },
+
+    {
+      "id": "extract_booking_summary",
+      "type": "structured_output",
+      "name": "booking_summary",
+      "extraction_prompt": "Extract the booking outcome from the transcript.",
+      "schema_fields": [
+        { "name": "outcome", "type": "string", "required": true, "description": "booked | declined | no_show_handoff | wrong_number | unknown" },
+        { "name": "appointment_topic", "type": "string", "required": false },
+        { "name": "appointment_iso", "type": "string", "required": false },
+        { "name": "caller_name", "type": "string", "required": false }
+      ]
+    },
+
+    {
+      "id": "extract_handoff_summary",
+      "type": "structured_output",
+      "name": "handoff_summary",
+      "extraction_prompt": "Capture what the human team needs to call back about.",
+      "schema_fields": [
+        { "name": "preferred_time", "type": "string", "required": false },
+        { "name": "topic", "type": "string", "required": false },
+        { "name": "caller_phone", "type": "string", "required": false },
+        { "name": "caller_name", "type": "string", "required": false }
+      ]
+    },
+
+    {
+      "id": "notify_human_handoff",
+      "type": "webhook",
+      "webhook_url": "<WEBHOOK_URL_NOTIFY_HUMAN>",
+      "method": "POST",
+      "include_transcription": true,
+      "include_structured_output": true
+    }
+  ]
+}

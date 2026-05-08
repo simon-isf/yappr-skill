@@ -1,0 +1,108 @@
+{
+  "_template_meta": {
+    "name": "rsvp",
+    "description": "Hebrew wedding RSVP flow. Outbound call asks attendance, count, dietary needs. Localized for Hebrew (instructions in Hebrew, voice='Zephyr', language='he').",
+    "required_tools": [
+      { "placeholder": "<TOOL_ID_NOTIFY_HOST>", "type": "webhook", "method": "POST" }
+    ]
+  },
+  "flow_config_version": "1",
+  "metadata": { "purpose": "Wedding RSVP — attendance + count + dietary" },
+  "nodes": [
+    { "id": "start", "type": "start", "next_step_id": "ask_attendance" },
+
+    {
+      "id": "ask_attendance",
+      "type": "conversation",
+      "name": "ברך ושאל אם מגיעים",
+      "instructions": "ברך בחום. ספר על החתונה (תאריך + מקום + שמות הזוג) במשפט אחד. שאל אם מגיעים. שאלה אחת בלבד, אל תכניס שאלות נוספות.",
+      "transitions": [
+        { "id": "coming",      "label": "האורח אישר שהוא מגיע",                     "next_step_id": "ask_count" },
+        { "id": "not_coming",  "label": "האורח אמר שלא יגיע",                       "next_step_id": "thank_no_show" },
+        { "id": "maybe",       "label": "האורח לא בטוח / יענה אחר כך",                "next_step_id": "thank_undecided" }
+      ]
+    },
+
+    {
+      "id": "ask_count",
+      "type": "conversation",
+      "name": "כמה אורחים",
+      "instructions": "שאל בעדינות בכמה אנשים יגיעו (כולל האורח עצמו). קלוט את המספר לתוך הסלוט 'guest_count'.",
+      "transitions": [
+        { "id": "got_count", "label": "האורח אמר מספר ספציפי", "next_step_id": "ask_dietary" }
+      ]
+    },
+
+    {
+      "id": "ask_dietary",
+      "type": "conversation",
+      "name": "צרכי תפריט מיוחדים",
+      "instructions": "שאל אם מישהו מהאורחים צריך מנה מיוחדת — בד\"ץ, צמחוני, טבעוני, או אלרגיות. אם כן, ברר כמה ומאיזה סוג. קלוט לסלוט 'dietary_notes'.",
+      "transitions": [
+        { "id": "no_special", "label": "אין צרכים מיוחדים",                "next_step_id": "say_goodbye" },
+        { "id": "has_special","label": "יש צרכים מיוחדים, האורח פירט אותם", "next_step_id": "say_goodbye" }
+      ]
+    },
+
+    {
+      "id": "thank_no_show",
+      "type": "conversation",
+      "name": "תודה שעדכן שלא מגיע",
+      "instructions": "תודה לו על העדכון. אמור משהו לבבי קצר (לא מקצועי-יבש). הודע שהזוג יראה את התשובה.",
+      "transitions": [
+        { "id": "ready_end", "label": "האורח השיב בקצרה ואפשר לסגור", "next_step_id": "polite_end" }
+      ]
+    },
+
+    {
+      "id": "thank_undecided",
+      "type": "conversation",
+      "name": "מחכים לתשובה",
+      "instructions": "אמור שאין בעיה, ושנחזור לקראת האירוע. שאל מתי נוח לחזור אליו.",
+      "transitions": [
+        { "id": "got_callback_time", "label": "האורח אמר מתי לחזור אליו", "next_step_id": "polite_end" },
+        { "id": "no_callback_time",  "label": "לא רוצה שיחזרו, יענה לבד",   "next_step_id": "polite_end" }
+      ]
+    },
+
+    {
+      "id": "say_goodbye",
+      "type": "conversation",
+      "name": "פרידה חמה",
+      "instructions": "אמור פרידה חמה ואישית. הזכר שמתרגשים לראות אותם בחתונה. אל תמשיך את השיחה.",
+      "transitions": [
+        { "id": "ready_end", "label": "האורח השיב, מוכן לסגור", "next_step_id": "polite_end" }
+      ]
+    },
+
+    {
+      "id": "polite_end",
+      "type": "end",
+      "farewell": "תודה רבה ולהתראות.",
+      "is_literal": true,
+      "post_end_step_ids": ["extract_rsvp", "notify_host"]
+    },
+
+    {
+      "id": "extract_rsvp",
+      "type": "structured_output",
+      "name": "rsvp_outcome",
+      "extraction_prompt": "סכם את התשובה של האורח לחתונה.",
+      "schema_fields": [
+        { "name": "attendance", "type": "string", "required": true, "description": "coming | not_coming | undecided" },
+        { "name": "guest_count", "type": "number", "required": false },
+        { "name": "dietary_notes", "type": "string", "required": false },
+        { "name": "callback_time", "type": "string", "required": false }
+      ]
+    },
+
+    {
+      "id": "notify_host",
+      "type": "webhook",
+      "webhook_url": "<WEBHOOK_URL_NOTIFY_HOST>",
+      "method": "POST",
+      "include_transcription": false,
+      "include_structured_output": true
+    }
+  ]
+}
