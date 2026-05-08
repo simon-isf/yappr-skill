@@ -1475,13 +1475,11 @@ Same validation as POST. Plus:
       "id": "create_event",
       "type": "tool_call",
       "name": "Book the calendar event",
+      // tool_call nodes have NO args_template — tool args are owned by the
+      // tool's payload_config (static_parameters + extraction_parameters).
+      // The same tool used by N flow nodes always sends the same args.
       "tool_id": "<tool uuid from /tools>",
       "config_override": {},
-      "args_template": {
-        "summary": "{{lead.name}} appointment",
-        "start_time": "{{appointment.start_iso}}",
-        "end_time": "{{appointment.end_iso}}"
-      },
       "transitions": {
         "success_next_step_id": "confirm_node",
         "error_next_step_id": "apologize_node",
@@ -1542,11 +1540,64 @@ Constraints validated server-side: see "Save validation (`FLOW_INVALID`)" below.
 
 ## `integration_call` node
 
-A flow node that calls an OAuth-backed integration directly (Google Calendar, Gmail) without going through the `tools` table. Unlike `tool_call`, the integration config — provider, account, action, args — lives **on the node itself**. The runtime renders `args_template` against `slot_values` and dispatches against the provider client. Routing semantics are identical to `tool_call`: `success` / `error` / `custom[]`, deterministic, exactly one out-edge per fire, no LLM involved.
+A flow node that calls an OAuth-backed integration directly (Google Calendar, Gmail) without going through the `tools` table. Unlike `tool_call`, the integration config — provider, account, action, args — lives **on the node itself**. The runtime resolves each entry in `args_template` per its declared mode and dispatches against the provider client. Routing semantics are identical to `tool_call`: `success` / `error` / `custom[]`, deterministic, exactly one out-edge per fire, no LLM involved.
 
 **Use this when** the action is a first-class capability of a managed integration (book a calendar event, send an email). **Use `tool_call`** for anything that's a custom webhook, a system action, or a tool you already have in the `tools` table.
 
-### Schema
+### `args_template` — the 3-mode `ArgValue` union
+
+Every entry in `args_template` is an `ArgValue` — a discriminated union with three writable shapes plus a string shorthand for literals:
+
+```jsonc
+{
+  "args_template": {
+    // 1) literal — bare string is shorthand for {mode:'literal', value:...}
+    "subject": "Your appointment is booked",
+
+    // 2) literal — explicit form (use when you want to be unambiguous)
+    "html": { "mode": "literal", "value": "false" },
+
+    // 3) ai_extract — the live agent runtime extracts this arg from the
+    //    conversation right before the action fires. The runtime decides
+    //    which utterance the slot binds to using `description`.
+    "to": { "mode": "ai_extract",
+            "description": "Caller's email address as they spelled it out" },
+
+    // 4) variable — pull a previously-extracted value from another
+    //    integration_call node's ai_extract slot. Used when the same value
+    //    needs to flow into multiple integration calls.
+    "start_time": { "mode": "variable",
+                    "source_node_id": "collect_slot",
+                    "source_arg_name": "start_iso" },
+
+    // 5) variable from call metadata — special namespace `__call__` (see below)
+    "body": { "mode": "variable",
+              "source_node_id": "__call__",
+              "source_arg_name": "user_number" }
+  }
+}
+```
+
+**Mode rules:**
+- `literal` — value is sent as-is. Bare-string shorthand is equivalent to `{mode:'literal', value:'<the string>'}`.
+- `ai_extract` — runtime fills the slot from the conversation. `description` is required (used to guide extraction).
+- `variable` — references a value extracted elsewhere. The `source_node_id` is the id of an `integration_call` node earlier in the flow, and `source_arg_name` is one of that node's `ai_extract` arg names. `tool_call` nodes are NOT valid as a `source_node_id` — their args live on the tool config, not on the node, and aren't addressable as per-node slots.
+
+#### `__call__` — call-metadata namespace for variable mode
+
+When `source_node_id === "__call__"`, the variable resolves against per-call metadata instead of another node's slot. Whitelisted `source_arg_name` values:
+
+| Key | Value |
+|-----|-------|
+| `id` | The call id (matches `GET /calls/:id`). |
+| `direction` | `"inbound"`, `"outbound"`, or `"web"`. |
+| `agent_number` | The platform's leg of the call (number we own). Direction-aware. |
+| `user_number` | The human's leg. Direction-aware. |
+| `agent_name` | Agent display name. |
+
+Direction details: for inbound calls the caller is the user and the callee is the agent; for outbound the caller is the agent. The `agent_number` / `user_number` derivation hides this so you don't have to special-case direction. Anything outside this whitelist returns `args_template_variable_missing_source` at save time.
+
+### Node shape
 
 ```jsonc
 {
@@ -1558,10 +1609,12 @@ A flow node that calls an OAuth-backed integration directly (Google Calendar, Gm
   "provider": "google_calendar",          // 'google_calendar' | 'gmail' — locked at creation
   "integration_id": "<uuid>",             // FK to integrations.id, must be active in caller's company
   "action": "create_event",               // provider-scoped — see catalog below
-  "args_template": {                      // Mustache: {{slot.x}} placeholders
-    "summary": "{{lead.name}} appointment",
-    "start_time": "{{appointment.start_iso}}",
-    "end_time": "{{appointment.end_iso}}"
+  "args_template": {                      // ArgValue union, see above
+    "summary": "Consultation booking",
+    "start_time": { "mode": "ai_extract",
+                    "description": "ISO-8601 start time the caller agreed on" },
+    "end_time":   { "mode": "ai_extract",
+                    "description": "ISO-8601 end time, 30 minutes after start" }
   },
   "pre_fire_announcement": "One moment while I check the calendar.",  // optional
 
@@ -1609,11 +1662,15 @@ A flow node that calls an OAuth-backed integration directly (Google Calendar, Gm
   "integration_id": "8c2b1e1a-7c4d-4e1f-9a2b-3c4d5e6f7a8b",
   "action": "create_event",
   "args_template": {
-    "summary": "{{lead.name}} — consultation",
-    "start_time": "{{appointment.start_iso}}",
-    "end_time": "{{appointment.end_iso}}",
-    "attendees": ["{{lead.email}}"],
-    "description": "Booked via Yappr inbound call"
+    "summary":     { "mode": "ai_extract",
+                     "description": "Caller's full name plus 'consultation'" },
+    "start_time":  { "mode": "ai_extract",
+                     "description": "ISO-8601 start time the caller agreed on" },
+    "end_time":    { "mode": "ai_extract",
+                     "description": "ISO-8601 end time, 30 minutes after start" },
+    "attendees":   { "mode": "ai_extract",
+                     "description": "Caller's email address as a single-element array" },
+    "description": "Booked via inbound call"
   },
   "pre_fire_announcement": "One moment while I add this to the calendar.",
   "transitions": {
@@ -1623,7 +1680,9 @@ A flow node that calls an OAuth-backed integration directly (Google Calendar, Gm
 }
 ```
 
-### Example — Gmail `send_email`
+### Example — Gmail `send_email` reusing values via `variable` mode
+
+The recipient was already extracted by an earlier `create_event` node — pull it through with `variable` mode instead of asking the caller again. The body also references the call's `user_number` from the `__call__` namespace (e.g. include the phone number in the support context line).
 
 ```jsonc
 {
@@ -1634,9 +1693,15 @@ A flow node that calls an OAuth-backed integration directly (Google Calendar, Gm
   "integration_id": "1d4e2f3a-9c8b-4d6e-8f1a-7b2c3d4e5f6a",
   "action": "send_email",
   "args_template": {
-    "to": "{{lead.email}}",
-    "subject": "Your appointment is booked — {{appointment.start_human}}",
-    "body": "Hi {{lead.name}},\n\nWe've booked you in for {{appointment.start_human}}. Reply if anything needs to change.\n\nThanks!"
+    "to":      { "mode": "variable",
+                 "source_node_id": "create_event",
+                 "source_arg_name": "attendees" },
+    "subject": "Your appointment is booked",
+    "body":    { "mode": "ai_extract",
+                 "description": "Short confirmation paragraph including the agreed time and a thank-you" },
+    "cc":      { "mode": "variable",
+                 "source_node_id": "__call__",
+                 "source_arg_name": "user_number" }
   },
   "pre_fire_announcement": "Sending you the confirmation now.",
   "transitions": {
@@ -1648,13 +1713,15 @@ A flow node that calls an OAuth-backed integration directly (Google Calendar, Gm
 
 ### Validation rules specific to `integration_call`
 
-- `provider` must be `google_calendar` or `gmail`. Anything else → `unknown_provider`.
-- `action` must be in the catalog for the chosen `provider`. Else → `unknown_action`.
-- `integration_id` is required → `missing_integration` if absent.
-- `action` is required → `missing_action` if absent.
+- `provider` must be `google_calendar` or `gmail`. Anything else fails at zod parse → `schema_invalid`.
+- `action` must be in the catalog for the chosen `provider`. Missing or unknown → `action_invalid`.
+- `integration_id` is required → `integration_id_missing` if absent.
 - `integration_id` must reference an `active` row in the caller's company `integrations` table whose `provider` matches the node's `provider`. Otherwise → `integration_not_in_company`.
 - `success_next_step_id` must be wired → `success_not_wired` if absent.
 - `provider` is locked at creation. To switch from Calendar to Gmail, delete the node and recreate.
+- Every required arg in the action's catalog must be present in `args_template` with a non-empty value, or in `ai_extract` / `variable` mode → `args_template_missing_required` otherwise.
+- Every `ai_extract` arg must have a non-empty `description` → `args_template_missing_description` otherwise.
+- Every `variable` arg must resolve. The `source_node_id` must be either (a) another `integration_call` node whose `source_arg_name` is in `ai_extract` mode, OR (b) the `__call__` namespace with a whitelisted key (`id`, `direction`, `agent_number`, `user_number`, `agent_name`). Anything else → `args_template_variable_missing_source`. Self-references → `args_template_variable_self_reference`. **`tool_call` nodes are not valid as a `source_node_id`** — they don't carry per-node arg slots.
 
 The result of a successful action is injected as a `<tool_result>` block into the next node's LLM context — same as `tool_call`. So a single `success` → conversation node usually handles both happy-path and soft-fail outcomes naturally; reach for `custom[]` only when the **next node** needs to be structurally different.
 
@@ -1669,7 +1736,7 @@ Content-Type: application/json
 {
   "error": "FLOW_INVALID",
   "issues": [
-    { "node_id": "create_event", "code": "missing_integration",
+    { "node_id": "create_event", "code": "integration_id_missing",
       "message": "integration_call node requires integration_id" },
     { "node_id": "ask_date",     "code": "terminal_not_allowed",
       "message": "conversation node has no outgoing transitions" }
@@ -1684,19 +1751,22 @@ Fix every entry in `issues` and re-save — the API returns all problems at once
 | `no_start` | flow | No `start` node found. |
 | `multiple_starts` | flow | More than one `start` node. |
 | `start_unwired` | start | `start.next_step_id` missing. |
-| `missing_instructions` | conversation | Empty/absent `instructions`. |
-| `missing_tool` | tool_call | `tool_id` missing. |
-| `missing_integration` | integration_call | `integration_id` missing. |
-| `missing_action` | integration_call | `action` missing. |
+| `instructions_missing` | conversation | Empty/absent `instructions`. |
+| `tool_id_missing` | tool_call | `tool_id` missing. |
+| `integration_id_missing` | integration_call | `integration_id` missing. |
+| `action_invalid` | integration_call | `action` is missing, empty, or not in the catalog for the chosen `provider`. |
 | `success_not_wired` | tool_call, integration_call | No `success_next_step_id`. |
-| `transfer_target_missing` | transfer | No `transfer_to` configured. |
+| `transfer_to_missing` | transfer | No `transfer_to` configured. |
 | `terminal_not_allowed` | conversation, tool_call, integration_call | Node has no outgoing edge. **Only `end` and `transfer` nodes may be terminal.** |
 | `no_terminal` | flow | No `end` or `transfer` node reachable from `start`. |
 | `unreachable_node` | any | Node exists but no path from `start` reaches it. |
 | `unknown_target_node` | any with edges | An edge's `next_step_id` doesn't match any node id. |
-| `unknown_provider` | integration_call | `provider` is not in `{google_calendar, gmail}`. |
-| `unknown_action` | integration_call | `action` is not in the catalog for `provider`. |
+| `schema_invalid` | any | Zod parse failure (unknown enum value, wrong type, etc.) — applies to invalid `provider` and other shape errors. |
 | `integration_not_in_company` | integration_call | `integration_id` doesn't exist, isn't `active`, belongs to another company, or its provider doesn't match the node's `provider`. |
+| `args_template_missing_required` | integration_call | A required arg for the action is absent from `args_template` (or present but in literal mode with an empty value). |
+| `args_template_missing_description` | integration_call | An arg in `ai_extract` mode is missing the `description` field. |
+| `args_template_variable_missing_source` | integration_call | A `variable`-mode arg references an unknown node id, references a `tool_call` node, references a non-`ai_extract` arg, or uses the `__call__` namespace with a `source_arg_name` outside the whitelist (`id`, `direction`, `agent_number`, `user_number`, `agent_name`). |
+| `args_template_variable_self_reference` | integration_call | A `variable`-mode arg has `source_node_id` equal to its own node id. |
 
 ## GET /agents/:id/flow/versions
 

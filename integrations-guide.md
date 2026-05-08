@@ -79,7 +79,7 @@ curl -X POST "https://api.goyappr.com/tools" \
   }'
 ```
 
-Then reference the returned `tool.id` from a `tool_call` node in your `flow_config`:
+Then reference the returned `tool.id` from a `tool_call` node in your `flow_config`. **Note:** `tool_call` nodes carry no `args_template` — the tool args (literals + runtime extraction) live on the tool's `payload_config`. The same tool sends the same shape from every flow node that references it.
 
 ```json
 {
@@ -87,18 +87,14 @@ Then reference the returned `tool.id` from a `tool_call` node in your `flow_conf
   "type": "tool_call",
   "name": "Book the appointment",
   "tool_id": "<the tool id>",
-  "args_template": {
-    "summary": "{{appointment.summary}}",
-    "start_time": "{{appointment.start_iso}}",
-    "end_time": "{{appointment.end_iso}}",
-    "attendees": ["{{lead.email}}"]
-  },
   "transitions": {
     "success_next_step_id": "confirm_booking",
     "error_next_step_id": "apologize_and_handoff"
   }
 }
 ```
+
+If you need different arg shapes in different flow steps, prefer an `integration_call` node — it carries `args_template` directly on the node with per-arg `literal` / `ai_extract` / `variable` modes, and lets you reference values across nodes via `variable` mode (including the `__call__` namespace for per-call metadata).
 
 ---
 

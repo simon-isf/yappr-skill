@@ -1,12 +1,20 @@
 {
   "_template_meta": {
     "name": "booking-google-calendar",
-    "description": "Inbound appointment booking with Google Calendar availability check + create. Hebrew-friendly. Replace the GCal tool_id placeholders with the IDs returned by your /tools POSTs.",
+    "description": "Inbound appointment booking with Google Calendar availability check + create. Replace the GCal tool_id placeholders with the IDs returned by your /tools POSTs. Configure post-call delivery via the AGENT-LEVEL `extraction_parameters` and `webhook_url` / `webhook_events` fields, NOT inside this flow_config.",
     "required_tools": [
       { "placeholder": "<TOOL_ID_CHECK_AVAILABILITY>", "type": "integration", "action": "check_availability" },
-      { "placeholder": "<TOOL_ID_CREATE_EVENT>", "type": "integration", "action": "create_event" },
-      { "placeholder": "<TOOL_ID_NOTIFY_HUMAN>", "type": "webhook", "method": "POST" }
-    ]
+      { "placeholder": "<TOOL_ID_CREATE_EVENT>", "type": "integration", "action": "create_event" }
+    ],
+    "agent_fields_to_set": {
+      "extraction_parameters": [
+        { "name": "outcome", "description": "booked | declined | no_show_handoff | wrong_number | unknown" },
+        { "name": "appointment_topic", "description": "What the appointment is for" },
+        { "name": "appointment_iso", "description": "ISO 8601 datetime when booked" },
+        { "name": "caller_name", "description": "Caller's full name if collected" }
+      ],
+      "webhook_events": ["call.analyzed"]
+    }
   },
   "flow_config_version": "1",
   "metadata": {
@@ -14,7 +22,14 @@
     "expected_call_duration_secs": 120
   },
   "nodes": [
-    { "id": "start", "type": "start", "next_step_id": "greet_and_collect_intent" },
+    {
+      "id": "start",
+      "type": "start",
+      "agent_speaks_first": true,
+      "greeting": "Greet the caller warmly and identify yourself as the booking assistant.",
+      "is_literal": false,
+      "next_step_id": "greet_and_collect_intent"
+    },
 
     {
       "id": "greet_and_collect_intent",
@@ -136,51 +151,14 @@
       "id": "handoff_end",
       "type": "end",
       "farewell": "Thank you for calling. Someone will call you back to confirm your appointment shortly. Have a great day.",
-      "is_literal": false,
-      "post_end_step_ids": ["extract_handoff_summary", "notify_human_handoff"]
+      "is_literal": false
     },
 
     {
       "id": "polite_end",
       "type": "end",
       "farewell": "Thanks for calling, have a great day.",
-      "is_literal": false,
-      "post_end_step_ids": ["extract_booking_summary"]
-    },
-
-    {
-      "id": "extract_booking_summary",
-      "type": "structured_output",
-      "name": "booking_summary",
-      "extraction_prompt": "Extract the booking outcome from the transcript.",
-      "schema_fields": [
-        { "name": "outcome", "type": "string", "required": true, "description": "booked | declined | no_show_handoff | wrong_number | unknown" },
-        { "name": "appointment_topic", "type": "string", "required": false },
-        { "name": "appointment_iso", "type": "string", "required": false },
-        { "name": "caller_name", "type": "string", "required": false }
-      ]
-    },
-
-    {
-      "id": "extract_handoff_summary",
-      "type": "structured_output",
-      "name": "handoff_summary",
-      "extraction_prompt": "Capture what the human team needs to call back about.",
-      "schema_fields": [
-        { "name": "preferred_time", "type": "string", "required": false },
-        { "name": "topic", "type": "string", "required": false },
-        { "name": "caller_phone", "type": "string", "required": false },
-        { "name": "caller_name", "type": "string", "required": false }
-      ]
-    },
-
-    {
-      "id": "notify_human_handoff",
-      "type": "webhook",
-      "webhook_url": "<WEBHOOK_URL_NOTIFY_HUMAN>",
-      "method": "POST",
-      "include_transcription": true,
-      "include_structured_output": true
+      "is_literal": false
     }
   ]
 }

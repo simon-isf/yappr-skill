@@ -1,15 +1,31 @@
 {
   "_template_meta": {
     "name": "lead-qualification",
-    "description": "Outbound lead-qualification call. Routes the caller to hot/warm/cold paths based on their answers, then either books a follow-up, schedules a callback, or marks them DNC. Webhook fires post-call to update CRM.",
-    "required_tools": [
-      { "placeholder": "<TOOL_ID_NOTIFY_CRM>", "type": "webhook", "method": "POST" }
-    ]
+    "description": "Outbound lead-qualification call. Routes the caller to hot/warm/cold paths based on their answers, then either books a follow-up, schedules a callback, or marks them DNC. Configure post-call CRM delivery via the AGENT-LEVEL `extraction_parameters` and `webhook_url` / `webhook_events` fields, NOT inside this flow_config.",
+    "required_tools": [],
+    "agent_fields_to_set": {
+      "extraction_parameters": [
+        { "name": "outcome", "description": "hot_booked | warm_callback | cold | dnc | wrong_person | no_answer" },
+        { "name": "callback_iso", "description": "ISO 8601 callback time if caller asked for one" },
+        { "name": "pain_signal", "description": "Top-of-mind problem the caller mentioned" },
+        { "name": "scale", "description": "Approximate company size or scope (small/mid/large)" },
+        { "name": "timing", "description": "When they're looking to act (now/soon/later)" },
+        { "name": "objection", "description": "Top objection raised, if any" }
+      ],
+      "webhook_events": ["call.analyzed"]
+    }
   },
   "flow_config_version": "1",
   "metadata": { "purpose": "BANT-lite qualification + handoff" },
   "nodes": [
-    { "id": "start", "type": "start", "next_step_id": "greet_and_introduce" },
+    {
+      "id": "start",
+      "type": "start",
+      "agent_speaks_first": true,
+      "greeting": "Greet the lead by name and identify yourself in one short sentence.",
+      "is_literal": false,
+      "next_step_id": "greet_and_introduce"
+    },
 
     {
       "id": "greet_and_introduce",
@@ -91,65 +107,11 @@
       ]
     },
 
-    {
-      "id": "hot_end",
-      "type": "end",
-      "farewell": "Excellent. You'll get a calendar invite shortly. Talk to you then.",
-      "post_end_step_ids": ["extract_outcome", "notify_crm"]
-    },
-    {
-      "id": "warm_end",
-      "type": "end",
-      "farewell": "Thanks for the time. We'll be in touch.",
-      "post_end_step_ids": ["extract_outcome", "notify_crm"]
-    },
-    {
-      "id": "cold_end",
-      "type": "end",
-      "farewell": "Thanks for chatting. Have a great day.",
-      "post_end_step_ids": ["extract_outcome", "notify_crm"]
-    },
-    {
-      "id": "callback_end",
-      "type": "end",
-      "farewell": "Got it, I'll call you back then. Have a great day.",
-      "post_end_step_ids": ["extract_outcome", "notify_crm"]
-    },
-    {
-      "id": "mark_dnc_and_end",
-      "type": "end",
-      "farewell": "Understood, I'll remove you from our list. Sorry for the disturbance.",
-      "post_end_step_ids": ["extract_outcome", "notify_crm"]
-    },
-    {
-      "id": "polite_end_wrong_person",
-      "type": "end",
-      "farewell": "Sorry to bother you, have a great day.",
-      "post_end_step_ids": ["extract_outcome", "notify_crm"]
-    },
-
-    {
-      "id": "extract_outcome",
-      "type": "structured_output",
-      "name": "qualification_outcome",
-      "extraction_prompt": "Classify the outcome and extract qualification signals.",
-      "schema_fields": [
-        { "name": "outcome", "type": "string", "required": true, "description": "hot_booked | warm_callback | cold | dnc | wrong_person | no_answer" },
-        { "name": "callback_iso", "type": "string", "required": false },
-        { "name": "pain_signal", "type": "string", "required": false },
-        { "name": "scale", "type": "string", "required": false },
-        { "name": "timing", "type": "string", "required": false },
-        { "name": "objection", "type": "string", "required": false }
-      ]
-    },
-
-    {
-      "id": "notify_crm",
-      "type": "webhook",
-      "webhook_url": "<WEBHOOK_URL_NOTIFY_CRM>",
-      "method": "POST",
-      "include_transcription": true,
-      "include_structured_output": true
-    }
+    { "id": "hot_end", "type": "end", "farewell": "Excellent. You'll get a calendar invite shortly. Talk to you then." },
+    { "id": "warm_end", "type": "end", "farewell": "Thanks for the time. We'll be in touch." },
+    { "id": "cold_end", "type": "end", "farewell": "Thanks for chatting. Have a great day." },
+    { "id": "callback_end", "type": "end", "farewell": "Got it, I'll call you back then. Have a great day." },
+    { "id": "mark_dnc_and_end", "type": "end", "farewell": "Understood, I'll remove you from our list. Sorry for the disturbance." },
+    { "id": "polite_end_wrong_person", "type": "end", "farewell": "Sorry to bother you, have a great day." }
   ]
 }

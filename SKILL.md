@@ -48,6 +48,8 @@ For the deeper how-to on flow agents, open [`flow-composition-guide.md`](flow-co
 |------|----------------|
 | `yappr-api.md` | Anytime you need an exact endpoint shape, request/response fields, validation rules, or error codes |
 | `HUMANIZE_PLAYBOOK.md` | When writing or reviewing any agent system prompt — research-backed principles for voice AI dialogue |
+| `flow-composition-guide.md` | Designing flow agents — node catalog, transition heuristics, common topologies |
+| `agent-eval-guide.md` | **Programmatic regression testing** — how to design personas, build cases + suites, wire suites into CI, debug failing assertions. Open whenever the user wants to test agents without making real calls. |
 | `SKILL.md` (this file) | The journey guide — what to build, in what order, and why |
 | `integrations/_overview.md` | Decide which integration to use for a given task — maps use cases to file names |
 | `integrations/{name}.md` | Auth, base URL, all key endpoints, gotchas, and rate limits for a specific platform |
@@ -518,7 +520,7 @@ No Answer and Failed are auto-set by the system. The AI classifier sets all othe
 
 **If `agent_type: prompt`, skip this section entirely — you've already built your agent in Phase 1A. Continue to Phase 2.**
 
-Flow agents replace one large system prompt with a graph of nodes — each node is a small step (conversation, tool call, transfer, end). Routing between nodes happens automatically: a cheap eval LLM picks one of the user-defined transitions on every user-turn boundary. Tool-call nodes execute deterministically and route on the result. This pattern matches what Retell.ai and nlpearl.ai ship.
+Flow agents replace one large system prompt with a graph of nodes — each node is a small step (conversation, tool call, transfer, end). Routing between nodes happens automatically: on every user-turn boundary the model evaluates what the user just said against the current step's outgoing transitions and either advances or stays. Tool-call nodes execute deterministically and route on the result. This pattern matches what Retell.ai and nlpearl.ai ship.
 
 The full how-to lives in [`flow-composition-guide.md`](flow-composition-guide.md). At a glance:
 
@@ -529,10 +531,24 @@ Flow agents still have a global `system_prompt` (persona, brand rules, hard cons
 ### Step 1B.2 — Sketch the graph
 
 Identify the steps. For each step decide:
-- **Conversation node** (LLM talks): what the bot is trying to accomplish, plus N labeled transitions out (e.g. "User confirmed attendance" → next-step). The eval LLM picks based on what the user just said.
-- **Tool-call node** (deterministic): which existing tool (by `tool_id`), how to map flow variables to its arguments via `args_template` (e.g. `{{lead.name}}`), and what to do on success / error / custom branches (custom branches use simple JSONPath-equality matching like `$.status == "no_availability"`).
+- **Conversation node** (LLM talks): what the bot is trying to accomplish, plus N labeled transitions out (e.g. "User confirmed attendance" → next-step). The model picks based on what the user just said.
+- **Tool-call node** (deterministic): which existing tool (by `tool_id`) and what to do on success / error / custom branches (custom branches use simple JSONPath-equality matching like `$.status == "no_availability"`). Tool args are owned by the **tool itself** via `payload_config` (literals + `ai_extract`-by-the-runtime); `tool_call` nodes have **no per-node `args_template`** field. If you need different arg shapes in different flow steps, create separate tools.
 - **Transfer node** / **End node**: terminal.
-- **Post-end nodes**: `webhook` (fire-and-forget POST after hangup) and `structured_output` (LLM-extracted typed JSON from the transcript). Run after End.
+- **Post-call extraction and automation**: there are no `webhook` or `structured_output` flow nodes. For per-call extraction, use the agent-level `extraction_parameters` field. For post-call automation, use `webhook_url` + `webhook_events` on the agent. Both apply to prompt and flow agents — flow agents do not have separate post-end node types.
+
+### Step 1B.2a — Greeting before flow (`auto_advance: false`)
+
+Pattern name: **Greeting before flow**.
+
+When to use: the agent should greet neutrally and listen for the caller's open-ended intent before routing into structured steps. Useful when the first conversation node's instructions are intent-specific (e.g. "ask which service they want") and you don't want the greeting itself to bend toward that intent.
+
+How: set `auto_advance: false` on the StartNode. The bot delivers the greeting in start-node context only — no first-conversation-node instructions are pre-loaded. After the user's first reply, the flow automatically enters the first conversation node and the bot replies in that node's voice.
+
+When `auto_advance: true` (default, legacy behavior): greeting + the first conversation node's instructions are pre-loaded together, so the greeting is delivered "in" the first node's voice. Saves one round-trip but blends greeting with that node's behavior.
+
+### Step 1B.2b — Globals (escape hatches reachable from any step)
+
+For escape hatches that should be reachable from any step (transfer-to-human, end-on-DNC, wrong-number, "user reveals they're actually X" misclassification recovery), use **global nodes** instead of wiring an explicit transition into every source node. See [`flow-composition-guide.md`](flow-composition-guide.md) section on globals for the full how-to.
 
 ### Step 1B.3 — Connect Google Calendar (if scheduling is involved)
 
@@ -845,6 +861,8 @@ Configure the agent's `webhook_url` and `webhook_events` (via PATCH /api-v1/agen
 **Recommended default event set:** `call.no_answer`, `call.failed`, `call.analyzed`
 
 The `call.analyzed` payload includes: `direction`, `status`, `from`, `to`, `duration_seconds`, `disposition` (label string or null), `summary`, `transcript`.
+
+**Who ended the call (`ended_by`)** — `GET /calls/:id` returns an `ended_by` field that distinguishes hang-up causality: `"caller"` (the human picked up and ended it), `"agent"` (the bot ended it — e.g. timed out or chose to hang up), `"system"` (the platform ended it — e.g. voicemail detection, max duration), or `"unknown"`. Useful for retry and analytics logic so you don't auto-retry calls the user intentionally ended. First-write-wins — once set, it isn't overwritten.
 
 ### CRITICAL — Webhook Payload Blind Spot
 
@@ -1420,6 +1438,41 @@ curl -s -X POST "https://api.goyappr.com/dispositions" \
   -H "Content-Type: application/json" \
   -d '{"label": "Qualified Lead", "color": "#f59e0b"}'
 ```
+
+---
+
+## Agent Eval — programmatic regression testing
+
+When the user wants to test their agent without burning phone minutes — typically before a deploy, in CI, or while iterating on a prompt — reach for agent eval. The full guide is in [`agent-eval-guide.md`](agent-eval-guide.md); this section is the **journey trigger** so you know when to open it.
+
+### When to suggest agent eval
+
+The user says any of:
+
+- *"I want to verify my new flow change didn't break greeting routing — let's design a regression suite that runs before each deploy."*
+- *"How do I make sure the agent never says X?"*
+- *"How can I A/B test two system prompts?"*
+- *"Is there a way to call the agent automatically and check if it does the right thing?"*
+- *"Can we add agent tests to our CI pipeline?"*
+
+### Mini journey — "block deploys when greeting routing breaks"
+
+1. **Pick the right unit of test.** One case per known-tricky caller scenario. Common starter set: happy path, refusal path, mid-call topic switch, language switch, wrong-number caller, angry caller.
+2. **Create the personas first.** One per archetype. Reuse them across multiple cases. See `agent-eval-guide.md` recipe 1.
+3. **Create the suite.** `POST /agent-eval/suites` — give it a `parallelism` of 4 to keep wall-clock time reasonable.
+4. **Create the cases inside the suite.** For each case, write 3-6 weighted assertions that capture the behaviour you actually care about (`must_say`, `must_not_say`, `must_call_tool`, `must_reach_node`, `max_turns`, `custom_llm_judge`).
+5. **Sanity-run a single case** with `POST /agent-eval/runs` and inspect `GET /agent-eval/runs/:id/turns`. Fix obvious assertion mistakes (e.g. an over-strict regex).
+6. **Run the suite** with `POST /agent-eval/suites/:id/run` and capture the returned `suite_run_id`.
+7. **Poll until done** by listing runs filtered by that `suite_run_id`. When all runs are terminal, compute the pass rate.
+8. **Wire into CI** — see recipe 3 in `agent-eval-guide.md` for a full curl-based GitHub Action sketch.
+9. **Debug failures.** For each `pass_fail: false` run, fetch turns + evaluation. Walk the transcript to find the diverging turn. For flow agents, the `flow_event` rows reveal routing decisions.
+
+### Gotchas to mention up front
+
+- **`tool_policy: "mock"` is the right default for CI** — tools never fire, every call returns synthetic success. Switch to `real` only for occasional pre-prod sanity checks.
+- **Agents and personas are billed at different rates** ($2/$10 vs $1/$4 per 1M tokens). A typical 10-turn case lands $0.005-$0.05; a 50-case suite for under a dollar is normal.
+- **Webhooks fire per-run** (`agent_eval.run.completed` / `.failed`) — wire a CI worker to react instead of polling if you have many cases.
+- **`must_reach_node` only works for flow agents** — using it on a prompt-mode agent fails the assertion every time.
 
 ---
 

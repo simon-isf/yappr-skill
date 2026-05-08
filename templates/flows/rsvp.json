@@ -1,15 +1,29 @@
 {
   "_template_meta": {
     "name": "rsvp",
-    "description": "Hebrew wedding RSVP flow. Outbound call asks attendance, count, dietary needs. Localized for Hebrew (instructions in Hebrew, voice='Zephyr', language='he').",
-    "required_tools": [
-      { "placeholder": "<TOOL_ID_NOTIFY_HOST>", "type": "webhook", "method": "POST" }
-    ]
+    "description": "Hebrew wedding RSVP flow. Outbound call asks attendance, count, dietary needs. Localized for Hebrew (instructions in Hebrew, voice='Zephyr', language='he'). Configure post-call host notification via the AGENT-LEVEL extraction_parameters + webhook_url + webhook_events fields, NOT inside this flow_config.",
+    "required_tools": [],
+    "agent_fields_to_set": {
+      "extraction_parameters": [
+        { "name": "attendance", "description": "coming | not_coming | undecided" },
+        { "name": "guest_count", "description": "Number of guests attending (integer if known)" },
+        { "name": "dietary_notes", "description": "Special meal needs (kosher, vegan, allergies)" },
+        { "name": "callback_time", "description": "If undecided, when to call back" }
+      ],
+      "webhook_events": ["call.analyzed"]
+    }
   },
   "flow_config_version": "1",
   "metadata": { "purpose": "Wedding RSVP — attendance + count + dietary" },
   "nodes": [
-    { "id": "start", "type": "start", "next_step_id": "ask_attendance" },
+    {
+      "id": "start",
+      "type": "start",
+      "agent_speaks_first": true,
+      "greeting": "ברך את האורח בחום ואמור שאתה מתקשר בנוגע לחתונה.",
+      "is_literal": false,
+      "next_step_id": "ask_attendance"
+    },
 
     {
       "id": "ask_attendance",
@@ -79,30 +93,7 @@
       "id": "polite_end",
       "type": "end",
       "farewell": "תודה רבה ולהתראות.",
-      "is_literal": true,
-      "post_end_step_ids": ["extract_rsvp", "notify_host"]
-    },
-
-    {
-      "id": "extract_rsvp",
-      "type": "structured_output",
-      "name": "rsvp_outcome",
-      "extraction_prompt": "סכם את התשובה של האורח לחתונה.",
-      "schema_fields": [
-        { "name": "attendance", "type": "string", "required": true, "description": "coming | not_coming | undecided" },
-        { "name": "guest_count", "type": "number", "required": false },
-        { "name": "dietary_notes", "type": "string", "required": false },
-        { "name": "callback_time", "type": "string", "required": false }
-      ]
-    },
-
-    {
-      "id": "notify_host",
-      "type": "webhook",
-      "webhook_url": "<WEBHOOK_URL_NOTIFY_HOST>",
-      "method": "POST",
-      "include_transcription": false,
-      "include_structured_output": true
+      "is_literal": true
     }
   ]
 }

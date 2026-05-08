@@ -116,7 +116,7 @@ It does NOT see other steps' instructions or transitions. **Per-step isolation**
 Tool-call nodes don't go through the conversational routing path. The runtime fires the tool the moment a transition lands on a tool node:
 1. Look up the tool by `tool_id` (from the company's `tools` table)
 2. Shallow-merge `tool.config` ⊕ `node.config_override` (array replacement)
-3. Render `args_template` against the flow's `slot_values` using `{{path.to.value}}` substitution
+3. Resolve the tool's args from its own `payload_config` — `static_parameters` (literals) plus `extraction_parameters` (filled by the live agent runtime from the conversation). **`tool_call` nodes have no per-node `args_template`** — args are owned by the tool, so the same tool used by N flow nodes always sends the same shape.
 4. Execute deterministically (webhook / system / transfer / integration)
 5. Route on the result — **deterministic, exactly one out-edge per fire, no LLM involved**:
    - **`error`** fires only on hard failures: 4xx/5xx, network timeout, integration disconnected, tool deleted/inactive, missing config.
@@ -254,29 +254,91 @@ Always have an "uncertainty" path. If the user is asking a meta question or hedg
 
 ---
 
-## Tool-call args_template
+## Tool args vs integration args
 
-`args_template` maps flow variables to the tool's expected args. Two substitution modes:
+Two different ownership models — be deliberate about which one you're using.
 
-**Single-token replacement** (returns the raw value, including non-strings):
-```json
+### `tool_call` nodes — args owned by the tool
+
+`tool_call` nodes have **no `args_template` field**. The tool itself owns its args via `payload_config` on the tool row:
+
+- `payload_config.static_parameters` — literal `{name, value}` pairs always sent unchanged.
+- `payload_config.extraction_parameters` — `{name, description}` pairs the live agent runtime fills from the conversation right before the tool fires (the slot binds via the description).
+
+The same tool can be referenced from N flow nodes, and it will send the same shape every time. If you need two flow nodes to call the same underlying capability with different args, **create two tools** (or use a tool whose webhook backend interprets a runtime-dispatched action key).
+
+A common mistake is to add `args_template` to a `tool_call` node hoping to override the tool's args inline. The schema parser silently strips that field — your override never fires.
+
+### `integration_call` nodes — args on the node via the `ArgValue` union
+
+`integration_call` nodes carry `args_template` directly on the node. Each entry is an `ArgValue` — a discriminated union with three writable shapes:
+
+```jsonc
 {
-  "summary": "{{wedding.title}}",
-  "guest_count": "{{count}}",
-  "all_day": "{{is_all_day}}"
+  "args_template": {
+    // literal — bare string is shorthand for {mode:'literal', value:...}
+    "subject": "Your appointment is booked",
+
+    // ai_extract — the live agent runtime extracts this arg from the
+    // conversation right before the action fires.
+    "to": { "mode": "ai_extract",
+            "description": "Caller's email address as they spelled it out" },
+
+    // variable — pull a previously-extracted value from another
+    // integration_call node's ai_extract slot.
+    "start_time": { "mode": "variable",
+                    "source_node_id": "collect_slot",
+                    "source_arg_name": "start_iso" }
+  }
 }
 ```
-If `count = 4` and `is_all_day = true`, the rendered tool args are `{"summary": "Avraham + Noa Wedding", "guest_count": 4, "all_day": true}`.
 
-**Inline substitution** (returns a string with values interpolated):
-```json
+**Mode rules:**
+- `literal` — value sent as-is. Bare-string is shorthand.
+- `ai_extract` — `description` is required. Filled by the runtime from conversation context.
+- `variable` — `source_node_id` must be either another `integration_call` node (whose `source_arg_name` is in `ai_extract` mode) or the special `__call__` namespace described below. **`tool_call` nodes are not valid as a `source_node_id`** — they don't carry per-node arg slots.
+
+### `__call__` — call-metadata namespace for `variable` mode
+
+When `source_node_id === "__call__"`, the variable resolves against per-call metadata instead of another node's slot. Whitelisted keys:
+
+| Key | Value |
+|-----|-------|
+| `id` | The call id (matches `GET /calls/:id`). |
+| `direction` | `"inbound"`, `"outbound"`, or `"web"`. |
+| `agent_number` | The platform's leg of the call (number we own). Direction-aware. |
+| `user_number` | The human's leg. Direction-aware. |
+| `agent_name` | Agent display name. |
+
+Example — include the caller's number in a confirmation email body so the support team can call back without context-switching:
+
+```jsonc
 {
-  "subject": "RSVP from {{lead.name}} for {{wedding.date}}",
-  "body": "Guest count: {{count}}. Notes: {{notes}}"
+  "id": "send_confirmation",
+  "type": "integration_call",
+  "provider": "gmail",
+  "integration_id": "<gmail integration uuid>",
+  "action": "send_email",
+  "args_template": {
+    "to": { "mode": "ai_extract",
+            "description": "Caller's email address" },
+    "subject": "Your appointment is booked",
+    "body": { "mode": "ai_extract",
+              "description": "Friendly confirmation paragraph including the agreed time" },
+    // CC the caller's phone number into the email metadata so support
+    // can reach them without digging through the call log.
+    "cc": { "mode": "variable",
+            "source_node_id": "__call__",
+            "source_arg_name": "user_number" }
+  },
+  "transitions": {
+    "success_next_step_id": "polite_end",
+    "error_next_step_id":   "apologize_email_manually"
+  }
 }
 ```
 
-Missing values render as empty string (inline) or pass through as the literal placeholder (single-token). Defensive design: always have an `error` transition that handles "missing required field" results from the tool.
+Anything outside the whitelist returns `args_template_variable_missing_source` at save time.
 
 ---
 
@@ -485,8 +547,10 @@ Skeleton `flow_config` for the integration nodes (the conversation/end/transfer 
       "integration_id": "8c2b1e1a-7c4d-4e1f-9a2b-3c4d5e6f7a8b",
       "action": "check_availability",
       "args_template": {
-        "start_time": "{{appointment.start_iso}}",
-        "end_time":   "{{appointment.end_iso}}"
+        "start_time": { "mode": "ai_extract",
+                        "description": "ISO-8601 start time the caller proposed" },
+        "end_time":   { "mode": "ai_extract",
+                        "description": "ISO-8601 end time, default 30 minutes after start" }
       },
       "pre_fire_announcement": "One moment while I check the calendar.",
       "transitions": {
@@ -514,11 +578,18 @@ Skeleton `flow_config` for the integration nodes (the conversation/end/transfer 
       "integration_id": "8c2b1e1a-7c4d-4e1f-9a2b-3c4d5e6f7a8b",
       "action": "create_event",
       "args_template": {
-        "summary":    "{{lead.name}} — consultation",
-        "start_time": "{{appointment.start_iso}}",
-        "end_time":   "{{appointment.end_iso}}",
-        "attendees":  ["{{lead.email}}"],
-        "description": "Booked via Yappr inbound call"
+        "summary":     { "mode": "ai_extract",
+                         "description": "Caller's full name plus 'consultation'" },
+        // Reuse the times we already extracted in check_availability.
+        "start_time":  { "mode": "variable",
+                         "source_node_id": "check_availability",
+                         "source_arg_name": "start_time" },
+        "end_time":    { "mode": "variable",
+                         "source_node_id": "check_availability",
+                         "source_arg_name": "end_time" },
+        "attendees":   { "mode": "ai_extract",
+                         "description": "Caller's email address as a single-element array" },
+        "description": "Booked via inbound call"
       },
       "pre_fire_announcement": "Adding it to the calendar now.",
       "transitions": {
@@ -535,9 +606,13 @@ Skeleton `flow_config` for the integration nodes (the conversation/end/transfer 
       "integration_id": "1d4e2f3a-9c8b-4d6e-8f1a-7b2c3d4e5f6a",
       "action": "send_email",
       "args_template": {
-        "to":      "{{lead.email}}",
-        "subject": "Your appointment is booked — {{appointment.start_human}}",
-        "body":    "Hi {{lead.name}},\n\nWe've booked you in for {{appointment.start_human}}. Reply if anything needs to change.\n\nThanks!"
+        // Reuse the email captured during create_event.
+        "to":      { "mode": "variable",
+                     "source_node_id": "create_event",
+                     "source_arg_name": "attendees" },
+        "subject": "Your appointment is booked",
+        "body":    { "mode": "ai_extract",
+                     "description": "Friendly confirmation paragraph including the agreed time and a thank-you" }
       },
       "pre_fire_announcement": "Sending you the confirmation now.",
       "transitions": {
@@ -568,10 +643,10 @@ Notes:
 Quick checklist (the validator codes that back each rule are in parentheses):
 
 - Exactly one `start` node (`no_start`, `multiple_starts`); its `next_step_id` is wired (`start_unwired`).
-- Every `conversation` node has non-empty `instructions` (`missing_instructions`) and at least one outgoing transition (`terminal_not_allowed`).
-- Every `tool_call` node has a `tool_id` (`missing_tool`) and a wired `success_next_step_id` (`success_not_wired`).
-- Every `integration_call` node has a known `provider` (`unknown_provider`), a known `action` for that provider (`unknown_action`), an `integration_id` (`missing_integration`), and that integration is `active` in your company with a matching provider (`integration_not_in_company`). It also needs `success_next_step_id` wired (`success_not_wired`).
-- Every `transfer` node has a `transfer_to` (`transfer_target_missing`).
+- Every `conversation` node has non-empty `instructions` (`instructions_missing`) and at least one outgoing transition (`terminal_not_allowed`).
+- Every `tool_call` node has a `tool_id` (`tool_id_missing`) and a wired `success_next_step_id` (`success_not_wired`). `tool_call` nodes have no `args_template` field — args come from the tool's `payload_config`.
+- Every `integration_call` node has a valid `provider` (invalid → `schema_invalid` at zod parse), a valid `action` for that provider (`action_invalid`), an `integration_id` (`integration_id_missing`), and that integration is `active` in your company with a matching provider (`integration_not_in_company`). It also needs `success_next_step_id` wired (`success_not_wired`). Required action args must be present in `args_template` (`args_template_missing_required`); `ai_extract` args need a `description` (`args_template_missing_description`); `variable` args must point at another `integration_call` node's `ai_extract` arg or the `__call__` namespace (`args_template_variable_missing_source`, `args_template_variable_self_reference`).
+- Every `transfer` node has a `transfer_to` (`transfer_to_missing`).
 - **Only `end` and `transfer` nodes may be terminal.** Anything else with no outgoing edge → `terminal_not_allowed`. The flow must contain at least one reachable `end` or `transfer` (`no_terminal`).
 - All `next_step_id` references resolve (`unknown_target_node`); every node is reachable from `start` (`unreachable_node`).
 
