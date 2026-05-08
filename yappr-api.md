@@ -837,6 +837,84 @@ Redirect to a call recording. Returns 302 to a short-lived signed audio URL.
 
 ---
 
+## Do Not Call
+
+Per-company DNC list. Outbound call placement (`POST /calls`) and the queue dispatcher both consult this list before dialing — matched destinations get a `call_logs` row written with `status: "dnc_blocked"` and no carrier leg / no charge.
+
+Phone numbers are normalized to E.164 (+countrycode + digits) before storage, so any common input format works (`+972501234567`, `0501234567`, `972501234567` all collide on the unique constraint).
+
+**Scope** — every entry is either:
+- **Global** (`agent_ids: []` or omitted): every agent in the company is blocked from calling this number.
+- **Scoped** (`agent_ids: [<uuid>, ...]`): only listed agents are blocked. Other agents can still place outbound calls to this number.
+
+GET responses include `agents` (full agent objects, expanded so you don't have to round-trip to `/agents/{id}`). On POST/PATCH the input field is `agent_ids: string[]`.
+
+### GET /do-not-call
+
+List all DNC entries (most recent first), or look up by phone with `?phone=…`.
+
+```bash
+# List
+curl -H "Authorization: Bearer $YAPPR_API_KEY" \
+  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1/do-not-call"
+
+# Lookup
+curl -H "Authorization: Bearer $YAPPR_API_KEY" \
+  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1/do-not-call?phone=+972501234567"
+```
+
+Returns `{ data: [...] }` for the list path, or a single entry object for the lookup path. Lookup returns 404 when the number isn't on the list.
+
+**Scopes:** `do_not_call:read`
+
+### POST /do-not-call
+
+Add a phone number. Idempotent — re-adding an existing number returns the existing entry with HTTP 200 instead of erroring.
+
+```bash
+# Global block — every agent
+curl -X POST -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number": "0501234567", "reason": "Customer requested removal"}' \
+  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1/do-not-call"
+
+# Scoped block — only specific agents are blocked
+curl -X POST -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phone_number": "0501234567",
+    "reason": "Don't pitch this lead from the sales agent — they only want renewals",
+    "agent_ids": ["7e8a91c1-...sales-agent-uuid", "..."]
+  }' \
+  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1/do-not-call"
+```
+
+`expires_at` is optional — omit for a permanent block. The API rejects past timestamps.
+
+`agent_ids` is optional — omit or pass `[]` for a global block; pass agent UUIDs to scope to those agents only. All UUIDs must reference agents in the same company.
+
+**Scopes:** `do_not_call:manage`
+
+### GET /do-not-call/:id
+
+Fetch a single entry by ID.
+
+**Scopes:** `do_not_call:read`
+
+### PATCH /do-not-call/:id
+
+Update `reason`, `expires_at`, and/or `agent_ids`. `phone_number` is immutable — delete + re-add to change the number. To switch a scoped block to global, pass `agent_ids: []`; to narrow a global block, pass a non-empty array.
+
+**Scopes:** `do_not_call:manage`
+
+### DELETE /do-not-call/:id
+
+Remove from the list. Future outbound calls to this number proceed normally.
+
+**Scopes:** `do_not_call:manage`
+
+---
+
 ## Dispositions
 
 Disposition labels are applied to calls as outcomes (e.g. "Interested", "Appointment Set"). Protected dispositions cannot be deleted.
@@ -1059,84 +1137,6 @@ Update a tag.
 Delete a tag.
 
 **Scopes:** `lead_tags:manage`
-
----
-
-## Do Not Call
-
-Per-company DNC list. Outbound call placement (`POST /calls`) and the queue dispatcher both consult this list before dialing — matched destinations get a `call_logs` row written with `status: "dnc_blocked"` and no carrier leg / no charge.
-
-Phone numbers are normalized to E.164 (+countrycode + digits) before storage, so any common input format works (`+972501234567`, `0501234567`, `972501234567` all collide on the unique constraint).
-
-**Scope** — every entry is either:
-- **Global** (`agent_ids: []` or omitted): every agent in the company is blocked from calling this number.
-- **Scoped** (`agent_ids: [<uuid>, ...]`): only listed agents are blocked. Other agents can still place outbound calls to this number.
-
-GET responses include `agents` (full agent objects, expanded so you don't have to round-trip to `/agents/{id}`). On POST/PATCH the input field is `agent_ids: string[]`.
-
-### GET /do-not-call
-
-List all DNC entries (most recent first), or look up by phone with `?phone=…`.
-
-```bash
-# List
-curl -H "Authorization: Bearer $YAPPR_API_KEY" \
-  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1/do-not-call"
-
-# Lookup
-curl -H "Authorization: Bearer $YAPPR_API_KEY" \
-  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1/do-not-call?phone=+972501234567"
-```
-
-Returns `{ data: [...] }` for the list path, or a single entry object for the lookup path. Lookup returns 404 when the number isn't on the list.
-
-**Scopes:** `do_not_call:read`
-
-### POST /do-not-call
-
-Add a phone number. Idempotent — re-adding an existing number returns the existing entry with HTTP 200 instead of erroring.
-
-```bash
-# Global block — every agent
-curl -X POST -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"phone_number": "0501234567", "reason": "Customer requested removal"}' \
-  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1/do-not-call"
-
-# Scoped block — only specific agents are blocked
-curl -X POST -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "phone_number": "0501234567",
-    "reason": "Don't pitch this lead from the sales agent — they only want renewals",
-    "agent_ids": ["7e8a91c1-...sales-agent-uuid", "..."]
-  }' \
-  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1/do-not-call"
-```
-
-`expires_at` is optional — omit for a permanent block. The API rejects past timestamps.
-
-`agent_ids` is optional — omit or pass `[]` for a global block; pass agent UUIDs to scope to those agents only. All UUIDs must reference agents in the same company.
-
-**Scopes:** `do_not_call:manage`
-
-### GET /do-not-call/:id
-
-Fetch a single entry by ID.
-
-**Scopes:** `do_not_call:read`
-
-### PATCH /do-not-call/:id
-
-Update `reason`, `expires_at`, and/or `agent_ids`. `phone_number` is immutable — delete + re-add to change the number. To switch a scoped block to global, pass `agent_ids: []`; to narrow a global block, pass a non-empty array.
-
-**Scopes:** `do_not_call:manage`
-
-### DELETE /do-not-call/:id
-
-Remove from the list. Future outbound calls to this number proceed normally.
-
-**Scopes:** `do_not_call:manage`
 
 ---
 
