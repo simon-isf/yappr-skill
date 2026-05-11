@@ -552,7 +552,7 @@ For escape hatches that should be reachable from any step (transfer-to-human, en
 
 ### Step 1B.3 — Connect Google Calendar (if scheduling is involved)
 
-OAuth-backed integrations are the v1 way to give agents access to scheduling. Open [`integrations-guide.md`](integrations-guide.md) for the headless OAuth contract — the human admin must complete the consent flow once via the dashboard before AI agents can reference the integration. After connect, you'll have an `integration_id` to plug into a tool-call node's `tool.config.integration_id`.
+OAuth-backed integrations are the v1 way to give agents access to scheduling. The OAuth handshake (popup → Google consent → callback) is **dashboard-only** — the human onboarding the company connects each Google account once via the Yappr dashboard's Integrations page. The public API exposes list (`GET /integrations`) and revoke (`DELETE /integrations/:id`) but not connect. Once connected, capture the credential's `id` from `GET /integrations` and plug it into an `integration_call` node's `integration_id`. See [`integrations-guide.md`](integrations-guide.md) for the full lifecycle.
 
 ### Step 1B.4 — Create the agent via API
 
@@ -1173,6 +1173,64 @@ curl -s -X PATCH "https://api.goyappr.com/dispositions/DISPOSITION_ID" \
 curl -s -X DELETE "https://api.goyappr.com/dispositions/DISPOSITION_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY"
 ```
+
+### Do-Not-Call list
+
+Per-company suppression list. Outbound call placement (`POST /calls` and the queue dispatcher) consults this list before dialing — matched destinations get a `call_logs` row with `status: "dnc_blocked"` and no carrier leg / no charge. Phone numbers are normalized to E.164 before storage, so any common input format works.
+
+Use this when an external system (CRM, compliance tool, opt-out form) needs to keep Yappr's suppression list in sync. Entries are **global** by default (every agent blocked); pass `agent_ids` to scope to specific agents only.
+
+```bash
+# List all (most recent first)
+curl -s "https://api.goyappr.com/do-not-call" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Look up a single number (404 if not on list)
+curl -s "https://api.goyappr.com/do-not-call?phone=+972501234567" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Add — global block (every agent)
+curl -s -X POST "https://api.goyappr.com/do-not-call" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number": "+972501234567", "reason": "Customer requested removal"}'
+
+# Add — scoped block (only listed agents)
+curl -s -X POST "https://api.goyappr.com/do-not-call" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phone_number": "+972501234567",
+    "reason": "Don't pitch this lead from the sales agent — renewals only",
+    "agent_ids": ["AGENT_ID"]
+  }'
+
+# Get by id
+curl -s "https://api.goyappr.com/do-not-call/DNC_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Update — convert scoped to global
+curl -s -X PATCH "https://api.goyappr.com/do-not-call/DNC_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_ids": []}'
+
+# Update — set an auto-expiry
+curl -s -X PATCH "https://api.goyappr.com/do-not-call/DNC_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"expires_at": "2026-06-10T00:00:00Z"}'
+
+# Remove (re-addable later)
+curl -s -X DELETE "https://api.goyappr.com/do-not-call/DNC_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY"
+```
+
+Gotchas worth flagging to the user:
+- `phone_number` is immutable on PATCH — delete and re-add to change the number itself.
+- Re-adding an existing number is idempotent (returns the existing row with HTTP 200), so a sync script can be written naively.
+- `expires_at` in the past returns 400. Omit (or `null`) for a permanent block.
+- A DNC-blocked call still writes a `call_logs` row and fires a `call.dnc_blocked` webhook — useful for analytics, but do not double-count it as a real attempt.
 
 ---
 

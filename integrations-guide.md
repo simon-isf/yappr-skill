@@ -1,167 +1,78 @@
 # Integrations Guide — OAuth-backed third-party tools
 
-Yappr's `integrations` feature lets companies connect third-party services via OAuth and reference them from flow agent tool-call nodes. Tokens are stored encrypted (Supabase Vault key) and refreshed automatically by the bot at call time.
+Yappr's `integrations` feature lets companies connect third-party services via OAuth and reference them from `integration_call` nodes in flow agents. Tokens are encrypted (Supabase Vault key) and refreshed automatically by the bot at call time.
 
-**v1 supports**: Google Calendar.
+**v1 supports**: Google Calendar, Gmail.
 
-For the broader integration catalog (76 providers via service-account / API-key auth — what prompt agents use today), see `integrations/_overview.md`. This guide covers the OAuth-backed flow that **only flow agents can use**.
+This file is the orientation page. The full action catalog, args, response semantics, and chaining recipes live in:
+- [`yappr-api.md`](yappr-api.md) — endpoint reference (action catalog, integration_call node shape, GET/DELETE endpoints).
+- [`flow-composition-guide.md`](flow-composition-guide.md) — token interpolation, custom metadata, and the canonical "lookup → confirm → act-by-id" recipe.
 
 ---
 
 ## How OAuth integrations work
 
 ```
-1. POST /integrations/google-calendar/connect → returns oauth_url
-2. Human admin visits oauth_url in a browser, completes Google consent
-3. Yappr stores encrypted tokens in the integrations table, returns an integration_id
-4. Flow tool-call nodes reference that integration_id via tool config
-5. On each call, the bot fetches a fresh access token via SECURITY DEFINER RPC
+1. Customer connects a Google account ONCE via the Yappr dashboard's
+   Integrations page. The dashboard handles the OAuth handshake
+   (popup → Google consent → callback → encrypted token persistence).
+2. The customer's backend calls GET /integrations to discover the
+   credential's id.
+3. They paste that id into the integration_call node's `integration_id`
+   field in their flow_config.
+4. On each call that hits the node, the bot fetches a fresh access
+   token via a SECURITY DEFINER RPC and calls the Google API.
 ```
 
-The encryption key lives in Supabase Vault — never in env vars, never in SQL literals.
+The encryption key lives in Supabase Vault — never in env vars, never returned by any API.
+
+**The public API does not expose a connect endpoint.** Popup orchestration + redirect handling don't fit a REST contract cleanly, so the OAuth handshake lives in the dashboard only. The API exposes list (`GET /integrations`) and revoke (`DELETE /integrations/:id`) — that's the lifecycle surface customers can drive headlessly.
+
+If your customer-onboarding flow is API-only, the human onboarding the company has to log into the dashboard once to connect each Google account they want flows to use. Subsequent operations (creating flows, placing calls, listing/revoking credentials) can all happen via the API.
 
 ---
 
-## Headless OAuth contract for AI agents
-
-Coding agents (Claude Code, Codex, Cursor) cannot complete OAuth in a browser. The contract is:
-
-### Step 1 — Initiate
+## Discovering a connected credential
 
 ```bash
-curl -X POST "https://api.goyappr.com/integrations/google-calendar/connect" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{ "return_to": "https://app.goyappr.com/integrations" }'
+curl "https://api.goyappr.com/integrations?provider=google_calendar" \
+  -H "Authorization: Bearer $YAPPR_API_KEY"
 ```
 
-Response:
-```json
-{
-  "oauth_url": "https://accounts.google.com/o/oauth2/v2/auth?...&state=...&code_challenge=...",
-  "connect_id": "0d3..."
-}
-```
+Capture the `id` of any row whose `status` is `"active"`. That's your `integration_id` for an `integration_call` node.
 
-### Step 2 — Instruct the human
+The response body contains only public fields (id, provider, account_label, scopes, status, created_at, updated_at). Encrypted tokens and internal operational metadata are never returned.
 
-Print the URL clearly and instruct the user (the human running the Claude Code session) to visit it in a browser, approve the consent screen, and return when done. The OAuth state is anchored to the company's first admin user — the admin must be the one completing consent (not, e.g., a billing-only member).
+---
 
-If the company has no admin, the API returns 409 with `"company_has_no_admin"`. The user must connect once via the dashboard first.
+## Wiring an integration into a flow
 
-### Step 3 — Poll until connected
-
-```bash
-# every 10 seconds, max 5 minutes
-curl -s "https://api.goyappr.com/integrations?provider=google_calendar" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '.data[] | select(.status=="active")'
-```
-
-Once the polling sees a row with `status: "active"`, capture its `id`. That's your `integration_id` for tool-call node config.
-
-### Step 4 — Reference from a flow
-
-Add a tool of type `integration` to the company's `tools` table:
-
-```bash
-curl -X POST "https://api.goyappr.com/tools" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "createCalendarEvent",
-    "description": "Create a calendar event in the company's connected Google Calendar",
-    "type": "integration",
-    "config": {
-      "provider": "google_calendar",
-      "integration_id": "<the integration id from step 3>",
-      "action": "create_event"
-    }
-  }'
-```
-
-Then reference the returned `tool.id` from a `tool_call` node in your `flow_config`. **Note:** `tool_call` nodes carry no `args_template` — the tool args (literals + runtime extraction) live on the tool's `payload_config`. The same tool sends the same shape from every flow node that references it.
+Use an `integration_call` node — provider + action + args live directly on the node. Full schema and the action catalog (with required/optional args including `calendar_id` and `time_zone`) are in [`yappr-api.md`](yappr-api.md) under "Integration call nodes".
 
 ```json
 {
-  "id": "create_event_node",
-  "type": "tool_call",
-  "name": "Book the appointment",
-  "tool_id": "<the tool id>",
+  "id": "book",
+  "type": "integration_call",
+  "provider": "google_calendar",
+  "integration_id": "<the id from GET /integrations>",
+  "action": "create_event",
+  "args_template": {
+    "summary":    { "mode": "ai_extract",
+                    "description": "Caller's full name plus 'consultation'" },
+    "start_time": { "mode": "ai_extract",
+                    "description": "ISO-8601 start time the caller agreed on" },
+    "end_time":   { "mode": "ai_extract",
+                    "description": "ISO-8601 end time, default 30 min after start" }
+  },
+  "pre_fire_announcement": true,
   "transitions": {
-    "success_next_step_id": "confirm_booking",
-    "error_next_step_id": "apologize_and_handoff"
+    "success_next_step_id": "confirm_booked",
+    "error_next_step_id":   "apologize_and_handoff"
   }
 }
 ```
 
-If you need different arg shapes in different flow steps, prefer an `integration_call` node — it carries `args_template` directly on the node with per-arg `literal` / `ai_extract` / `variable` modes, and lets you reference values across nodes via `variable` mode (including the `__call__` namespace for per-call metadata).
-
----
-
-## Google Calendar actions
-
-These map 1:1 to actions in the Google Calendar integration. Use the `action` field on the tool's config to select.
-
-### `create_event`
-
-Create an event on the configured calendar.
-
-| Arg | Type | Required | Notes |
-|---|---|---|---|
-| `summary` | string | yes | Event title |
-| `start_time` | string (ISO 8601) | yes | e.g. `"2026-05-05T14:00:00+03:00"` |
-| `end_time` | string (ISO 8601) | yes | |
-| `attendees` | array of email strings | no | Adds invitees |
-| `description` | string | no | |
-| `location` | string | no | |
-
-Returns the created event resource (id, htmlLink, etc.).
-
-### `list_events`
-
-| Arg | Type | Required | Notes |
-|---|---|---|---|
-| `time_min` | string (ISO) | no | |
-| `time_max` | string (ISO) | no | |
-| `max_results` | number | no | default 10 |
-| `query` | string | no | full-text search |
-
-Returns `{ items: [...], ... }`.
-
-### `check_availability`
-
-Returns `{ busy: [...], available: bool, start, end }`. Use this BEFORE `create_event` to avoid double-booking.
-
-| Arg | Type | Required |
-|---|---|---|
-| `start_time` | string (ISO) | yes |
-| `end_time` | string (ISO) | yes |
-
-Pair this with a custom transition to handle "no availability":
-
-```json
-"transitions": {
-  "success_next_step_id": "confirm_with_caller",
-  "error_next_step_id": "apologize_and_handoff",
-  "custom": [
-    {
-      "id": "no_avail",
-      "label": "No availability in requested window",
-      "jsonpath": "$.available",
-      "equals": "false",
-      "next_step_id": "suggest_alternatives"
-    }
-  ]
-}
-```
-
-### `cancel_event`
-
-| Arg | Type | Required |
-|---|---|---|
-| `event_id` | string | yes |
-
-Returns `{ cancelled: true, event_id }`.
+Tool_call nodes (custom webhooks via the company's `tools` table) can also dispatch but the args live on the tool's `payload_config` instead of the node — see the tool-call section in `yappr-api.md` for the difference.
 
 ---
 
@@ -169,20 +80,20 @@ Returns `{ cancelled: true, event_id }`.
 
 ### Token refresh failure during a call
 
-The bot refreshes tokens on demand under an asyncio.Lock. After 4 consecutive refresh failures (or an `invalid_grant` from Google), the integration is auto-marked `status='disconnected'`. Subsequent tool-call nodes fail with `"integration is disconnected"` and route to the `error` branch.
+The bot refreshes tokens on demand under an asyncio.Lock. After 4 consecutive refresh failures (or `invalid_grant` from Google), the integration is auto-marked `status='disconnected'`. Subsequent integration_call nodes fail with `"integration_disconnected"` and route to the `error` branch.
 
-**Mitigation:** design every tool-call node's `error` branch to apologize and either:
-- Route to a manual handoff conversation node ("Let me have someone call you back to confirm")
-- Fire a webhook tool to notify the human team
-- End the call with a clear post-end webhook firing
+**Mitigation:** wire every integration_call node's `error_next_step_id` to either:
+- A handoff conversation node ("Let me have someone call you back")
+- A webhook tool that notifies the human team
+- An end node that fires a structured post-call webhook
 
 ### Permissions revoked at Google
 
-Same effect as a refresh failure — Google returns `invalid_grant`, the integration goes `disconnected`. The user must reconnect via `/integrations` (UI) or re-run the Connect flow.
+Same effect as a refresh failure. The user reconnects from the dashboard's Integrations page; the OAuth callback finds the existing soft-deleted row (matched by `(company_id, provider, account_label)`) and revives it with fresh tokens.
 
 ### Cross-company access attempts
 
-The encryption RPCs are `service_role`-only. The `integrations` table has RLS scoped by company. The bot fetches by `integration_id`; the RPC additionally filters `WHERE deleted_at IS NULL`. Cross-company access is impossible by design, but the test `Phase 9.3` validates this empirically.
+The encryption RPCs are `service_role`-only. The `integration_credentials` table has RLS scoped by company. The bot fetches by `integration_id`; the RPC additionally filters `WHERE deleted_at IS NULL`. Cross-company access is impossible by construction.
 
 ---
 
@@ -193,17 +104,6 @@ curl -X DELETE "https://api.goyappr.com/integrations/<integration_id>" \
   -H "Authorization: Bearer $YAPPR_API_KEY"
 ```
 
-This:
-1. Best-effort POSTs to `https://oauth2.googleapis.com/revoke?token=<refresh_token>` (Google invalidates the grant)
-2. Soft-deletes the row (`deleted_at`, `status='disconnected'`, encrypted columns nulled)
+Best-effort revoke at Google + soft-delete row + null encrypted tokens. Returns 204.
 
-Flows with tool-call nodes referencing the disconnected integration will hit their `error` transition on next use.
-
----
-
-## What's NOT in v1
-
-- Re-grant for additional scopes (full disconnect + reconnect required)
-- Per-calendar selection (always uses the user's `primary` calendar — set in the metadata column manually if you need a different one)
-- MCP server attachment (deferred to v1.1; the architecture accommodates it as a `tool_type='integration'` with `provider='mcp'` later)
-- HubSpot, Salesforce, etc. via OAuth — use service-account/API-key clients in `integrations/` instead, behind webhook tools
+The row stays in the table (soft-delete) so historic `flow_versions` can still resolve their `integration_id`. To re-connect the same Google account, re-run the OAuth flow from the dashboard — the callback revives the soft-deleted row in place.

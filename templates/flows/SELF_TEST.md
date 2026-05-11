@@ -15,19 +15,18 @@ Run these in a fresh Claude Code session in any directory (the skill is loaded f
 3. Sets `agent_type: flow` in DISCOVERY CONFIG.
 4. **Phase 1B (Flow Agent Creation)** — opens `flow-composition-guide.md` for guidance.
 5. Notices the GCal requirement → opens `integrations-guide.md`.
-6. Posts to `/integrations/google-calendar/connect`, prints the `oauth_url`, instructs the human to complete consent.
-7. Polls `/integrations` until a row appears with `status='active'`. Captures the `integration_id`.
+6. Tells the human "before I can build this, you need to connect Google Calendar from the Yappr dashboard's Integrations page (the OAuth handshake is dashboard-only)." Pauses until the human confirms it's connected.
+7. Calls `GET /integrations?provider=google_calendar` and captures the `id` of the active row.
 8. Loads the `templates/flows/booking-google-calendar.json` template OR builds from scratch using `templates/flows/rsvp.json` as a starting point.
-9. Creates the GCal tools via `POST /tools` (one per action: check_availability, create_event), gets the tool_ids.
-10. Substitutes the `<TOOL_ID_*>` placeholders in the chosen template with real ids.
-11. Creates the agent via `POST /agents` with `type: "flow"`, `flow_config: {...}`, the global `system_prompt`, `language: "he"`.
-12. Validates the response (200, agent.id present, agent.type="flow").
-13. Reports back to the user with a summary + how to place a test call.
+9. Substitutes the `<INTEGRATION_ID>` placeholders in the chosen template with the captured id (integration_call nodes hold `integration_id` directly — no separate tool rows needed for OAuth-backed providers).
+10. Creates the agent via `POST /agents` with `type: "flow"`, `flow_config: {...}`, the global `system_prompt`, `language: "he"`.
+11. Validates the response (200, agent.id present, agent.type="flow").
+12. Reports back to the user with a summary + how to place a test call.
 
 **Pass criteria:**
 - Claude does NOT try to use the Tools tab pattern (Phase 2)
-- Claude DOES NOT try to complete OAuth itself in a browser
-- Claude DOES print the `oauth_url` and pause for the human
+- Claude DOES NOT attempt to OAuth-connect via the API (the public API has no connect endpoint)
+- Claude DOES instruct the human to connect via the dashboard, then pauses until confirmed
 - The final agent has type="flow" and a non-null flow_config
 
 ## Test 2 — prompt path regression (negative for flow)

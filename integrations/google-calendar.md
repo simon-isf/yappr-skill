@@ -1,6 +1,6 @@
 # Google Calendar
 
-> **For Yappr-native flow agents**, use the OAuth integration via `POST /integrations/google-calendar/connect` — see [`../integrations-guide.md`](../integrations-guide.md). The Yappr bot fetches tokens from Supabase Vault automatically; no service account, no manual key handling. This is the recommended path for any new agent.
+> **For Yappr-native flow agents**, use the OAuth integration via the dashboard's Integrations page (the OAuth handshake is dashboard-only — the public API exposes list/revoke only). See [`../integrations-guide.md`](../integrations-guide.md) for the lifecycle. The Yappr bot fetches tokens from Supabase Vault automatically; no service account, no manual key handling. This is the recommended path for any new agent.
 >
 > **The service-account pattern below** is only for custom edge-function tools attached to **prompt agents** (where the user wants their own Google Cloud project to own the calendar access, e.g. shared service-account calendars). Skip this section if you're building a flow agent.
 

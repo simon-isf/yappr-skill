@@ -642,21 +642,53 @@ Get full details of a single call, including resolved lead and disposition objec
     "updated_at": "ISO8601"
   },
   "tool_calls": [
+    // Three row shapes, discriminated by `kind`. All carry the same
+    // outer fields (tool_name, timestamp, request, response); the
+    // sibling identity fields differ.
     {
       "tool_name": "string",
       "timestamp": "ISO8601",
+      "kind": "webhook_tool",   // prompt-mode agent firing a custom webhook
+      "node": null,
+      "tool_id": "uuid",
+      "provider": null,
+      "action": null,
+      "integration_id": null,
+      "arg_sources": null,
       "request": {
         "method": "POST",
         "url": "https://...",
         "headers": { "Content-Type": "application/json" },
         "body": {}
       },
-      "response": {
-        "success": true,
-        "response_preview": "string",
-        "error": "string | null",
-        "duration_ms": 845
-      }
+      "response": { "success": true, "response_preview": "string", "error": null, "duration_ms": 845 }
+    },
+    {
+      "tool_name": "string",
+      "timestamp": "ISO8601",
+      "kind": "tool_call",      // flow-mode tool_call node — references a tool by id
+      "node": { "id": "book", "name": "Book appointment", "type": "tool_call" },
+      "tool_id": "uuid",
+      "provider": null,
+      "action": null,
+      "integration_id": null,
+      "arg_sources": { "appointmentDateTime": "ai_extract", "email": "ai_extract" },
+      // No method/url/headers — flow tools fire via the dispatcher, not raw HTTP.
+      "request": { "body": { "appointmentDateTime": "...", "email": "..." } },
+      "response": { "success": true, "response_preview": "string", "error": null, "duration_ms": 412 }
+    },
+    {
+      "tool_name": "Check availability",
+      "timestamp": "ISO8601",
+      "kind": "integration_call",  // flow-mode integration_call (Calendar/Gmail/...)
+      "node": { "id": "check", "name": "Check availability", "type": "integration_call" },
+      "tool_id": null,
+      "provider": "google_calendar",
+      "action": "check_availability",
+      "integration_id": "uuid",
+      "arg_sources": { "start_time": "ai_extract", "end_time": "ai_extract" },
+      "request": { "body": { "start_time": "2026-05-11T09:00:00+03:00", "end_time": "2026-05-11T10:00:00+03:00" } },
+      "response": { "success": true, "response_preview": "{\"busy\":[],...}", "error": null, "duration_ms": 651 }
     }
   ],
   "events": [
@@ -688,7 +720,13 @@ Useful for retry / analytics decisions — e.g. don't auto-retry a call that the
 
 **`disconnect_reason`** — Optional human-readable termination reason (e.g. `"Voicemail detected"`, `"Completed"`). Also first-write-wins. May be `null` for short or atypical hangups.
 
-**`tool_calls`** — Paired request/response objects for each LLM-decided tool invocation. Auth-related headers (Authorization, tokens, keys) are redacted as `"[REDACTED]"`. **Always empty for flow-agent calls** — flow tool nodes use a separate dispatch path. For flow agents, read `flow_trace.steps[].tool_call` instead.
+**`tool_calls`** — One row per tool / integration invocation that fired during the call, in firing order. The `kind` field is the discriminator:
+
+- `webhook_tool` — prompt-mode agent with a tool list. `request` carries the full HTTP envelope (method/url/headers/body). Auth-related headers are redacted as `"[REDACTED]"`.
+- `tool_call` — flow-mode `tool_call` node fired. `request` carries just `body` (the resolved args dict). `tool_id` and `node` identify which tool and flow node ran. `arg_sources` maps each arg to its mode (`literal` or `ai_extract`).
+- `integration_call` — flow-mode `integration_call` node fired. Same `request.body`-only shape; `provider`, `action`, `integration_id` identify which connected credential and method ran.
+
+For flow-agent calls, prefer reading `flow_trace.steps[].tool_call` — same per-fire data, inlined per visited step in graph order.
 
 **`events`** — Full chronological timeline of all call events (tool calls, transcriptions, LLM events, errors, termination). For advanced use cases / low-level analysis. For flow agents, prefer `flow_trace` (below) — `events` carries the same data more verbosely. Auth headers are also redacted.
 
@@ -726,18 +764,45 @@ Useful for retry / analytics decisions — e.g. don't auto-retry a call that the
     },
     {
       "step_id": "book_appointment",
-      "step_type": "tool_call",
+      "step_type": "tool_call",          // also: integration_call, start, conversation, transfer, end
       "step_name": "Book appointment",
       "entered_at": "ISO8601",
       "reason": "eval: confirmed_book",
       "tool_call": {
-        "tool_id": "uuid",
+        "kind": "tool_call",             // discriminator — "tool_call" | "integration_call"
         "tool_name": "Book appointment",
         "status": "success",
         "args": {"appointmentDateTime": "Sunday at 12pm", "email": "..."},
+        "arg_sources": {"appointmentDateTime": "ai_extract", "email": "ai_extract"},
         "response_preview": "{\"event_id\": \"abc\", \"duplicate\": false}",
         "error": null,
-        "duration_ms": 412
+        "duration_ms": 412,
+        "tool_id": "uuid",
+        "provider": null,                // set only when kind="integration_call"
+        "action": null,
+        "integration_id": null
+      },
+      "eval_decisions": []
+    },
+    {
+      "step_id": "check_availability",
+      "step_type": "integration_call",
+      "step_name": "Check availability",
+      "entered_at": "ISO8601",
+      "reason": "eval: ready",
+      "tool_call": {
+        "kind": "integration_call",
+        "tool_name": "Check availability",
+        "status": "success",
+        "args": {"start_time": "2026-05-11T09:00:00+03:00", "end_time": "2026-05-11T10:00:00+03:00"},
+        "arg_sources": {"start_time": "ai_extract", "end_time": "ai_extract"},
+        "response_preview": "{\"busy\": [], \"available\": true, ...}",
+        "error": null,
+        "duration_ms": 651,
+        "tool_id": null,
+        "provider": "google_calendar",
+        "action": "check_availability",
+        "integration_id": "uuid"
       },
       "eval_decisions": []
     },
@@ -775,9 +840,9 @@ Useful for retry / analytics decisions — e.g. don't auto-retry a call that the
 | `event_type` | `data` shape |
 |---|---|
 | `flow_started` | `{agent_id, first_step_id, agent_speaks_first}` |
-| `flow_node_entered` | `{step_id, type, name, reason}` |
-| `flow_eval_decision` | `{step_id, decision, reasoning, turn_id}` |
-| `flow_tool_result` | `{step_id, status, tool_name, tool_id, args, response_preview, error, duration_ms}` |
+| `flow_node_entered` | `{step_id, node_kind, name, reason, via_transition_id?}` — `node_kind` is one of `start`, `conversation`, `tool_call`, `integration_call`, `transfer`, `end`. |
+| `flow_eval_decision` | `{step_id, decision, reasoning?, turn_id?, target_step_id?, valid}` |
+| `flow_tool_result` | `{step_id, kind, status, tool_name, tool_id?, provider?, action?, integration_id?, args, arg_sources, response_preview, raw_response_preview?, error, duration_ms}` — `kind` is `tool_call` or `integration_call`; integration-specific fields populated for the latter. `raw_response_preview` is set when the runtime post-processed the LLM-facing view (currently Google Calendar wall-clock conversion). |
 
 **Recording URL notes:**
 - `recording_url` is a permanent signed URL (contains `?sig=...` — do not modify)
@@ -812,6 +877,19 @@ Initiate an outbound call.
 **`variables` vs `metadata` distinction:**
 - `variables` → injected into the system prompt before the call starts (use for per-call context the agent should know)
 - `metadata` → stored on the call record, not injected into the prompt (use for tracking data — CRM IDs, source, etc.)
+
+**Reserved keys (400 on collision).** The five built-in tokens (`id`, `direction`, `agent_number`, `user_number`, `agent_name`) are platform-supplied — the bot emits them itself at call start. Using any of them as a key in `metadata` is rejected with `400 INVALID_METADATA_RESERVED_KEY`. Pick a different name for your custom field (e.g. `customer_id` instead of `id`, `caller_phone` instead of `user_number`).
+
+**Calling a flow agent? Check its metadata contract first.** Flow agents can reference `{{metadata.<key>}}` inside `args_template` values, so a missing key silently renders as an empty string at runtime — the carrier never warns you, the carrier never knows. Before dispatching, fetch the agent and read `flow_config.metadata.custom_metadata_keys`:
+
+```bash
+curl -s -H "Authorization: Bearer $YAPPR_API_KEY" \
+  "https://api.goyappr.com/agents/<agent_id>" \
+  | jq '.flow_config.metadata.custom_metadata_keys'
+# → ["customer_email", "appointment_id"]
+```
+
+Every key in that array must be present in your `metadata` body. The five **built-in** tokens (`id`, `direction`, `agent_number`, `user_number`, `agent_name`) are platform-supplied — you don't need to pass them. Anything else is a contract the flow author chose and the dispatcher (you) must honor. Skip a required key → the dependent node fires with an empty arg → integration validation routes the flow to its `error` branch (assuming the author wired one).
 
 **Response:** `201`
 ```json
@@ -1380,7 +1458,6 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 | POST /agents/:id/flow/test | `flows:test` |
 | POST /agents/:id/flow/restore | `agents:update` |
 | GET /integrations | `integrations:read` |
-| POST /integrations/google-calendar/connect | `integrations:manage` |
 | DELETE /integrations/:id | `integrations:manage` |
 | GET /do-not-call (list/get) | `do_not_call:read` |
 | POST /do-not-call | `do_not_call:manage` |
@@ -1480,6 +1557,8 @@ Same validation as POST. Plus:
       // The same tool used by N flow nodes always sends the same args.
       "tool_id": "<tool uuid from /tools>",
       "config_override": {},
+      "pre_fire_announcement": true,  // optional bool — plays a short platform-controlled hold tone while the webhook runs. Use for webhooks > ~500 ms.
+      "timeout_secs": 30,             // optional number 1–300 — hard cap. On timeout → error_next_step_id.
       "transitions": {
         "success_next_step_id": "confirm_node",
         "error_next_step_id": "apologize_node",
@@ -1544,14 +1623,15 @@ A flow node that calls an OAuth-backed integration directly (Google Calendar, Gm
 
 **Use this when** the action is a first-class capability of a managed integration (book a calendar event, send an email). **Use `tool_call`** for anything that's a custom webhook, a system action, or a tool you already have in the `tools` table.
 
-### `args_template` — the 3-mode `ArgValue` union
+### `args_template` — the 2-mode `ArgValue` union
 
-Every entry in `args_template` is an `ArgValue` — a discriminated union with three writable shapes plus a string shorthand for literals:
+Every entry in `args_template` is an `ArgValue` — a discriminated union with two writable shapes plus a string shorthand for literals:
 
 ```jsonc
 {
   "args_template": {
     // 1) literal — bare string is shorthand for {mode:'literal', value:...}
+    //    Bare strings can also contain mustache tokens (see Token interpolation).
     "subject": "Your appointment is booked",
 
     // 2) literal — explicit form (use when you want to be unambiguous)
@@ -1563,39 +1643,57 @@ Every entry in `args_template` is an `ArgValue` — a discriminated union with t
     "to": { "mode": "ai_extract",
             "description": "Caller's email address as they spelled it out" },
 
-    // 4) variable — pull a previously-extracted value from another
-    //    integration_call node's ai_extract slot. Used when the same value
-    //    needs to flow into multiple integration calls.
-    "start_time": { "mode": "variable",
-                    "source_node_id": "collect_slot",
-                    "source_arg_name": "start_iso" },
-
-    // 5) variable from call metadata — special namespace `__call__` (see below)
-    "body": { "mode": "variable",
-              "source_node_id": "__call__",
-              "source_arg_name": "user_number" }
+    // Tokens work inside any string value:
+    //   - {{node.arg}}       — value from an earlier integration_call node's
+    //                          ai_extract slot
+    //   - {{metadata.key}}   — built-in or user-declared per-call metadata
+    "start_time": { "mode": "literal",
+                    "value": "{{collect_slot.start_iso}}" },
+    "body":       { "mode": "literal",
+                    "value": "Thanks! We'll call you back at {{metadata.user_number}}." }
   }
 }
 ```
 
 **Mode rules:**
-- `literal` — value is sent as-is. Bare-string shorthand is equivalent to `{mode:'literal', value:'<the string>'}`.
-- `ai_extract` — runtime fills the slot from the conversation. `description` is required (used to guide extraction).
-- `variable` — references a value extracted elsewhere. The `source_node_id` is the id of an `integration_call` node earlier in the flow, and `source_arg_name` is one of that node's `ai_extract` arg names. `tool_call` nodes are NOT valid as a `source_node_id` — their args live on the tool config, not on the node, and aren't addressable as per-node slots.
+- `literal` — value is sent as-is after token interpolation. Bare-string shorthand is equivalent to `{mode:'literal', value:'<the string>'}`.
+- `ai_extract` — runtime fills the slot from the conversation. `description` is required (used to guide extraction). The `description` itself is also token-interpolated, so you can splice prior context into the extraction prompt.
 
-#### `__call__` — call-metadata namespace for variable mode
+#### Token interpolation
 
-When `source_node_id === "__call__"`, the variable resolves against per-call metadata instead of another node's slot. Whitelisted `source_arg_name` values:
+Both `literal.value` and `ai_extract.description` strings are scanned for mustache tokens at dispatch time. Two namespaces:
 
-| Key | Value |
-|-----|-------|
-| `id` | The call id (matches `GET /calls/:id`). |
-| `direction` | `"inbound"`, `"outbound"`, or `"web"`. |
-| `agent_number` | The platform's leg of the call (number we own). Direction-aware. |
-| `user_number` | The human's leg. Direction-aware. |
-| `agent_name` | Agent display name. |
+- `{{<node_id>.<arg_name>}}` — value an earlier node AI-extracted from the conversation. Both `integration_call` AND `tool_call` source nodes are addressable:
+  - **integration_call source** — the referenced arg must be declared in `ai_extract` mode in that node's `args_template`.
+  - **tool_call source** — the referenced arg must be the `name` of an entry in the linked tool's `config.payload_config.extraction_parameters`. All extraction_parameters are AI-extracted at runtime by definition, so any of them can be referenced.
 
-Direction details: for inbound calls the caller is the user and the callee is the agent; for outbound the caller is the agent. The `agent_number` / `user_number` derivation hides this so you don't have to special-case direction. Anything outside this whitelist returns `args_template_variable_missing_source` at save time.
+  The referenced node must exist in the same flow. Save-time validation doesn't double-check tool_call arg names (they live on the tool config, not on the flow_config visible to the save validator), so a typo renders to empty string at runtime — design an `error` branch on the downstream node.
+- `{{metadata.<key>}}` — per-call metadata. Built-in keys (always available):
+
+  | Key | Value |
+  |-----|-------|
+  | `id` | The call id (matches `GET /calls/:id`). |
+  | `direction` | `"inbound"`, `"outbound"`, or `"web"`. |
+  | `agent_number` | The platform's leg of the call (number we own). Direction-aware. |
+  | `user_number` | The human's leg. Direction-aware. |
+  | `agent_name` | Agent display name. |
+
+  Plus any **user-declared custom keys** listed in `flow_config.metadata.custom_metadata_keys: string[]`. Custom keys are sourced from the `metadata` dict passed at call dispatch (`POST /calls body.metadata`).
+
+Direction details: for inbound calls the caller is the user and the callee is the agent; for outbound the caller is the agent. The `agent_number` / `user_number` derivation hides this so you don't have to special-case direction.
+
+**Missing metadata keys resolve to an empty string at runtime** — they are NOT a save-time error. The caller is responsible for passing the value at call time. Save-time validation only catches dangling `{{node.arg}}` references where the referenced node or arg doesn't exist or isn't in `ai_extract` mode (`args_template_dangling_reference`).
+
+**Reserved metadata keys** — the five built-in tokens (`id`, `direction`, `agent_number`, `user_number`, `agent_name`) are platform-supplied. Callers cannot override them; supplying any reserved key in `POST /calls body.metadata` (or `web-call body.metadata`) returns `400 INVALID_METADATA_RESERVED_KEY`. Pick different names for custom keys (e.g. `customer_email`, `appointment_id`).
+
+#### AI extraction at runtime
+
+When a `tool_call` or `integration_call` node enters and one of its required args is `ai_extract` mode with no value yet (slot empty, or `description` references slots that resolve empty), the runtime pauses the action and asks the user for the missing piece — using each missing arg's `description` as guidance for what to ask. This is conversational, not a form: the agent phrases the question itself, listens for the answer, then fires the action automatically once it has everything.
+
+- **Up to 3 retry turns.** If the user dodges, the agent re-asks (in fresh language). After 3 failed attempts, the node routes to its `error_next_step_id` with `missing_required_args_after_3_attempts: <arg names>`.
+- **Cached for the duration of the call.** Once extracted, an arg's value persists in slot storage and is available to any downstream `{{<node_id>.<arg_name>}}` token. Re-entering the same node (e.g. a loop) reuses the cached value rather than re-asking.
+- **Always wire an `error` branch.** Even on simple flows. A stubborn caller, a misheard phrase, or an arg that the conversation never naturally surfaces will all route here.
+- **Tip:** write `description` fields like prompts to the AI, not labels. `"Caller's email, spelled out one character at a time"` extracts more reliably than just `"email"`.
 
 ### Node shape
 
@@ -1616,7 +1714,8 @@ Direction details: for inbound calls the caller is the user and the callee is th
     "end_time":   { "mode": "ai_extract",
                     "description": "ISO-8601 end time, 30 minutes after start" }
   },
-  "pre_fire_announcement": "One moment while I check the calendar.",  // optional
+  "pre_fire_announcement": true,  // optional bool — plays a short platform-controlled hold tone the moment this node fires, so the caller doesn't sit in silence while the action runs. Stops automatically when the action returns. Recommended for create_event / send_email / network-bound actions; skip for check_availability (which is fast). Tone is NOT configurable.
+  "timeout_secs": 30,             // optional number 1–300 — hard cap on execution time. On timeout the action is cancelled and the node routes to error_next_step_id with `tool_timeout_after_<N>s`. Null/omitted = platform default (30s).
 
   "transitions": {
     "success_next_step_id": "confirm_booked",
@@ -1638,10 +1737,24 @@ Direction details: for inbound calls the caller is the user and the callee is th
 
 | Action | Required args | Optional args |
 |---|---|---|
-| `create_event` | `summary`, `start_time`, `end_time` | `attendees`, `description`, `location` |
-| `list_events` | — | `time_min`, `time_max`, `max_results`, `query` |
-| `check_availability` | `start_time`, `end_time` | — |
+| `create_event` | `summary`, `start_time`, `end_time` | `attendees`, `description`, `location`, `calendar_id`, `time_zone` |
+| `list_events` | — | `time_min`, `time_max`, `max_results`, `query`, `calendar_id`, `time_zone` |
+| `check_availability` | `start_time`, `end_time` | `calendar_id`, `time_zone` |
 | `cancel_event` | `event_id` | — |
+
+`calendar_id` accepts a Google calendar id or `"primary"` (default). `cancel_event` does not expose `calendar_id` — the runtime auto-resolves which calendar a given event lives on (tries `primary` first, scans the user's other writable calendars on 404). `time_zone` is an IANA name (`"Asia/Jerusalem"`); when set, Google's response is pinned to that zone and the event being created is stamped with it. When blank, the calendar's default timezone is used.
+
+#### Calendar response post-processing — what the agent sees
+
+Calendar action responses (`create_event`, `list_events`, `check_availability`) are post-processed before the voice agent receives them, because Gemini Live's ISO 8601 parser handles timezone offsets unreliably. The runtime:
+
+1. Strips the offset and seconds from each event's `start.dateTime` / `end.dateTime`, leaving wall-clock format (`"2026-05-10 16:30"`).
+2. Removes the per-event `start.timeZone` / `end.timeZone` fields (otherwise Live can mis-read "16:30 Asia/Jerusalem" as a re-projection target and re-introduce the bug).
+3. Adds a top-level `timeZone` + `timeZone_note` ("Event times below are wall-clock values in `<tz>` …") so Live has one explicit anchor.
+
+The `<tz>` quoted in the note is whatever you passed in `time_zone`, or — if blank — whatever timezone Google returned (the calendar's primary). The agent never sees raw ISO offsets for these actions.
+
+The **raw** Google response is preserved on the call event (`raw_response_preview`) for audit, viewable in the dashboard's call-detail sheet alongside the agent-facing view. The flow agent itself only ever sees the sanitized version.
 
 **`gmail`:**
 
@@ -1672,7 +1785,7 @@ Direction details: for inbound calls the caller is the user and the callee is th
                      "description": "Caller's email address as a single-element array" },
     "description": "Booked via inbound call"
   },
-  "pre_fire_announcement": "One moment while I add this to the calendar.",
+  "pre_fire_announcement": true,
   "transitions": {
     "success_next_step_id": "confirm_booked",
     "error_next_step_id":   "apologize_and_handoff"
@@ -1680,9 +1793,9 @@ Direction details: for inbound calls the caller is the user and the callee is th
 }
 ```
 
-### Example — Gmail `send_email` reusing values via `variable` mode
+### Example — Gmail `send_email` reusing values via tokens
 
-The recipient was already extracted by an earlier `create_event` node — pull it through with `variable` mode instead of asking the caller again. The body also references the call's `user_number` from the `__call__` namespace (e.g. include the phone number in the support context line).
+The recipient was already extracted by an earlier `create_event` node — splice it through with a `{{create_event.attendees}}` token instead of asking the caller again. The `cc` field references the call's `user_number` via the `metadata` namespace (e.g. include the phone number in the support context line).
 
 ```jsonc
 {
@@ -1693,17 +1806,13 @@ The recipient was already extracted by an earlier `create_event` node — pull i
   "integration_id": "1d4e2f3a-9c8b-4d6e-8f1a-7b2c3d4e5f6a",
   "action": "send_email",
   "args_template": {
-    "to":      { "mode": "variable",
-                 "source_node_id": "create_event",
-                 "source_arg_name": "attendees" },
+    "to":      { "mode": "literal", "value": "{{create_event.attendees}}" },
     "subject": "Your appointment is booked",
     "body":    { "mode": "ai_extract",
                  "description": "Short confirmation paragraph including the agreed time and a thank-you" },
-    "cc":      { "mode": "variable",
-                 "source_node_id": "__call__",
-                 "source_arg_name": "user_number" }
+    "cc":      { "mode": "literal", "value": "{{metadata.user_number}}" }
   },
-  "pre_fire_announcement": "Sending you the confirmation now.",
+  "pre_fire_announcement": true,
   "transitions": {
     "success_next_step_id": "polite_end",
     "error_next_step_id":   "apologize_and_collect_email_manually"
@@ -1719,9 +1828,9 @@ The recipient was already extracted by an earlier `create_event` node — pull i
 - `integration_id` must reference an `active` row in the caller's company `integrations` table whose `provider` matches the node's `provider`. Otherwise → `integration_not_in_company`.
 - `success_next_step_id` must be wired → `success_not_wired` if absent.
 - `provider` is locked at creation. To switch from Calendar to Gmail, delete the node and recreate.
-- Every required arg in the action's catalog must be present in `args_template` with a non-empty value, or in `ai_extract` / `variable` mode → `args_template_missing_required` otherwise.
+- Every required arg in the action's catalog must be present in `args_template` with a non-empty value, or in `ai_extract` mode → `args_template_missing_required` otherwise.
 - Every `ai_extract` arg must have a non-empty `description` → `args_template_missing_description` otherwise.
-- Every `variable` arg must resolve. The `source_node_id` must be either (a) another `integration_call` node whose `source_arg_name` is in `ai_extract` mode, OR (b) the `__call__` namespace with a whitelisted key (`id`, `direction`, `agent_number`, `user_number`, `agent_name`). Anything else → `args_template_variable_missing_source`. Self-references → `args_template_variable_self_reference`. **`tool_call` nodes are not valid as a `source_node_id`** — they don't carry per-node arg slots.
+- Every `{{node.arg}}` token in any `literal.value` or `ai_extract.description` must resolve to an existing node in the flow. If the source is an `integration_call` node, the referenced arg must be declared in `ai_extract` mode in that node's `args_template`; otherwise → `args_template_dangling_reference`. `tool_call` source nodes are also accepted but the validator doesn't verify the arg name (it lives on the tool config, not the flow_config). `{{metadata.key}}` tokens are likewise NOT validated at save time — missing values render to empty string at runtime in both cases.
 
 The result of a successful action is injected as a `<tool_result>` block into the next node's LLM context — same as `tool_call`. So a single `success` → conversation node usually handles both happy-path and soft-fail outcomes naturally; reach for `custom[]` only when the **next node** needs to be structurally different.
 
@@ -1765,8 +1874,7 @@ Fix every entry in `issues` and re-save — the API returns all problems at once
 | `integration_not_in_company` | integration_call | `integration_id` doesn't exist, isn't `active`, belongs to another company, or its provider doesn't match the node's `provider`. |
 | `args_template_missing_required` | integration_call | A required arg for the action is absent from `args_template` (or present but in literal mode with an empty value). |
 | `args_template_missing_description` | integration_call | An arg in `ai_extract` mode is missing the `description` field. |
-| `args_template_variable_missing_source` | integration_call | A `variable`-mode arg references an unknown node id, references a `tool_call` node, references a non-`ai_extract` arg, or uses the `__call__` namespace with a `source_arg_name` outside the whitelist (`id`, `direction`, `agent_number`, `user_number`, `agent_name`). |
-| `args_template_variable_self_reference` | integration_call | A `variable`-mode arg has `source_node_id` equal to its own node id. |
+| `args_template_dangling_reference` | integration_call | A `{{node.arg}}` token references a node id that doesn't exist in the flow, an arg that doesn't exist on that node, or an arg that is not declared in `ai_extract` mode. (Note: `{{metadata.key}}` tokens are NOT validated at save time — missing metadata at runtime resolves to empty string.) |
 
 ## GET /agents/:id/flow/versions
 
@@ -1855,7 +1963,9 @@ v1 of the test simulator uses a deterministic keyword-overlap heuristic for tran
 
 # Integrations (OAuth-backed)
 
-OAuth-backed third-party integrations available to **flow agents only**. v1: Google Calendar. For the headless OAuth contract that AI agents must follow, see [`integrations-guide.md`](integrations-guide.md).
+OAuth-backed third-party integrations available to **flow agents only**. v1: Google Calendar, Gmail.
+
+**Connecting credentials is dashboard-only.** The OAuth handshake (popup → Google consent → callback → token persistence) lives in the Yappr dashboard's Integrations page; the public API does not expose a connect endpoint. The customer connects each Google account once via the dashboard, then drives the rest of the lifecycle (listing, revoking, referencing in flows) through this API.
 
 ## GET /integrations
 
@@ -1872,37 +1982,18 @@ Response:
       "id": "uuid",
       "provider": "google_calendar",
       "account_label": "team@clinicpro.ai",
-      "scopes": ["https://www.googleapis.com/auth/calendar.events", "openid", "email"],
+      "scopes": ["https://www.googleapis.com/auth/calendar", "openid", "email"],
       "status": "active",
-      "created_at": "..."
+      "created_at": "...",
+      "updated_at": "..."
     }
   ]
 }
 ```
 
-Tokens are NEVER returned in responses.
+The response includes ONLY the fields shown above. Encrypted access/refresh tokens are never returned. Internal operational metadata (last refresh diagnostics, error counts) is also withheld — if you need any of that surfaced, request a named field.
 
-## POST /integrations/google-calendar/connect
-
-```bash
-curl -X POST "https://api.goyappr.com/integrations/google-calendar/connect" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{ "return_to": "https://app.goyappr.com/integrations" }'
-```
-
-Response:
-```jsonc
-{
-  "oauth_url": "https://accounts.google.com/o/oauth2/v2/auth?...",
-  "connect_id": "uuid"
-}
-```
-
-Print `oauth_url` to the human user — they must complete consent in a browser. Then poll `GET /integrations` until `status='active'`.
-
-**Errors:**
-- 409 `"company_has_no_admin"` — OAuth state is anchored to the company's first admin. The admin must connect once via the dashboard first.
+Filter by `?provider=google_calendar` or `?provider=gmail`. Soft-deleted rows are excluded.
 
 ## DELETE /integrations/:id
 
@@ -1911,7 +2002,11 @@ curl -X DELETE "https://api.goyappr.com/integrations/<id>" \
   -H "Authorization: Bearer $YAPPR_API_KEY"
 ```
 
-Best-effort revoke at Google + soft-delete row + null tokens. Returns 204.
+Best-effort revoke at Google + soft-delete row + null encrypted tokens. Returns 204.
+
+The row is soft-deleted (not removed) because past `flow_versions` may still reference its `id`. Calls placed against active flow agents that reference a disconnected integration hit the integration-call node's `error` transition with a structured `integration_disconnected` result.
+
+To re-connect the same Google account: complete the OAuth flow again from the dashboard. The callback finds the soft-deleted row (matched by `(company_id, provider, account_label)`), revives it, and writes fresh tokens.
 
 ---
 
@@ -2339,9 +2434,9 @@ curl "https://api.goyappr.com/agent-eval/runs/$RUN_ID/evaluation" \
 
 ## POST /agent-eval/runs/:id/cancel
 
-Best-effort cancel. **Scopes:** `agent_eval:update`.
+Best-effort cancel. **Scopes:** `agent_eval:run`.
 
-If the worker has not yet claimed the run, it transitions to `cancelled` immediately and is never executed. If the worker already started it, the cancellation is signalled and the run terminates at the next turn boundary with `termination_reason='cancelled'`. Cancelled runs are still billed for any turns produced before the cancel signal landed.
+If the worker has not yet claimed the run, it transitions to `cancelled` immediately and is never executed. If the worker already started it, the cancellation is signalled and pipecat terminates at the next turn boundary with `termination_reason='cancelled'`. Cancelled runs are still billed for any turns produced before the cancel signal landed.
 
 Returns the updated run object. 409 if the run is already in a terminal state.
 

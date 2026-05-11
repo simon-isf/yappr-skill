@@ -271,7 +271,7 @@ A common mistake is to add `args_template` to a `tool_call` node hoping to overr
 
 ### `integration_call` nodes — args on the node via the `ArgValue` union
 
-`integration_call` nodes carry `args_template` directly on the node. Each entry is an `ArgValue` — a discriminated union with three writable shapes:
+`integration_call` nodes carry `args_template` directly on the node. Each entry is an `ArgValue` — a discriminated union with two writable shapes plus a string shorthand for literals:
 
 ```jsonc
 {
@@ -284,31 +284,44 @@ A common mistake is to add `args_template` to a `tool_call` node hoping to overr
     "to": { "mode": "ai_extract",
             "description": "Caller's email address as they spelled it out" },
 
-    // variable — pull a previously-extracted value from another
-    // integration_call node's ai_extract slot.
-    "start_time": { "mode": "variable",
-                    "source_node_id": "collect_slot",
-                    "source_arg_name": "start_iso" }
+    // Tokens work inside any string value:
+    //   - {{node.arg}}     — value extracted by an earlier integration_call
+    //                        node's ai_extract slot
+    //   - {{metadata.key}} — built-in or user-declared per-call metadata
+    "start_time": { "mode": "literal", "value": "{{collect_slot.start_iso}}" }
   }
 }
 ```
 
 **Mode rules:**
-- `literal` — value sent as-is. Bare-string is shorthand.
-- `ai_extract` — `description` is required. Filled by the runtime from conversation context.
-- `variable` — `source_node_id` must be either another `integration_call` node (whose `source_arg_name` is in `ai_extract` mode) or the special `__call__` namespace described below. **`tool_call` nodes are not valid as a `source_node_id`** — they don't carry per-node arg slots.
+- `literal` — value sent as-is after token interpolation. Bare-string is shorthand.
+- `ai_extract` — `description` is required. Filled by the runtime from conversation context. The `description` itself is also token-interpolated, so prior context can be spliced into the extraction prompt.
 
-### `__call__` — call-metadata namespace for `variable` mode
+### Token interpolation — `{{node.arg}}` and `{{metadata.key}}`
 
-When `source_node_id === "__call__"`, the variable resolves against per-call metadata instead of another node's slot. Whitelisted keys:
+Both `literal.value` and `ai_extract.description` strings are scanned for mustache tokens at dispatch time:
 
-| Key | Value |
-|-----|-------|
-| `id` | The call id (matches `GET /calls/:id`). |
-| `direction` | `"inbound"`, `"outbound"`, or `"web"`. |
-| `agent_number` | The platform's leg of the call (number we own). Direction-aware. |
-| `user_number` | The human's leg. Direction-aware. |
-| `agent_name` | Agent display name. |
+- `{{<node_id>.<arg_name>}}` — value an earlier node AI-extracted from the conversation. Two source shapes are valid:
+  - **integration_call source** — the referenced arg must be declared in `ai_extract` mode in that node's `args_template`.
+  - **tool_call source** — the referenced arg must be the `name` of an entry in the linked tool's `config.payload_config.extraction_parameters` (those are all AI-extracted at runtime by definition).
+  Save-time validation rejects tokens that point at a node id that doesn't exist in the flow; it doesn't double-check tool_call arg names (they live on the tool config, not the flow_config), so a typo there renders to empty string at runtime — design an `error` branch for the downstream node.
+
+  **Tokens carry inputs, not outputs.** `{{upstream.arg}}` resolves to whatever value was *passed in* to that upstream node's `ai_extract` slot (the value the agent extracted from conversation BEFORE that node fired). It does NOT carry the API response of the upstream call. To consume an upstream node's *response* in a downstream arg, use `ai_extract` mode on the downstream node — see "Recipe — chaining a node's response into a later node" below.
+- `{{metadata.<key>}}` — per-call metadata. Built-in keys (always available):
+
+  | Key | Value |
+  |-----|-------|
+  | `id` | The call id (matches `GET /calls/:id`). |
+  | `direction` | `"inbound"`, `"outbound"`, or `"web"`. |
+  | `agent_number` | The platform's leg of the call (number we own). Direction-aware. |
+  | `user_number` | The human's leg. Direction-aware. |
+  | `agent_name` | Agent display name. |
+
+  Plus any **user-declared custom keys** listed in `flow_config.metadata.custom_metadata_keys: string[]`. Custom-key values are sourced from the `metadata` dict passed at call dispatch (`POST /calls body.metadata`).
+
+**Missing metadata at runtime resolves to an empty string** — it is NOT a save-time error. The caller is responsible for passing the value at call time.
+
+Save-time validation only catches dangling `{{node.arg}}` references (`args_template_dangling_reference`).
 
 Example — include the caller's number in a confirmation email body so the support team can call back without context-switching:
 
@@ -327,9 +340,7 @@ Example — include the caller's number in a confirmation email body so the supp
               "description": "Friendly confirmation paragraph including the agreed time" },
     // CC the caller's phone number into the email metadata so support
     // can reach them without digging through the call log.
-    "cc": { "mode": "variable",
-            "source_node_id": "__call__",
-            "source_arg_name": "user_number" }
+    "cc": { "mode": "literal", "value": "{{metadata.user_number}}" }
   },
   "transitions": {
     "success_next_step_id": "polite_end",
@@ -338,7 +349,274 @@ Example — include the caller's number in a confirmation email body so the supp
 }
 ```
 
-Anything outside the whitelist returns `args_template_variable_missing_source` at save time.
+### Recipe — accepting caller-supplied custom metadata
+
+When the caller (your dispatch layer) already knows context the agent should use — a customer email pulled from your CRM, an order number, a clinic id — declare a custom metadata key and reference it via `{{metadata.<key>}}`. This avoids asking the caller to spell it out on the call.
+
+1. Declare the key in your flow config:
+
+```jsonc
+{
+  "flow_config_version": "1",
+  "metadata": {
+    "custom_metadata_keys": ["CustomerEmail", "OrderNumber"]
+  },
+  "nodes": [ /* ... */ ]
+}
+```
+
+> **Reserved names.** `id`, `direction`, `agent_number`, `user_number`, and `agent_name` are platform-supplied built-ins — don't declare them as custom keys. The `POST /calls` (and web-call) endpoints reject `body.metadata` payloads that include any of these names with `400 INVALID_METADATA_RESERVED_KEY`, so a flow that tries to wire one of them through would have no way to receive a value from the dispatcher anyway.
+
+2. Use the token in any `args_template` value:
+
+```jsonc
+{
+  "id": "send_receipt",
+  "type": "integration_call",
+  "provider": "gmail",
+  "integration_id": "<gmail integration uuid>",
+  "action": "send_email",
+  "args_template": {
+    "to":      { "mode": "literal", "value": "{{metadata.CustomerEmail}}" },
+    "subject": { "mode": "literal", "value": "Receipt for order {{metadata.OrderNumber}}" },
+    "body":    { "mode": "ai_extract",
+                 "description": "Short thank-you including order number {{metadata.OrderNumber}}" }
+  },
+  "transitions": {
+    "success_next_step_id": "polite_end",
+    "error_next_step_id":   "apologize_email_manually"
+  }
+}
+```
+
+3. Pass the values when dispatching the call:
+
+```bash
+curl -X POST "https://api.goyappr.com/calls" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "<agent_id>",
+    "to":   "+972501234567",
+    "from": "<your_yappr_number>",
+    "metadata": {
+      "CustomerEmail": "noa@example.com",
+      "OrderNumber":   "A-19281"
+    }
+  }'
+```
+
+If `CustomerEmail` is absent from the metadata dict at call time, the `to` field resolves to an empty string and the integration's own validation will surface the issue at runtime via the node's `error` branch — so always design an `error` branch for nodes that depend on caller-supplied metadata.
+
+#### Contract checkpoint — before declaring this flow "done"
+
+The `custom_metadata_keys` you declare here are a **contract between this flow and every caller that invokes the agent**. There is no save-time validation that the dispatch layer actually passes those keys — the only signal you'll get on a missing key is the empty-string render at runtime. Treat every new custom key as a two-part change:
+
+1. **Flow side** — the steps above (declare + reference the token).
+2. **Caller side** — whatever code or human dispatches the agent must include the key in `body.metadata` on `POST /calls`.
+
+When you ship a flow that uses custom metadata, **tell the user explicitly** (or update your dispatch code, if you own it) which keys they must pass. Don't assume they'll discover the requirement from a failed call days later. Example handoff:
+
+> Flow `appointment-confirm` now reads `customer_email` and `appointment_id` from call metadata. Update your dispatcher so `POST /calls` includes:
+> ```json
+> { "metadata": { "customer_email": "...", "appointment_id": "..." } }
+> ```
+> Without these keys, the confirmation email node will render an empty `to` and route to its error branch.
+
+Two ways to discover what a saved flow expects (when the dispatch layer is a different person/agent):
+- `GET /agents/:id` → `flow_config.metadata.custom_metadata_keys` lists the declared keys.
+- Search `flow_config.nodes` for `{{metadata.…}}` tokens — every reference that isn't a built-in (`id`, `direction`, `agent_number`, `user_number`, `agent_name`) is a custom-key dependency.
+
+### Recipe — chaining a node's response into a later node
+
+The most common multi-step flow shape is: **lookup → caller confirms which result is theirs → act on the chosen item by id**. Cancelling an appointment, updating an order, releasing a hold on a payment, rescheduling a delivery — they all share the same skeleton.
+
+The non-obvious part: an upstream node's API response is NOT addressable via `{{tokens}}`. Tokens carry inputs (what the agent passed in), not outputs (what the API returned). To pass a value from one node's response to the next node's input, declare the downstream arg as `ai_extract` mode and write a description that points at the upstream result. The voice agent reads the upstream tool's `response` block from its conversation context (the function_response Live receives is the full sanitized payload — the agent has it verbatim) and fills the downstream slot via `commit_tool_args` at dispatch time.
+
+This pattern is provider-agnostic — it works the same way for `tool_call` (custom webhooks) as it does for `integration_call` (Calendar/Gmail).
+
+**Concrete example — cancel an appointment by name:**
+
+```jsonc
+{
+  "nodes": [
+    {
+      "id": "ask_event_window",
+      "type": "conversation",
+      "instructions": "Ask the caller roughly when their appointment is so we can find it. Once you have a date or short range, transition to find.",
+      "transitions": [
+        { "id": "have_window", "label": "Have window", "next_step_id": "find" }
+      ]
+    },
+    {
+      "id": "find",
+      "type": "integration_call",
+      "provider": "google_calendar",
+      "integration_id": "<integration uuid>",
+      "action": "list_events",
+      "args_template": {
+        "time_min": { "mode": "ai_extract",
+                      "description": "ISO 8601 start of the window the caller mentioned" },
+        "time_max": { "mode": "ai_extract",
+                      "description": "ISO 8601 end of the window the caller mentioned" },
+        "max_results": 5,
+        "query":       { "mode": "ai_extract",
+                         "description": "Caller's full name (used to filter events). Leave empty if they didn't give a name." }
+      },
+      "transitions": {
+        "success_next_step_id": "confirm_which_event",
+        "error_next_step_id":   "apologize_lookup_failed"
+      }
+    },
+    {
+      "id": "confirm_which_event",
+      "type": "conversation",
+      "instructions": "Read back the matching events with their date, time, and title. Ask the caller to confirm which one is theirs. If exactly one matched, just confirm that one. If none matched, apologize and end. Once confirmed, transition to cancel.",
+      "transitions": [
+        { "id": "confirmed", "label": "Caller confirmed", "next_step_id": "cancel" },
+        { "id": "none_match", "label": "No matching event", "next_step_id": "apologize_lookup_failed" }
+      ]
+    },
+    {
+      "id": "cancel",
+      "type": "integration_call",
+      "provider": "google_calendar",
+      "integration_id": "<integration uuid>",
+      "action": "cancel_event",
+      "args_template": {
+        "event_id": {
+          "mode": "ai_extract",
+          "description": "The `id` field of the calendar event the caller just confirmed they want to cancel. Pull it verbatim from the previous list_events response — do not re-derive or guess."
+        }
+      },
+      "pre_fire_announcement": true,
+      "transitions": {
+        "success_next_step_id": "confirm_cancelled",
+        "error_next_step_id":   "apologize_cancel_failed"
+      }
+    }
+  ]
+}
+```
+
+**Why this works:** when the agent enters the `cancel` node, the controller asks Live to fill `event_id`. Live has the entire `list_events` function_response in its context — including the `id` field of every event it just narrated to the caller and the caller's confirmation of which one is theirs. It calls `commit_tool_args(node_id="cancel", args={"event_id":"<the actual id>"})` and the runtime fires the cancel.
+
+**Authoring rules of thumb for this pattern:**
+
+1. **Be explicit in the description.** "The id of the event the caller just confirmed" is unambiguous. "The event id" is not — Live might invent one. Name the *exact* response field (`id`, `order_number`, `customer_id`, etc.) and the conversational anchor ("the one the caller just chose").
+2. **Tell Live not to guess.** Phrases like "pull it verbatim from the previous response — do not re-derive" reliably steer it away from hallucinating ids.
+3. **Always wire an `error_next_step_id`.** AI extraction has a 3-attempt cap; if Live can't pin the value (e.g. the caller's "yeah the second one" was ambiguous), the runtime routes to error after 3 retries.
+4. **Don't skip the confirmation conversation node.** Going `find → cancel` directly works only when the lookup returns exactly one result. With 0 or 2+ results you need a conversation node to disambiguate first.
+
+The same shape applies to:
+- Looking up a customer by phone number, then updating their record by `customer_id`.
+- Listing recent orders, then refunding the chosen one by `order_id`.
+- Searching tickets, then commenting on the chosen one by `ticket_id`.
+- Any "search → pick → act" UX in voice.
+
+### Recipe — mixing tool_call and integration_call in one flow
+
+Cross-node tokens work in both directions — an `integration_call` can read an upstream `tool_call`'s AI-extracted args, and vice versa. Use this when the dispatch surface for the action lives outside Google (a CRM, your billing system, an SMS provider) but you also want a native Calendar / Gmail action in the same flow.
+
+Concrete example — log the lead in your CRM via a webhook, then book the appointment on Google Calendar using the same email/datetime the agent just extracted:
+
+```jsonc
+{
+  "nodes": [
+    /* … start + gather conversation nodes … */
+    {
+      "id": "log_lead",
+      "type": "tool_call",
+      "tool_id": "<crm-webhook tool uuid>",
+      // No args_template — tool_call nodes don't carry one. The webhook tool's
+      // extraction_parameters define which fields the agent will pull from
+      // the conversation. Suppose the tool has extraction_parameters:
+      //   - "email"               (required)
+      //   - "appointmentDateTime" (required)
+      // Both will be AI-extracted at fire time.
+      "transitions": {
+        "success_next_step_id": "book_calendar",
+        "error_next_step_id": "apologize_and_handoff"
+      }
+    },
+    {
+      "id": "book_calendar",
+      "type": "integration_call",
+      "provider": "google_calendar",
+      "integration_id": "<calendar credential uuid>",
+      "action": "create_event",
+      "args_template": {
+        // Cross-token into the tool_call node's AI-extracted args.
+        // log_lead.email and log_lead.appointmentDateTime are addressable
+        // because they're names of extraction_parameters on the linked tool.
+        "summary":    { "mode": "literal", "value": "Consultation with {{log_lead.email}}" },
+        "start_time": { "mode": "literal", "value": "{{log_lead.appointmentDateTime}}" },
+        // Calendar needs an end_time too; ai_extract is fine here since it
+        // wasn't captured upstream.
+        "end_time":   { "mode": "ai_extract",
+                        "description": "ISO 8601 end_time — exactly 30 minutes after start_time {{log_lead.appointmentDateTime}}." }
+      },
+      "transitions": {
+        "success_next_step_id": "say_done",
+        "error_next_step_id":   "apologize_and_handoff"
+      }
+    }
+    /* … say_done end node, apologize_and_handoff conversation, etc. … */
+  ]
+}
+```
+
+What the runtime does: when `book_calendar` enters, it sees that `summary` and `start_time` are literals that reference slots from `log_lead` — those were filled by the webhook tool's AI extraction step. They're already in slot storage; the tokens interpolate from cache without re-prompting. Only `end_time` is `ai_extract` and unknown, so Live asks the caller (or derives from start_time) before firing. Single voice prompt, two services touched.
+
+### Recipe — robust AI extraction with error fallback
+
+When a node has `ai_extract` args, the runtime gives the agent up to 3 chances to surface each value from the conversation before giving up. If you don't wire an `error` branch, a stubborn caller can deadlock the flow. Every flow with `ai_extract` args MUST have its error_next_step_id wired.
+
+```jsonc
+{
+  "nodes": [
+    {
+      "id": "book_event",
+      "type": "integration_call",
+      "provider": "google_calendar",
+      "integration_id": "<calendar credential uuid>",
+      "action": "create_event",
+      "args_template": {
+        "summary":    { "mode": "ai_extract", "description": "Short title for the appointment, like 'Consultation with Sarah Cohen'." },
+        "start_time": { "mode": "ai_extract", "description": "ISO 8601 start, in the caller's timezone (Israel = UTC+3). If the caller said 'tomorrow at 3', convert it." },
+        "end_time":   { "mode": "ai_extract", "description": "ISO 8601 end, exactly 30 minutes after start_time." }
+      },
+      "transitions": {
+        "success_next_step_id": "say_done",
+        "error_next_step_id":   "graceful_handoff"
+      }
+    },
+    {
+      "id": "graceful_handoff",
+      "type": "conversation",
+      "name": "Apologise and take down info for callback",
+      "instructions": "Apologise: we couldn't pin down the booking details over the call. Ask the caller for the easiest way to reach them — phone or email — and tell them someone will follow up within 2 business hours. Keep it warm, no blame.",
+      "transitions": [
+        { "id": "got_contact", "label": "Caller agreed to callback", "next_step_id": "handoff_end", "description": "User gave their preferred contact and is OK with a callback" }
+      ]
+    },
+    { "id": "handoff_end", "type": "end", "farewell": "Thank you — we'll be in touch shortly. Have a good day." }
+  ]
+}
+```
+
+How it plays out for a non-cooperative caller:
+- **Attempt 1**: agent asks "What time works for you?". Caller: "Whatever's good."
+- **Attempt 2**: agent re-asks more directly. Caller: "I don't know, you tell me."
+- **Attempt 3**: agent tries once more with a concrete suggestion. Caller dodges.
+- **Result**: runtime routes to `graceful_handoff`. Agent apologises and takes the callback info — no dead air, no awkward looping.
+
+The 3-attempt cap is per node entry. If the same node fires twice in a call (a loop), each entry gets its own 3 attempts.
+
+**Authoring rules of thumb for ai_extract:**
+1. **Write descriptions like prompts**, not labels. `"Caller's email, spelled out one character at a time"` extracts more reliably than `"email"`.
+2. **Splice context with tokens.** `description: "ISO 8601 end time — exactly 30 minutes after {{check.start_time}}"` gives the agent the upstream value to anchor against.
+3. **Always wire an `error_next_step_id`.** Even on tiny flows. Voice is unpredictable.
 
 ---
 
@@ -552,7 +830,7 @@ Skeleton `flow_config` for the integration nodes (the conversation/end/transfer 
         "end_time":   { "mode": "ai_extract",
                         "description": "ISO-8601 end time, default 30 minutes after start" }
       },
-      "pre_fire_announcement": "One moment while I check the calendar.",
+      "pre_fire_announcement": true,
       "transitions": {
         "success_next_step_id": "confirm_booking",
         "error_next_step_id":   "apologize_and_handoff",
@@ -581,17 +859,15 @@ Skeleton `flow_config` for the integration nodes (the conversation/end/transfer 
         "summary":     { "mode": "ai_extract",
                          "description": "Caller's full name plus 'consultation'" },
         // Reuse the times we already extracted in check_availability.
-        "start_time":  { "mode": "variable",
-                         "source_node_id": "check_availability",
-                         "source_arg_name": "start_time" },
-        "end_time":    { "mode": "variable",
-                         "source_node_id": "check_availability",
-                         "source_arg_name": "end_time" },
+        "start_time":  { "mode": "literal",
+                         "value": "{{check_availability.start_time}}" },
+        "end_time":    { "mode": "literal",
+                         "value": "{{check_availability.end_time}}" },
         "attendees":   { "mode": "ai_extract",
                          "description": "Caller's email address as a single-element array" },
         "description": "Booked via inbound call"
       },
-      "pre_fire_announcement": "Adding it to the calendar now.",
+      "pre_fire_announcement": true,
       "transitions": {
         "success_next_step_id": "send_confirmation",
         "error_next_step_id":   "apologize_and_handoff"
@@ -607,14 +883,12 @@ Skeleton `flow_config` for the integration nodes (the conversation/end/transfer 
       "action": "send_email",
       "args_template": {
         // Reuse the email captured during create_event.
-        "to":      { "mode": "variable",
-                     "source_node_id": "create_event",
-                     "source_arg_name": "attendees" },
+        "to":      { "mode": "literal", "value": "{{create_event.attendees}}" },
         "subject": "Your appointment is booked",
         "body":    { "mode": "ai_extract",
                      "description": "Friendly confirmation paragraph including the agreed time and a thank-you" }
       },
-      "pre_fire_announcement": "Sending you the confirmation now.",
+      "pre_fire_announcement": true,
       "transitions": {
         "success_next_step_id": "polite_end",
         "error_next_step_id":   "apologize_email_manually"
@@ -630,7 +904,7 @@ Skeleton `flow_config` for the integration nodes (the conversation/end/transfer 
 Notes:
 - Both Calendar nodes reference the **same `integration_id`** because the same connected account owns the underlying calendar.
 - The Gmail node has its own `integration_id` (could be a different account).
-- `pre_fire_announcement` covers latency on the dispatch — the agent says one short line right before the action runs, so the pause doesn't feel dead.
+- `pre_fire_announcement: true` covers latency on the dispatch — the platform plays a short hold message while the action runs, so the pause doesn't feel dead. The copy is platform-controlled (no per-node text).
 - The `check_availability` `$.available == false` custom branch is the typical "soft-fail that needs a structurally different next node" — sending the user to `suggest_alternatives` instead of `confirm_booking`.
 - Always design an `error` branch on every dispatch node. Network blips and disconnected integrations happen; you don't want the call to dead-end.
 
@@ -645,7 +919,7 @@ Quick checklist (the validator codes that back each rule are in parentheses):
 - Exactly one `start` node (`no_start`, `multiple_starts`); its `next_step_id` is wired (`start_unwired`).
 - Every `conversation` node has non-empty `instructions` (`instructions_missing`) and at least one outgoing transition (`terminal_not_allowed`).
 - Every `tool_call` node has a `tool_id` (`tool_id_missing`) and a wired `success_next_step_id` (`success_not_wired`). `tool_call` nodes have no `args_template` field — args come from the tool's `payload_config`.
-- Every `integration_call` node has a valid `provider` (invalid → `schema_invalid` at zod parse), a valid `action` for that provider (`action_invalid`), an `integration_id` (`integration_id_missing`), and that integration is `active` in your company with a matching provider (`integration_not_in_company`). It also needs `success_next_step_id` wired (`success_not_wired`). Required action args must be present in `args_template` (`args_template_missing_required`); `ai_extract` args need a `description` (`args_template_missing_description`); `variable` args must point at another `integration_call` node's `ai_extract` arg or the `__call__` namespace (`args_template_variable_missing_source`, `args_template_variable_self_reference`).
+- Every `integration_call` node has a valid `provider` (invalid → `schema_invalid` at zod parse), a valid `action` for that provider (`action_invalid`), an `integration_id` (`integration_id_missing`), and that integration is `active` in your company with a matching provider (`integration_not_in_company`). It also needs `success_next_step_id` wired (`success_not_wired`). Required action args must be present in `args_template` (`args_template_missing_required`); `ai_extract` args need a `description` (`args_template_missing_description`); every `{{node.arg}}` token must resolve to an existing `integration_call` node and an `ai_extract` arg on that node (`args_template_dangling_reference`). `{{metadata.key}}` tokens are NOT validated at save time — missing values resolve to empty string at runtime.
 - Every `transfer` node has a `transfer_to` (`transfer_to_missing`).
 - **Only `end` and `transfer` nodes may be terminal.** Anything else with no outgoing edge → `terminal_not_allowed`. The flow must contain at least one reachable `end` or `transfer` (`no_terminal`).
 - All `next_step_id` references resolve (`unknown_target_node`); every node is reachable from `start` (`unreachable_node`).
