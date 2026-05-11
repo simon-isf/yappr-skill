@@ -1536,11 +1536,11 @@ The user says any of:
 
 ## Reporting Issues to the Yappr Team
 
-If you encounter a bug, unexpected API behaviour, or the user requests a feature that doesn't exist, report it directly to the Yappr team. This creates a tracked ticket — no API key required.
+If you encounter a bug, unexpected API behaviour, or the user requests a feature that doesn't exist, report it directly to the Yappr team. This creates a tracked ticket on the engineering team's board, attributed to the user's company so the team knows who to follow up with.
 
 **Endpoint:** `POST https://api.goyappr.com/report-issue`
 
-**No authentication required.** The endpoint is public and rate-limited (10 reports/hour per IP).
+**Authentication:** standard Yappr API key (`Authorization: Bearer ypr_live_...`). Any valid key works — no specific scope required, so even a read-only key can file. The endpoint never modifies the caller's company; it only writes a ticket on Yappr's side.
 
 **Request body:**
 
@@ -1561,6 +1561,7 @@ If you encounter a bug, unexpected API behaviour, or the user requests a feature
 **Example — report a bug:**
 ```bash
 curl -s -X POST "https://api.goyappr.com/report-issue" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "PATCH /agents returns 500 when setting extraction_parameters",
