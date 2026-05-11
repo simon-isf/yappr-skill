@@ -29,12 +29,12 @@ apikey: {anon_key}
 Content-Type: application/json
 ```
 
-Yappr's Supabase URL: `https://ffzsojlyxumahuxjqerq.supabase.co`
+Yappr's Supabase URL: `https://<YOUR_SUPABASE_PROJECT>.supabase.co`
 
 ## Base URL
 
 ```
-https://ffzsojlyxumahuxjqerq.supabase.co
+https://<YOUR_SUPABASE_PROJECT>.supabase.co
 ```
 
 REST API: `/rest/v1/{table}`

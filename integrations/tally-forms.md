@@ -14,7 +14,7 @@ For Tally API access (form management):
 
 In Tally:
 1. Open your form → Integrations → Webhooks
-2. Add webhook URL: `https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/tally-webhook?secret=your_secret`
+2. Add webhook URL: `https://<YOUR_SUPABASE_PROJECT>.supabase.co/functions/v1/tally-webhook?secret=your_secret`
 3. Select trigger: `New submission`
 4. Save and test
 
