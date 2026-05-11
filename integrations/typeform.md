@@ -17,7 +17,7 @@ https://api.typeform.com
 
 **Option A: Via Typeform UI**
 1. Form → Connect → Webhooks → Add a webhook
-2. URL: `https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/typeform-webhook?secret=your_secret`
+2. URL: `https://api.goyappr.com/webhooks/typeform?secret=your_secret`
 3. Enable webhook → Send test
 
 **Option B: Via API**
@@ -156,7 +156,7 @@ Use `ref` (set in Typeform builder) as a stable identifier — it won't change w
 
 ```json
 {
-  "url": "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/typeform-webhook",
+  "url": "https://api.goyappr.com/webhooks/typeform",
   "enabled": true,
   "verify_ssl": true,
   "secret": "your_signing_secret"
@@ -235,7 +235,7 @@ export default async function handler(req: Request) {
   const phone = normalizeIsraeliPhone(getAnswer(answers, "phone") ?? "");
   const name = getAnswer(answers, "full_name") ?? "Unknown";
 
-  await fetch("https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1-calls", {
+  await fetch("https://api.goyappr.com/calls", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${Deno.env.get("YAPPR_API_KEY")}`,

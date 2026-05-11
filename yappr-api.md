@@ -934,11 +934,11 @@ List all DNC entries (most recent first), or look up by phone with `?phone=…`.
 ```bash
 # List
 curl -H "Authorization: Bearer $YAPPR_API_KEY" \
-  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1/do-not-call"
+  "https://api.goyappr.com/do-not-call"
 
 # Lookup
 curl -H "Authorization: Bearer $YAPPR_API_KEY" \
-  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1/do-not-call?phone=+972501234567"
+  "https://api.goyappr.com/do-not-call?phone=+972501234567"
 ```
 
 Returns `{ data: [...] }` for the list path, or a single entry object for the lookup path. Lookup returns 404 when the number isn't on the list.
@@ -954,7 +954,7 @@ Add a phone number. Idempotent — re-adding an existing number returns the exis
 curl -X POST -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"phone_number": "0501234567", "reason": "Customer requested removal"}' \
-  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1/do-not-call"
+  "https://api.goyappr.com/do-not-call"
 
 # Scoped block — only specific agents are blocked
 curl -X POST -H "Authorization: Bearer $YAPPR_API_KEY" \
@@ -964,7 +964,7 @@ curl -X POST -H "Authorization: Bearer $YAPPR_API_KEY" \
     "reason": "Don't pitch this lead from the sales agent — they only want renewals",
     "agent_ids": ["7e8a91c1-...sales-agent-uuid", "..."]
   }' \
-  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1/do-not-call"
+  "https://api.goyappr.com/do-not-call"
 ```
 
 `expires_at` is optional — omit for a permanent block. The API rejects past timestamps.

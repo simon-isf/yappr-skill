@@ -177,7 +177,7 @@ Use this to tell the agent what time slots are available before offering them to
 **Request:**
 ```json
 {
-  "url": "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/calendly-webhook",
+  "url": "https://api.goyappr.com/webhooks/calendly",
   "events": ["invitee.created", "invitee.canceled"],
   "organization": "https://api.calendly.com/organizations/ORGABC123",
   "scope": "organization"

@@ -141,7 +141,7 @@ Use this to find new high-value orders for proactive outbound calls.
 {
   "webhook": {
     "topic": "orders/create",
-    "address": "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/shopify-order-webhook",
+    "address": "https://api.goyappr.com/webhooks/shopify-order",
     "format": "json"
   }
 }
@@ -211,7 +211,7 @@ if (customer) {
 // Webhook handler for orders/create
 const order = await req.json();
 if (parseFloat(order.total_price) >= 200 && order.customer?.phone) {
-  await fetch("https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1-calls", {
+  await fetch("https://api.goyappr.com/calls", {
     method: "POST",
     headers: { Authorization: `Bearer ${YAPPR_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({

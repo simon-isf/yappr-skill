@@ -145,7 +145,7 @@ export default async function handler(req: Request) {
 
   // Trigger Yappr call
   const callRes = await fetch(
-    "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1-calls",
+    "https://api.goyappr.com/calls",
     {
       method: "POST",
       headers: {

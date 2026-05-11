@@ -1538,7 +1538,7 @@ The user says any of:
 
 If you encounter a bug, unexpected API behaviour, or the user requests a feature that doesn't exist, report it directly to the Yappr team. This creates a tracked ticket — no API key required.
 
-**Endpoint:** `POST https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/report-issue`
+**Endpoint:** `POST https://api.goyappr.com/report-issue`
 
 **No authentication required.** The endpoint is public and rate-limited (10 reports/hour per IP).
 
@@ -1560,7 +1560,7 @@ If you encounter a bug, unexpected API behaviour, or the user requests a feature
 
 **Example — report a bug:**
 ```bash
-curl -s -X POST "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/report-issue" \
+curl -s -X POST "https://api.goyappr.com/report-issue" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "PATCH /agents returns 500 when setting extraction_parameters",

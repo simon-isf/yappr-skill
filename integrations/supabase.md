@@ -181,7 +181,7 @@ const { data, error: rpcError } = await supabase
 
 ```typescript
 const res = await fetch(
-  "https://ffzsojlyxumahuxjqerq.supabase.co/functions/v1/api-v1-calls",
+  "https://api.goyappr.com/calls",
   {
     method: "POST",
     headers: {
