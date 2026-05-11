@@ -141,7 +141,7 @@ Use this to find new high-value orders for proactive outbound calls.
 {
   "webhook": {
     "topic": "orders/create",
-    "address": "https://api.goyappr.com/webhooks/shopify-order",
+    "address": "https://<YOUR_WEBHOOK_HOST>/shopify-order-handler",
     "format": "json"
   }
 }

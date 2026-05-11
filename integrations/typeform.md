@@ -17,7 +17,7 @@ https://api.typeform.com
 
 **Option A: Via Typeform UI**
 1. Form → Connect → Webhooks → Add a webhook
-2. URL: `https://api.goyappr.com/webhooks/typeform?secret=your_secret`
+2. URL: `https://<YOUR_WEBHOOK_HOST>/typeform-handler?secret=your_secret`
 3. Enable webhook → Send test
 
 **Option B: Via API**
@@ -156,7 +156,7 @@ Use `ref` (set in Typeform builder) as a stable identifier — it won't change w
 
 ```json
 {
-  "url": "https://api.goyappr.com/webhooks/typeform",
+  "url": "https://<YOUR_WEBHOOK_HOST>/typeform-handler",
   "enabled": true,
   "verify_ssl": true,
   "secret": "your_signing_secret"
