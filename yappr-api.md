@@ -536,6 +536,148 @@ Assign inbound and/or outbound agents to a phone number.
 
 ---
 
+## SIP Endpoints
+
+BYOC (Bring Your Own Carrier) SIP endpoints let a customer route inbound
+calls from their own telephony system to a Yappr agent **without**
+purchasing a Yappr-managed phone number. Each endpoint is a SIP URI of
+the form `sip:{slug}@yappr-byoc.sip.telnyx.com`.
+
+There is **no SIP digest auth** at the protocol layer. The slug embedded
+in the URI is the bearer credential — server-generated with ~120 bits of
+random entropy in its 24-char suffix, so unguessable. Treat the full URI
+like an API key: anyone who has it can dial the agent.
+
+Use SIP Endpoints when the customer already has a business line and
+wants Yappr to answer specific calls (overflow, after-hours, escalations)
+while keeping their existing telephony in place. Use phone numbers when
+they want Yappr to own a new DID outright. The two coexist — a single
+agent can answer calls from both.
+
+**Caller-ID trust:** for calls arriving via SIP endpoints, the
+calling-party number is whatever the customer's upstream sends —
+attacker-controlled if the upstream is compromised. By default Yappr
+does **not** use that number for lead-context lookups or returning-caller
+recognition. Agents must opt in via the dashboard if their upstream is
+trustworthy.
+
+### GET /sip-endpoints
+
+List the company's SIP endpoints.
+
+**Scopes:** `sip_endpoints:read`
+
+**Query params:**
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `limit` | int | 50 | max 200 |
+| `offset` | int | 0 | for pagination |
+
+**Response:**
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "name": "After-hours",
+      "slug": "after-hours-bz3r3mtypuwuw8tpdw3x392s",
+      "sip_uri": "sip:after-hours-bz3r3mtypuwuw8tpdw3x392s@yappr-byoc.sip.telnyx.com",
+      "inbound_agent_id": "uuid",
+      "is_active": true,
+      "allowed_source_ips": null,
+      "last_call_at": "ISO8601 | null",
+      "created_at": "ISO8601",
+      "updated_at": "ISO8601"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+---
+
+### POST /sip-endpoints
+
+Create a new SIP endpoint. Returns the URI the customer pastes into their
+PBX/CPaaS. No authentication setup required at the SIP layer.
+
+**Scopes:** `sip_endpoints:manage`
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string | yes | Human-readable label, shown in the dashboard |
+| `inbound_agent_id` | uuid | yes | Agent that answers calls routed to this endpoint |
+| `slug` | string | no | Optional human-readable prefix (max 12 chars). Server appends a hyphen and a 24-char random suffix |
+| `allowed_source_ips` | string[] | no | Optional CIDRs/IPs that may dial this endpoint. `null` (default) accepts any source |
+
+Slug constraints (enforced server-side): 4–64 chars total, lowercase
+letters / digits / single hyphens, no consecutive hyphens, must not start
+with a reserved prefix.
+
+**Rate limit:** 20 creates per company per day.
+
+**Response:** `201`
+```json
+{
+  "data": {
+    "id": "uuid",
+    "name": "After-hours",
+    "slug": "after-hours-bz3r3mtypuwuw8tpdw3x392s",
+    "sip_uri": "sip:after-hours-bz3r3mtypuwuw8tpdw3x392s@yappr-byoc.sip.telnyx.com",
+    "inbound_agent_id": "uuid",
+    "is_active": true,
+    "allowed_source_ips": null,
+    "created_at": "ISO8601"
+  }
+}
+```
+
+The customer pastes the value of `sip_uri` into their telephony platform's
+outbound SIP route. UDP, TCP, and TLS are all supported. No username,
+no password.
+
+---
+
+### GET /sip-endpoints/{id}
+
+Get one endpoint. Same fields as the list response.
+
+**Scopes:** `sip_endpoints:read`
+
+---
+
+### PATCH /sip-endpoints/{id}
+
+Update name, inbound agent, active state, or allowlist. The slug is
+immutable — delete and recreate if a different URI is needed.
+
+**Scopes:** `sip_endpoints:manage`
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | new label |
+| `inbound_agent_id` | uuid | agent must belong to this company |
+| `is_active` | bool | toggle to disable temporarily without deleting |
+| `allowed_source_ips` | string[] \| null | replace the source-IP allowlist; `null` removes it |
+
+**Response:** `200` — updated endpoint object.
+
+---
+
+### DELETE /sip-endpoints/{id}
+
+Hard-deletes the endpoint. New calls dialing the slug get rejected
+pre-answer; in-flight calls finish. To rotate access, delete + create a
+new endpoint with a fresh slug.
+
+**Scopes:** `sip_endpoints:manage`
+
+**Response:** `200` `{ "ok": true }`
+
+---
+
 ## Calls
 
 ### GET /calls

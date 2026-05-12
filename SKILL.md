@@ -1000,6 +1000,50 @@ Status `pending_requirements`: regulatory approval needed (Israeli numbers, 1–
 
 **Note on `inbound_agent_id`:** this one DOES matter — it's the agent that answers when someone calls this number. It is a real 1:1 binding. If two agents need to handle inbound, they need two numbers.
 
+### Step 5.1b — Option B: BYOC inbound via SIP (no Yappr number needed)
+
+When the customer already has a business line and an external telephony system they want to keep, route inbound calls from that system to a Yappr agent via a SIP endpoint instead of buying a Yappr number. Use this when:
+
+- The customer wants Yappr to answer overflow / after-hours / escalated calls without changing the number their customers dial
+- The customer is piloting Yappr on a subset of routes before committing to porting
+- The customer maintains their own queue / IVR / switchboard and wants AI as the last step
+
+This path is independent of Yappr-bought numbers — a single agent can answer calls from both, and they share the same billing, concurrency cap, and call-log storage. The PSTN inbound flow (Step 5.1 above) is unaffected.
+
+**The model: slug = bearer credential, no SIP digest auth.** The URI we hand the customer contains a 24-char random suffix (~120 bits of entropy). Anyone with the URI can dial the agent — treat it like an API key. To rotate access, delete the endpoint and create a new one (the new URI has a fresh slug).
+
+**Create the endpoint via API:**
+
+```bash
+curl -s -X POST "https://api.goyappr.com/sip-endpoints" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "After-hours", "inbound_agent_id": "AGENT_UUID"}'
+```
+
+The response includes `sip_uri` — that's everything the customer needs. There is no `sip_username` or `sip_password` to copy.
+
+**Hand the URI to the customer's telephony.** They paste it as the SIP destination in their PBX/CPaaS outbound route. No authentication setup. UDP, TCP, and TLS are all supported by the upstream Telnyx SIP gateway; G711/G722 codecs are advertised.
+
+Concrete example pastes for common platforms:
+- **Twilio Studio** — set the "Connect Call To" SIP value in the appropriate widget to `sip_uri`
+- **Twilio TwiML** — `<Dial><Sip>{{sip_uri}}</Sip></Dial>` (no `username`/`password` attributes)
+- **Asterisk** — `Dial(SIP/<slug>@yappr-byoc.sip.telnyx.com)` from your dialplan
+- **FreeSWITCH** — `<action application="bridge" data="sofia/external/<sip_uri>"/>` in the relevant XML route
+- **3CX / Yeastar / hosted PBX** — paste the URI as the "SIP trunk destination" with auth set to "none"
+
+**Optional: source-IP allowlist.** If the customer's PBX has a fixed egress IP, pass `allowed_source_ips: ["1.2.3.4/32"]` on create (or PATCH later). Calls from any other IP are rejected pre-answer. Useful defense-in-depth on top of slug obscurity.
+
+**Caller-ID note.** Because the upstream is customer-controlled, the caller-ID arriving in the SIP `From` header cannot be trusted by default. Yappr **skips lead-context lookups** on calls arriving via SIP endpoints unless the agent has `trust_external_sip_caller_id = true`. Set that only when the upstream is operated directly by the customer and they vouch for the caller-ID.
+
+**Pre-launch checklist for SIP endpoints:** all the standard items in Step 5.2 still apply, plus:
+
+- [ ] Customer's PBX/CPaaS outbound SIP route is set to the exact `sip_uri` value (no auth)
+- [ ] A test call from the customer's system reaches the agent (you should see `📞 BYOC SIP call` in pipecat logs)
+- [ ] The customer understands the caller-ID trust model (default: untrusted)
+- [ ] The endpoint is marked `is_active: true`
+- [ ] If the URI ever needs to be revoked, the recipe is delete-and-recreate (not rotate)
+
 ### Step 5.2 — Pre-Launch Checklist
 
 Before telling the user they're live, verify each item:
