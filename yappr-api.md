@@ -177,6 +177,8 @@ Create a new agent.
 | `max_continuous_speech_secs` | int | no | 0–300, default 120 (0 = disabled) |
 | `max_call_duration_secs` | int | no | 0–3600, default 600 (0 = disabled) |
 | `lead_memory_enabled` | boolean | no | default `true` |
+| `background_sound` | string \| null | no | One of: `call_center`, `open_office`, `cafe`, `outdoor`. Plays under the agent voice during calls. Null = silent. |
+| `background_sound_volume` | number | no | 0.0–0.6 (default 0.3). Capped to protect turn-taking. |
 | `idempotency_key` | string | no | UUID for safe retries |
 
 **Response:** `201` — full agent object (same shape as GET /agents/:id, minus `tools[]`)
@@ -206,6 +208,33 @@ Deactivate (soft-delete) an agent. Sets `is_active: false`.
 ---
 
 ## Tools
+
+**Tool & agent schema propagation timing**
+
+Tool and agent config (system prompt, tools list, extraction parameters, voice/language/model
+settings) is read from the database **once per call, at call start**. Once a call is
+connected, the LLM session holds that schema for the lifetime of the call — there is no
+mid-call refresh.
+
+What this means in practice:
+
+- After `POST /tools`, `PATCH /tools/:id`, `POST /tools/attach`, or any change to an agent
+  via `PATCH /agents/:id`, **the next call placed (or received) by that agent uses the new
+  config**. In-flight calls finish with whatever they started with.
+- There is no separate "publish" or "resync" step. The PATCH/POST is the publish.
+- If you maintain tool configs in your own codebase and push them via the API, the
+  effective state in Yappr is whatever your last successful `PATCH /tools/:id` set —
+  changes to your local source of truth that you haven't PATCHed have **not** reached
+  Yappr.
+- For testing during development: place a fresh call after every tool/agent edit to
+  verify the change took effect. Re-using an in-flight call to test a new schema will
+  not work.
+
+This is the expected design — swapping function declarations mid-call would break the
+LLM's mental model of available tools. But it does mean a "ship a fix locally, expect
+it to work on the next call" workflow requires an explicit PATCH between the two.
+
+---
 
 ### GET /tools
 
