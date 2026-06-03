@@ -36,7 +36,7 @@ Every node has `id`, `type`, `name?`. Type determines the rest.
 | Type | LLM? | Purpose | Outputs |
 |---|---|---|---|
 | `start` | conditional | Entry point. Owns the "who speaks first" decision (overrides agent-level fields). Auto-advances to `next_step_id`. | single |
-| `conversation` | yes | Bot talks; on each user turn the model decides whether to call `pick_transition` (advance) or stay | N user-defined transitions, each with `id`, `label`, `next_step_id`, optional `description` |
+| `conversation` | yes | Bot talks; on each user turn the model decides whether to call `pick_transition` (advance) or stay | N user-defined transitions, each with `id`, `label`, `next_step_id`, and a required non-empty `description` (the natural-language trigger the model uses to pick this path) |
 | `tool_call` | no | Deterministic tool execution against a row in the `tools` table; routes on result | fixed `success`/`error` + optional `custom[]` (JSONPath-equality matching) |
 | `integration_call` | no | Deterministic call to an OAuth-backed integration (Google Calendar, Gmail) — config lives on the node, not in `tools`; routes on result | fixed `success`/`error` + optional `custom[]` (same shape as `tool_call`) |
 | `transfer` | no | SIP transfer to another phone | terminal |
@@ -104,8 +104,10 @@ The model sees, per turn:
 - The agent's global `system_prompt`
 - The current node's `instructions`
 - Recent conversation history
-- The current node's outgoing transition labels (and optional `description` clarifiers)
+- The current node's outgoing transitions — the runtime feeds each transition's `description` to the model as the trigger for that path (the `label` is dashboard/trace shorthand, not what the model routes on)
 - Any global nodes' `global_jump_description` as extra fallback candidates
+
+**`transition.description` is required and non-empty** on every conversation transition. Write it as a user-side signal — what the caller said or implied — not as an agent intent. Good: "Caller stated their full name (first and last) clearly enough to record." Bad: "Move to the next step." Empty descriptions are rejected at save with `transition_description_missing`.
 
 It does NOT see other steps' instructions or transitions. **Per-step isolation** is enforced — keep each node's `instructions` focused on this turn's goal.
 
@@ -126,6 +128,8 @@ Tool-call nodes don't go through the conversational routing path. The runtime fi
 The canvas draws all the out-edges (success / error / each custom) but at runtime exactly one is traversed per tool fire. They are mutually exclusive.
 
 If a tool-call node references a tool that has been deleted, deactivated, or belongs to a different company, the dispatcher returns an `error` and the `error` branch fires. Always design an `error` branch.
+
+**`timeout_secs`** (optional, on both `tool_call` and `integration_call` nodes) caps how long the dispatch may run. It accepts a number `>0` and `≤600`; null/missing falls back to the platform default of 30s. On timeout the call routes to `error_next_step_id` — another reason to always wire an `error` branch.
 
 ### Soft-fail results (200 OK, but "no")
 
@@ -265,7 +269,7 @@ Two different ownership models — be deliberate about which one you're using.
 - `payload_config.static_parameters` — literal `{name, value}` pairs always sent unchanged.
 - `payload_config.extraction_parameters` — `{name, description}` pairs the live agent runtime fills from the conversation right before the tool fires (the slot binds via the description).
 
-The same tool can be referenced from N flow nodes, and it will send the same shape every time. If you need two flow nodes to call the same underlying capability with different args, **create two tools** (or use a tool whose webhook backend interprets a runtime-dispatched action key).
+The same tool can be referenced from N flow nodes, and it will send the same shape every time. **Reuse first:** before minting a tool for a node, `GET /tools` and reuse an existing tool if its capability matches; if only the URL, description, or params changed, `PATCH /tools/:id` in place rather than creating another row. Create a NEW tool ONLY when the argument SHAPE genuinely differs across nodes — i.e. two flow nodes need to call the same underlying capability with different args (or use a tool whose webhook backend interprets a runtime-dispatched action key).
 
 A common mistake is to add `args_template` to a `tool_call` node hoping to override the tool's args inline. The schema parser silently strips that field — your override never fires.
 
@@ -917,7 +921,7 @@ Notes:
 Quick checklist (the validator codes that back each rule are in parentheses):
 
 - Exactly one `start` node (`no_start`, `multiple_starts`); its `next_step_id` is wired (`start_unwired`).
-- Every `conversation` node has non-empty `instructions` (`instructions_missing`) and at least one outgoing transition (`terminal_not_allowed`).
+- Every `conversation` node has non-empty `instructions` (`instructions_missing`) and at least one outgoing transition (`terminal_not_allowed`). Every transition has a non-empty `description` (`transition_description_missing`) — the natural-language trigger the model reads to pick that path.
 - Every `tool_call` node has a `tool_id` (`tool_id_missing`) and a wired `success_next_step_id` (`success_not_wired`). `tool_call` nodes have no `args_template` field — args come from the tool's `payload_config`.
 - Every `integration_call` node has a valid `provider` (invalid → `schema_invalid` at zod parse), a valid `action` for that provider (`action_invalid`), an `integration_id` (`integration_id_missing`), and that integration is `active` in your company with a matching provider (`integration_not_in_company`). It also needs `success_next_step_id` wired (`success_not_wired`). Required action args must be present in `args_template` (`args_template_missing_required`); `ai_extract` args need a `description` (`args_template_missing_description`); every `{{node.arg}}` token must resolve to an existing `integration_call` node and an `ai_extract` arg on that node (`args_template_dangling_reference`). `{{metadata.key}}` tokens are NOT validated at save time — missing values resolve to empty string at runtime.
 - Every `transfer` node has a `transfer_to` (`transfer_to_missing`).
@@ -928,7 +932,7 @@ If you're scaffolding flows programmatically against the API, the cheapest way t
 
 ## Saving and versioning
 
-Every PATCH to `flow_config` auto-creates a row in `flow_versions` (deduped by SHA-256 content hash). List with `GET /agents/:id/flow/versions`. Versions are immutable — you cannot delete one. Restore by re-PATCHing with the version's `flow_config`.
+Every PATCH to `flow_config` auto-creates a row in `flow_versions` (deduped by SHA-256 content hash). List with `GET /agents/:id/flow/versions`. Versions are immutable — you cannot delete one. Restore a prior version with `POST /agents/:id/flow/restore { version_id }` (see `yappr-api.md`) — one call, no need to fetch the version's `flow_config` first.
 
 ---
 

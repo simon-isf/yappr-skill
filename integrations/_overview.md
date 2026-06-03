@@ -12,7 +12,7 @@ Use this file to decide which integration docs to open for a given task.
 | Book via service-business platform (salons, coaches) | `acuity-scheduling.md`, `mindbody.md`, `booksy.md`, `setmore.md`, `simplybook-me.md` |
 | Book via Zoho Bookings (integrated with Zoho CRM) | `zoho-bookings.md` |
 | Book via Square ecosystem | `square-appointments.md` |
-| Update CRM contact after call | `hubspot.md`, `pipedrive.md`, `zoho-crm.md`, `salesforce.md`, `activecampaign.md`, `freshsales.md`, `copper-crm.md`, `close-crm.md`, `kommo-crm.md`, `intercom.md` |
+| Update CRM contact after call | `hubspot.md`, `pipedrive.md`, `zoho-crm.md`, `salesforce.md`, `activecampaign.md`, `freshsales.md`, `copper-crm.md`, `close-crm.md`, `kommo-crm.md`, `intercom.md`, `wix-crm.md` |
 | Log call to Israeli CRM/ERP | `priority-erp.md`, `kommo-crm.md`, `icount.md` |
 | Create CRM deal / pipeline stage | `hubspot.md`, `pipedrive.md`, `salesforce.md`, `close-crm.md`, `kommo-crm.md`, `gohighlevel.md` |
 | Add contact to GHL pipeline / trigger marketing workflow | `gohighlevel.md` |
@@ -81,6 +81,7 @@ Use this file to decide which integration docs to open for a given task.
 - `apollo-io.md` — Apollo.io (prospecting, enrichment, sequences)
 - `keap.md` — Keap (formerly Infusionsoft) — SMB CRM + automation
 - `drift.md` — Drift (conversational sales platform)
+- `wix-crm.md` — Wix Contacts / Wix CRM lookup + create
 - `airtable.md` — Airtable base as lightweight CRM or database
 
 ### Scheduling

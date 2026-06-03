@@ -1,4 +1,7 @@
 // yappr-webhook-handler.ts
+// YOUR OWN glue — you host & run this on your infrastructure (e.g. your Supabase project).
+// It is your receiver for Yappr's outbound webhooks, not a Yappr-supplied feature: you create a
+// Yappr webhook pointed at this URL, and reconcile events against the call queue table you own.
 // Receives Yappr webhook events (call.analyzed, call.no_answer, call.failed).
 // Routes by disposition, schedules retries, triggers downstream actions.
 //

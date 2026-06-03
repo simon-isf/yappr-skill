@@ -1,6 +1,10 @@
 // cancel-reschedule-appointment.ts
+// EXAMPLE tool-receiver — you host & run this on YOUR OWN infrastructure (e.g. your Supabase project).
+// Yappr is a platform: it does not supply, host, or run tools. You build a receiver endpoint like this,
+// deploy it, then point a Yappr *webhook tool* at its URL. This file is a starting point to ADAPT, not a Yappr feature.
+//
 // Handles both cancelAppointment and rescheduleAppointment tool calls.
-// Register as TWO separate tools in Yappr pointing to this same endpoint,
+// Register as TWO separate webhook tools in Yappr pointing to this same endpoint,
 // but with different tool names and extraction parameters.
 //
 // cancelAppointment extraction params: appointmentId? (optional), reason?

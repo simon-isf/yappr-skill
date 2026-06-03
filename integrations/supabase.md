@@ -129,7 +129,7 @@ true
 
 Or complex return type:
 ```json
-{ "company_id": "uuid", "permissions": ["calls.create"] }
+{ "company_id": "uuid", "permissions": ["calls:create"] }
 ```
 
 ---

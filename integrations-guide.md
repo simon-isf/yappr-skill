@@ -2,7 +2,7 @@
 
 Yappr's `integrations` feature lets companies connect third-party services via OAuth and reference them from `integration_call` nodes in flow agents. Tokens are encrypted at rest and refreshed automatically by Yappr at call time.
 
-**v1 supports**: Google Calendar, Gmail.
+**v1 supports**: Google Calendar.
 
 This file is the orientation page. The full action catalog, args, response semantics, and chaining recipes live in:
 - [`yappr-api.md`](yappr-api.md) — endpoint reference (action catalog, integration_call node shape, GET/DELETE endpoints).

@@ -129,7 +129,7 @@ export class WhatsAppBusinessError extends Error {
 // ---------------------------------------------------------------------------
 
 export class WhatsAppBusinessClient {
-  static readonly BASE_URL = "https://graph.facebook.com/v19.0";
+  static readonly BASE_URL = "https://graph.facebook.com/v21.0";
 
   constructor(
     private readonly phoneNumberId: string,
