@@ -273,8 +273,11 @@ PASS_RATE=$(echo "$AGG" | jq '.pass_rate')
 SCORE_AVG=$(echo "$AGG" | jq '.score_avg')
 echo "Suite result: $PASSED/$TOTAL passed (rate=$PASS_RATE, avg score=$SCORE_AVG)"
 
-# 4. Print failing case names so the developer can investigate
-echo "$AGG" | jq -r '.runs[] | select(.pass_fail==false) | "FAIL: \(.case.name) (run \(.id), score \(.score))"'
+# 4. Print failing runs so the developer can investigate.
+# Suite-aggregate runs[] carry only flat columns (case_id, not an expanded
+# case object), so identify failures by case_id + run id. Resolve case_id to
+# a human name via GET /agent-eval/cases/<case_id> if you need it.
+echo "$AGG" | jq -r '.runs[] | select(.pass_fail==false) | "FAIL: case=\(.case_id) (run \(.id), score \(.score))"'
 
 # 5. Gate the build
 if [ "$(echo "$PASS_RATE >= $THRESHOLD_PASS_RATE" | jq)" != "true" ]; then

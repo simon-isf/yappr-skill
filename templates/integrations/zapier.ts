@@ -6,8 +6,12 @@
 // ---------------------------------------------------------------------------
 
 export interface YapprCallTranscriptTurn {
-  role: "agent" | "user";
-  content: string;
+  role: "agent" | "user" | "voicemail";
+  text: string;
+  /** Millisecond offset from call start when this turn began. */
+  start?: number;
+  /** Millisecond offset from call start when this turn ended. */
+  end?: number;
 }
 
 export interface YapprCallAnalyzedData {

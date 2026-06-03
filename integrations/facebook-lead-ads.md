@@ -11,7 +11,7 @@
 ## Base URL
 
 ```
-https://graph.facebook.com/v19.0
+https://graph.facebook.com/v21.0
 ```
 
 ## Key Endpoints
@@ -182,7 +182,7 @@ export async function handleFacebookLead(req: Request) {
 
         // Fetch lead details
         const lead = await fetch(
-          `https://graph.facebook.com/v19.0/${leadId}?access_token=${PAGE_ACCESS_TOKEN}`
+          `https://graph.facebook.com/v21.0/${leadId}?access_token=${PAGE_ACCESS_TOKEN}`
         ).then(r => r.json());
 
         // Extract fields
@@ -231,5 +231,5 @@ function normalizeIsraeliPhone(raw: string): string {
 - **Token expiry**: Page Access Tokens from the short-lived flow expire in ~1 hour. Exchange for a long-lived token (~60 days). For permanent access, use a System User token in Business Manager.
 - **Webhook signature verification**: Meta signs POST payloads with `X-Hub-Signature-256: sha256=...` using your app secret. Always verify in production.
 - **Duplicate events**: Meta may deliver the same webhook event multiple times. Deduplicate on `leadgen_id`.
-- **API versioning**: Always specify a Graph API version (e.g. `/v19.0/`). Versionless calls use the oldest version.
+- **API versioning**: Always specify a Graph API version (e.g. `/v21.0/`, the latest at build time). Versionless calls use the oldest version.
 - **Test leads**: In Meta for Developers → Lead Ads Testing Tool, you can submit test leads that trigger real webhooks.

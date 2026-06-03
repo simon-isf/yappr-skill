@@ -15,6 +15,18 @@ This skill is organized into phases. Work through them sequentially. Each phase'
 
 **Before writing any code or making any API call**, run Phase 0 discovery — query the live account and ask the user the questions. The answers determine everything that follows.
 
+**Then, before the prompt-vs-flow decision, run the [create-vs-edit gate](#decision-new-build-or-change-to-an-existing-system).** If the request is to change something that already exists, you edit it (GET + PATCH) — you do NOT create a new one. This is the single most important rule in the skill: POST is for new resources, PATCH is for changes. See also [Managing Existing Resources](#managing-existing-resources).
+
+### Decision: new build OR change to an existing system
+
+**Run this FIRST, before anything else** (before the prompt-vs-flow decision below).
+
+- If the user names an existing resource, or says **change / update / edit / fix / rename / adjust / disable / add a tool to** something that already exists → this is an **EDIT**. Resolve the resource id from Phase 0 discovery data (the `EXISTING RESOURCES` block in Step 0.3 — never ask the user for it), `GET` the full record, then `PATCH` only the changed fields. Jump straight to [**Managing Existing Resources**](#managing-existing-resources). Do **NOT** POST.
+- Only when Phase 0 confirms the resource does **not** exist do you create it (POST) via the phases below.
+- Editing is addressed strictly by id. The id comes from Phase 0 (never ask the user for it). If you don't have it yet, run Phase 0 discovery first, then re-check this gate.
+
+> **POST creates a NEW resource every time** (except an exact idempotency-key replay, which returns the OLD row **unchanged** with HTTP 200 — see the [idempotency note](#idempotency_key-is-not-an-upsert)). POST is **NOT** an upsert. "Update the agent" + POST = a duplicate agent. To change an existing resource, use **PATCH**.
+
 ### Decision: prompt agent OR flow agent
 
 Yappr supports **two agent types**. Pick one before Phase 1 — agent type is set at create time and cannot be changed (the API will reject any attempt to flip it).
@@ -62,8 +74,9 @@ Every integration has a typed TypeScript client in `templates/integrations/`. Us
 **Import pattern** (from a Supabase edge function or template function):
 
 ```typescript
-import { HubSpotClient } from "../../integrations/hubspot/index.ts";
-// or copy the file into your edge function's directory
+import { HubSpotClient } from "../_shared/integrations/hubspot.ts";
+// clients are flat files: templates/integrations/{name}.ts — copy the one you need
+// into your edge function's _shared/integrations/ directory (or import it relatively)
 
 const crm = new HubSpotClient(Deno.env.get("HUBSPOT_TOKEN")!);
 const contact = await crm.createContact({ email: "customer@example.com", phone: "+972501234567" });
@@ -77,7 +90,7 @@ const contact = await crm.createContact({ email: "customer@example.com", phone: 
 | SMS | `twilio-sms`, `vonage-sms`, `sinch` |
 | CRM | `hubspot`, `pipedrive`, `monday-com`, `zoho-crm`, `salesforce`, `freshsales`, `copper-crm`, `close-crm`, `kommo-crm`, `intercom`, `apollo-io`, `keap`, `drift`, `gohighlevel`, `activecampaign`, `wix-crm` |
 | Scheduling | `google-calendar`, `cal-com`, `calendly`, `acuity-scheduling`, `mindbody`, `square-appointments`, `booksy`, `setmore`, `simplybook-me`, `zoho-bookings`, `zoom` |
-| Israeli market | `green-invoice`, `icount`, `priority-erp`, `cardcom`, `meshulam`, `pelecard`, `bit-pay`, `tranzila` |
+| Payments / Israeli market | `green-invoice`, `icount`, `priority-erp`, `cardcom`, `meshulam`, `pelecard`, `bit-pay`, `stripe` |
 | Lead sources / Forms | `facebook-lead-ads`, `tally-forms`, `typeform`, `jotform`, `google-lead-forms`, `linkedin-lead-gen`, `tiktok-lead-gen`, `google-forms-sheets` |
 | Email & Marketing | `resend-email`, `sendgrid`, `mailchimp`, `klaviyo`, `mailerlite`, `brevo`, `convertkit` |
 | Automation | `make-com`, `n8n`, `zapier`, `pluga` |
@@ -106,6 +119,7 @@ new GreenApiClient(instanceId, apiToken)
 new WixCrmClient(apiKey, siteId)
 new AcuitySchedulingClient(userId, apiKey)
 new MindbodyClient(apiKey, siteId, username, password)
+new GoogleCalendarClient(accessToken, calendarId)   // calendarId required (e.g. "primary")
 
 // OAuth (caller manages token refresh)
 new ZohoCrmClient(accessToken, datacenter)
@@ -136,7 +150,7 @@ The single exception is `mailchimp.ts`, which uses `npm:md5` to compute subscrib
 ```json
 { "nodeModulesDir": "auto" }
 ```
-This is already set in `templates/integrations/deno.json`. If you copy `mailchimp.ts` into a Supabase edge function project, that project's `deno.json` will handle it — Supabase's Deno runtime resolves `npm:` imports natively.
+Add that key to your own project's `deno.json` if you copy `mailchimp.ts` into a non-Supabase Deno context. Inside a Supabase edge function project this is handled for you — Supabase's Deno runtime resolves `npm:` imports natively.
 
 **Type-checking:**
 
@@ -197,9 +211,11 @@ curl -s "https://api.goyappr.com/phone-numbers" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq '[.data[] | {id, number, status, inbound_agent_id, outbound_agent_id}]'
 ```
 
+These jq filters all keep each resource's `id`. **Do not discard the ids** — capture them into the `EXISTING RESOURCES (id → name)` block of the Step 0.3 config. Every later edit (PATCH/DELETE/attach) is addressed by id, and Step 1.1 ("never ask for an id manually") depends on those ids being captured here.
+
 Summarize what you found and present it to the user before asking any questions. Example:
 
-> "I've checked your account. You have 2 agents (Maya — Hebrew, Michal — Hebrew), 3 phone numbers (one unassigned), and a $45.20 balance. Your dispositions are: Interested, Not Interested, Callback Requested, Appointment Set, No Answer, Failed, Voicemail, Wrong Number, Do Not Call.
+> "I've checked your account. You have 2 agents (Maya — Hebrew, Michal — Hebrew), 3 phone numbers (one unassigned), and a $45.20 balance. Your dispositions are: Interested, Not Interested, Callback Requested, Appointment Set, Issue Resolved, No Answer, Failed, Voicemail, Wrong Number, Do Not Call.
 >
 > Now — tell me about the voice agent system you want to build."
 
@@ -213,32 +229,33 @@ Ask these in a natural conversation, not as a form. Group related questions. Ada
 1. What is the primary goal of this agent? (appointment booking / lead qualification / outbound sales / inbound support / survey / other)
 2. Call direction: inbound, outbound, or both?
 3. Language: Hebrew, English, or both?
-4. Do you need multiple agents for different use cases — e.g., a sales agent and a support agent with different prompts, voices, or tools?
+4. What timezone and business hours should calls run in? (drives call-windows — outbound is gated to business hours by default; note the timezone itself is set in the dashboard Company settings, not via the API — see Step 5.2 and the Call windows section)
+5. Do you need multiple agents for different use cases — e.g., a sales agent and a support agent with different prompts, voices, or tools?
 
 **Persona & voice:**
-5. Agent name, role, and company context (one sentence: "Maya, sales rep at Acme Ltd")
-6. Gender and tone: professional / warm / energetic / authoritative / calm?
-7. Any required phrases or forbidden phrases?
+6. Agent name, role, and company context (one sentence: "Maya, sales rep at Acme Ltd")
+7. Gender and tone: professional / warm / energetic / authoritative / calm?
+8. Any required phrases or forbidden phrases?
 
 **Tools & systems:**
-8. What should the agent do during a call? (book appointment / log lead / check availability / transfer to human / update CRM / send WhatsApp)
-9. What scheduling system, if any? (Google Calendar / Calendly / Cal.com / Monday / custom API / none)
-10. What other systems need updating after calls? (HubSpot / Monday / Pipedrive / Google Sheets / none)
-11. Post-call messaging? (WhatsApp via Green API / email / none)
-12. Do you have a Supabase project? (if yes: URL, anon key, service key — needed for call queue and edge function templates)
+9. What should the agent do during a call? (book appointment / log lead / check availability / transfer to human / update CRM / send WhatsApp)
+10. What scheduling system, if any? (Google Calendar / Calendly / Cal.com / Monday / custom API / none)
+11. What other systems need updating after calls? (HubSpot / Monday / Pipedrive / Google Sheets / none)
+12. Post-call messaging? (WhatsApp via Green API / email / none)
+13. Do you have a Supabase project? (if yes: URL, anon key, service key — needed for call queue and edge function templates)
 
 **Lead intake:**
-13. Where do leads come from? (Facebook Lead Ads / website form / CRM export / automation platform / manual)
-14. Expected daily call volume? (1–50 / 50–500 / 500+)
-15. Should the agent remember returning callers across multiple calls? (lead memory)
+14. Where do leads come from? (Facebook Lead Ads / website form / CRM export / automation platform / manual)
+15. Expected daily call volume? (1–50 / 50–500 / 500+)
+16. Should the agent remember returning callers across multiple calls? (lead memory)
 
-**Post-call routing — for each non-protected disposition found in 0.1:**
-16. What should happen on each disposition? Ask per-disposition:
+**Post-call routing — for each disposition you'll route on (these are the AI-classifier dispositions found in 0.1, e.g. Interested, Appointment Set, Callback Requested):**
+17. What should happen on each disposition? Ask per-disposition:
     - Appointment Set: send confirmation message to the caller?
     - Not Interested: mark as do-not-call?
     - Callback Requested: auto-schedule a follow-up call?
     - Interested (but no booking): notify sales team? How?
-17. No Answer: retry? How many attempts? What intervals?
+18. No Answer: retry? How many attempts? What intervals?
 
 ### Step 0.3 — Discovery Config Object
 
@@ -247,10 +264,20 @@ After gathering answers, output a discovery config you'll use throughout the rem
 ```
 DISCOVERY CONFIG
 ================
+EXISTING RESOURCES (id → name — carry these for any later edit)
+  Agents:        [{id, name}]
+  Tools:         [{id, name}]
+  Phone numbers: [{id, number, inbound_agent_id, outbound_agent_id}]
+  Dispositions:  [{id, label}]
+  # These ids are how every later PATCH/DELETE/attach is addressed.
+  # When the user asks to "change X", resolve X against this map and PATCH by id —
+  # do not POST a new resource. Step 1.1 ("never ask for an id manually") relies on this.
+
 Agents needed: [list each agent with its purpose, language, tone]
 Agent type: prompt / flow (per the Decision section above; one per agent)
 Call direction: inbound / outbound / both
 Languages: he / en
+Timezone / calling hours: [IANA tz, e.g. Asia/Jerusalem + desired business hours]
 Tools needed: [list tool names and their integrations]
 Scheduling system: [name or none]
 Lead source: [source name]
@@ -283,13 +310,19 @@ For each agent identified in discovery, run this phase. If multiple agents are n
 
 ### Step 1.1 — Check for Existing Agents
 
-Already done in Phase 0. If the user wants to update an existing agent instead of creating a new one:
+Already done in Phase 0. **First branch on create-vs-edit** (see the [create-vs-edit gate](#decision-new-build-or-change-to-an-existing-system)):
 
-1. Fetch its full config: `GET /api-v1/agents/:id` (see `yappr-api.md`)
-2. Present the current config in plain language: prompt, voice, tools, webhook settings
-3. Ask what they want to change
-4. PATCH only the changed fields
-5. Verify via GET after patching
+- **If this references an agent that already exists** (the user named it, or asked to change / update / fix / rename / adjust / disable it) → this is an EDIT. **Jump to [Managing Existing Resources → Agents](#agents).** Resolve its id from the Phase 0 `EXISTING RESOURCES` block — never ask the user to provide an id manually — then GET the full record, PATCH only the changed fields, and verify via GET. Do **NOT** continue into the create steps below.
+- **Only if Phase 0 confirms no matching agent exists** → continue with Step 1.2 to create a new one.
+
+The edit recipe in short (full curl examples in [Managing Existing Resources](#managing-existing-resources)):
+
+1. Resolve the id from the Phase 0 `EXISTING RESOURCES` block (never ask the user)
+2. Fetch its full config: `GET /agents/:id` (see `yappr-api.md`)
+3. Present the current config in plain language: prompt, voice, tools, webhook settings
+4. Ask what they want to change
+5. PATCH only the changed fields (snake_case — see [PATCH gotchas](#patch-gotchas))
+6. Verify via GET after patching
 
 ### Step 1.2 — Build the System Prompt
 
@@ -418,7 +451,7 @@ Use `{{VariableName}}` syntax directly in the system prompt. Variables are subst
 
 See Appendix A for the full voice selection guide.
 
-Default: `Michal` when use case is unclear.
+Recommended pick: `Michal` when use case is unclear. **Always pass `voice` explicitly** — if you omit it, the server falls back to `Rachel`, not Michal.
 
 ### Step 1.6 — VAD Presets
 
@@ -443,7 +476,7 @@ Set limits to prevent runaway calls. See Appendix C for values.
 
 ```bash
 python3 -c "
-import json, uuid
+import json
 payload = {
     'name': 'Agent Name',
     'system_prompt': '...',
@@ -463,18 +496,24 @@ payload = {
     # Webhook: only include if the user asked for call event notifications
     # 'webhook_url': 'https://...',
     # 'webhook_events': ['call.no_answer', 'call.failed', 'call.analyzed'],
-    'idempotency_key': str(uuid.uuid4())
+    # lead_memory_enabled: optional, default true. Set false to disable cross-call memory.
+    # 'lead_memory_enabled': True,
+    # idempotency_key: OMIT for a normal create. Only set it (to a STABLE key you control,
+    # not a fresh uuid) when you need a specific create to be replay-safe — see the note below.
 }
 with open('/tmp/agent-payload.json', 'w', encoding='utf-8') as f:
     json.dump(payload, f, ensure_ascii=False)
 "
-curl -s -X POST 'https://api.goyappr.com/agents' \
-  -H 'Authorization: Bearer $YAPPR_API_KEY' \
-  -H 'Content-Type: application/json' \
+curl -s -X POST "https://api.goyappr.com/agents" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
   --data-binary @/tmp/agent-payload.json | jq .
 ```
 
-Save the returned `id`.
+Save the returned `id` — **store it in the Phase 0 `EXISTING RESOURCES` block** so any later edit can target it by id.
+
+> #### idempotency_key is NOT an upsert
+> Re-POSTing with the same `idempotency_key` returns the already-stored record **unchanged with HTTP 200** — none of your new fields are applied. It exists to make **retries** safe, not to edit. **To change an existing agent, use `PATCH /agents/:id`** (see [Managing Existing Resources](#managing-existing-resources)) — never re-POST. Only set `idempotency_key` when you need a specific create to be replay-safe, and use a **stable key you control** (not a fresh `uuid` each call — a fresh uuid defeats the dedup and creates a duplicate every run).
 
 **Attach the end_call system tool (required for every agent):**
 
@@ -532,7 +571,7 @@ Flow agents still have a global `system_prompt` (persona, brand rules, hard cons
 
 Identify the steps. For each step decide:
 - **Conversation node** (LLM talks): what the bot is trying to accomplish, plus N labeled transitions out (e.g. "User confirmed attendance" → next-step). The model picks based on what the user just said.
-- **Tool-call node** (deterministic): which existing tool (by `tool_id`) and what to do on success / error / custom branches (custom branches use simple JSONPath-equality matching like `$.status == "no_availability"`). Tool args are owned by the **tool itself** via `payload_config` (literals + `ai_extract`-by-the-runtime); `tool_call` nodes have **no per-node `args_template`** field. If you need different arg shapes in different flow steps, create separate tools.
+- **Tool-call node** (deterministic): which existing tool (by `tool_id`) and what to do on success / error / custom branches (custom branches use simple JSONPath-equality matching like `$.status == "no_availability"`). Tool args are owned by the **tool itself** via `payload_config` (literals + `ai_extract`-by-the-runtime); `tool_call` nodes have **no per-node `args_template`** field. First `GET /tools` and reuse an existing tool if its capability matches (the same tool row can be referenced from N flow nodes); `PATCH` it if only the URL/description/params changed. Create a NEW tool ONLY when the argument *shape* genuinely differs across nodes.
 - **Transfer node** / **End node**: terminal.
 - **Post-call extraction and automation**: there are no `webhook` or `structured_output` flow nodes. For per-call extraction, use the agent-level `extraction_parameters` field. For post-call automation, use `webhook_url` + `webhook_events` on the agent. Both apply to prompt and flow agents — flow agents do not have separate post-end node types.
 
@@ -572,7 +611,26 @@ curl -X POST "https://api.goyappr.com/agents" \
 
 The API validates `flow_config` (Zod-equivalent JSON schema): exactly one start node, all `next_step_id`s resolve, unique node ids. Validation errors come back as 400s with a clear message.
 
-### Step 1B.5 — Skip Phase 2 (Tooling)
+### Step 1B.5 — Smoke-test the flow graph (free, hermetic)
+
+**Before placing any real or eval call, validate the graph's routing with the hermetic flow simulator** — `POST /agents/:id/flow/test`. It deterministically replays a synthetic transcript through the graph without spending eval tokens or placing a call, returning a step trace, `named_results`, `slot_values`, and `ended_at_step_id`.
+
+```bash
+curl -s -X POST "https://api.goyappr.com/agents/AGENT_ID/flow/test" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "transcript": [
+      { "role": "user", "content": "Hi, I want to RSVP for the wedding" },
+      { "role": "user", "content": "Two people, and yes we will attend" }
+    ],
+    "mock_tool_results": { "checkAvailability": { "status": "ok" } }
+  }' | jq '{ended_at_step_id, slot_values, named_results}'
+```
+
+Confirm the trace ends at the expected node and that the slots you care about were filled. Fix routing/transition bugs here — it's free — before moving to a real test call. Full reference: [`flow-composition-guide.md`](flow-composition-guide.md).
+
+### Step 1B.7 — Skip Phase 2 (Tooling)
 
 Phase 2 below describes how prompt agents attach tools via the `agent_tools` join. **Flow agents do NOT use `agent_tools`** — tools live inside `flow_config.nodes[].tool_id`. The tools themselves still live in the `tools` table and are reusable across multiple flows or attached to prompt agents.
 
@@ -590,6 +648,8 @@ Tools are webhook endpoints the agent can call during a conversation. This phase
 
 - **Layer 1 — Blueprint**: what tools to build and why (platform-agnostic)
 - **Layer 2 — Implementation**: actual code, using Supabase edge functions if available
+
+> **Who hosts the tool receiver.** The webhook receiver endpoints — including the example handlers in `templates/functions/*` (`book-appointment`, `check-availability`, etc.) — are **example implementations you host on your OWN infrastructure** (e.g. your own Supabase project) and adapt to your business. Yappr is a platform: it does **not** supply, host, or run tools. You build the receiver endpoint, deploy it, then point a Yappr webhook tool at its URL (`config.url`). Treat the `templates/functions/*` files and the `templates/integrations/*` clients as starting points, not drop-in Yappr features.
 
 ### Layer 1 — Tool Philosophy
 
@@ -623,7 +683,7 @@ import { GoogleCalendarClient } from "../_shared/integrations/google-calendar.ts
 import { GreenApiClient } from "../_shared/integrations/greenapi-whatsapp.ts";
 import { HubSpotClient } from "../_shared/integrations/hubspot.ts";
 
-const calendar = new GoogleCalendarClient(Deno.env.get("GOOGLE_ACCESS_TOKEN")!);
+const calendar = new GoogleCalendarClient(Deno.env.get("GOOGLE_ACCESS_TOKEN")!, Deno.env.get("GOOGLE_CALENDAR_ID") ?? "primary");
 const whatsapp = new GreenApiClient(Deno.env.get("GREEN_API_INSTANCE")!, Deno.env.get("GREEN_API_TOKEN")!);
 const crm = new HubSpotClient(Deno.env.get("HUBSPOT_TOKEN")!);
 ```
@@ -634,11 +694,13 @@ The client constructor's optional `fetchFn` parameter means the same code works 
 
 ### Step 2.1 — Creating Tools via Yappr API
 
+> **Reuse before you create.** First `GET /tools` and reuse an existing tool when its capability matches — a single tool row is reusable across many agents and many flow nodes. If only the URL, description, or parameters changed, **`PATCH` the existing tool** instead of minting a new one. Create a NEW tool ONLY when the argument *shape* genuinely differs. Don't duplicate a tool that already exists for the same job (e.g. a second `bookAppointment`).
+
 For each tool, use the file-based approach:
 
 ```bash
 python3 -c "
-import json, uuid
+import json
 payload = {
     'name': 'bookAppointment',
     'description': 'Book an appointment. Call only after the caller has confirmed a specific date, time, and their full name.',
@@ -657,15 +719,17 @@ payload = {
                 {'name': 'serviceType', 'description': 'Type of service or appointment requested'}
             ]
         }
-    },
-    'idempotency_key': str(uuid.uuid4())
+    }
+    # idempotency_key: OMIT for a normal create. Same rule as agents — it dedups on identical-key
+    # replay (returns the OLD row unchanged, HTTP 200); it is NOT an upsert and does not edit.
+    # To change an existing tool, use PATCH /tools/:id. See the idempotency note in Step 1.8.
 }
 with open('/tmp/tool-payload.json', 'w', encoding='utf-8') as f:
     json.dump(payload, f, ensure_ascii=False)
 "
-curl -s -X POST 'https://api.goyappr.com/tools' \
-  -H 'Authorization: Bearer $YAPPR_API_KEY' \
-  -H 'Content-Type: application/json' \
+curl -s -X POST "https://api.goyappr.com/tools" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
   --data-binary @/tmp/tool-payload.json | jq .
 ```
 
@@ -684,6 +748,8 @@ curl -s -X POST "https://api.goyappr.com/tools/attach" \
 ```
 
 One tool per attach call. Increment `execution_order` by 1 for each additional tool.
+
+> **Editing an existing tool?** Don't POST again — use `PATCH /tools/:id`. See [Managing Existing Resources → Tools](#tools).
 
 ### Step 2.2 — Writing Tool Instructions in the Prompt
 
@@ -762,6 +828,8 @@ See [yappr-api.md — Tool Webhook Payload](yappr-api.md) for the full field ref
 ## PHASE 3: Call Dispatch
 
 How calls get initiated. Choose the right pattern based on the user's lead source and volume.
+
+> **Before dispatching, check call windows.** Outbound is gated to business hours by default (Sun–Thu/Fri Israel schedule, evaluated in the company timezone). A call placed outside the window returns `202` with `status: "scheduled"` (auto-dispatched at the next opening), and if there's no future window at all it returns `422 OUTSIDE_CALL_WINDOW`. Confirm the timezone is set (dashboard-only) and the windows match the desired hours — see the [Call windows](#call-windows-business-hours) section. Outbound destinations are also screened against the [do-not-call list](#do-not-call-list).
 
 ### Layer 1 — Three Dispatch Patterns
 
@@ -855,12 +923,15 @@ Configure the agent's `webhook_url` and `webhook_events` (via PATCH /api-v1/agen
 |-------|---------------|----------|
 | `call.no_answer` | Fires immediately when no one picks up | Trigger retry logic |
 | `call.failed` | Fires on connection error | Log failure, alert ops |
+| `call.dnc_blocked` | Fires when an outbound call (fresh or queued) is blocked by the do-not-call list (`extra_data.queued` distinguishes the two) | Stop retrying — the destination is on DNC and will always be blocked |
 | `call.analyzed` | Fires when full AI pipeline completes: transcript + disposition + summary | Main post-call automation trigger |
 | `transcript.ready` | Legacy — fires when transcript is saved | Use `call.analyzed` instead |
 
+The full valid event set is: `call.started`, `call.answered`, `call.ended`, `call.failed`, `call.no_answer`, `call.dnc_blocked`, `transcript.ready`, `call.analyzed` (see `yappr-api.md`). The table above is the curated subset most post-call handlers subscribe to.
+
 **Recommended default event set:** `call.no_answer`, `call.failed`, `call.analyzed`
 
-The `call.analyzed` payload includes: `direction`, `status`, `from`, `to`, `duration_seconds`, `disposition` (label string or null), `summary`, `transcript`.
+The event body is `{ event, timestamp, agent_id, company_id, call_id, data: {...} }`. The `call.analyzed` `data` object includes: `direction`, `status`, `from_number`, `to_number`, `duration_seconds`, `disposition` (label string or null), `summary`, `transcript`, and `extracted_data` (object with the agent's extraction-parameter values, or absent if none configured). Read these under `payload.data` — e.g. `payload.data.from_number`, not `payload.data.from`. (Note: `from`/`to` ARE the field names on `GET /calls/:id`, but the **webhook event** payload uses `from_number`/`to_number`.)
 
 **Who ended the call (`ended_by`)** — `GET /calls/:id` returns an `ended_by` field that distinguishes hang-up causality: `"caller"` (the human picked up and ended it), `"agent"` (the bot ended it — e.g. timed out or chose to hang up), `"system"` (the platform ended it — e.g. voicemail detection, max duration), or `"unknown"`. Useful for retry and analytics logic so you don't auto-retry calls the user intentionally ended. First-write-wins — once set, it isn't overwritten.
 
@@ -963,7 +1034,25 @@ curl -s -X POST "https://api.goyappr.com/phone-numbers/search" \
   -d '{"limit": 10}' | jq .
 ```
 
-Present the list with numbers and pricing. Ask which they want.
+Returns Israeli mobile numbers in this shape:
+```json
+{
+  "numbers": [
+    {
+      "phoneNumber": "+972XXXXXXXXX",
+      "friendlyName": "...",
+      "locality": "...",
+      "region": "...",
+      "capabilities": { "voice": true, "sms": false },
+      "pricing": { "basePriceCents": 0, "finalPriceCents": 1000, "priceDisplay": "$10.00", "currency": "USD", "markupPercentage": 0 }
+    }
+  ],
+  "numberType": "mobile",
+  "pagination": { "currentPage": 1, "totalPages": 1, "totalNumbers": 10, "limit": 10 }
+}
+```
+
+Present the list with numbers and pricing (`pricing.priceDisplay`). Ask which they want.
 
 **Confirm before purchasing:** *"Purchasing [number] will start a $10/month recurring charge on your saved card. Shall I go ahead?"*
 
@@ -975,7 +1064,14 @@ curl -s -X POST "https://api.goyappr.com/phone-numbers/purchase" \
   -d '{"phone_number": "+972XXXXXXXXX"}' | jq .
 ```
 
-The purchased number may differ from what was selected (race condition fallback). Always show the `phoneNumber` from the response.
+Request field is `phone_number` (snake_case). **Only Israeli phone numbers are supported** — a non-IL number returns `400 {"error":"Only Israeli phone numbers are supported"}`.
+
+Response shape:
+```json
+{ "success": true, "phoneNumber": "+972XXXXXXXXX", "monthlyPrice": 10, "currency": "USD", "status": "pending_requirements", "message": "..." }
+```
+
+`status` is `pending_requirements` at purchase time — the number is NOT immediately `active`. It activates later once carrier requirements clear (promoted by a background job). The purchased number may differ from what was selected (race-condition fallback), so always show the `phoneNumber` from the response, not the one you requested.
 
 **Assign:**
 ```bash
@@ -1034,6 +1130,24 @@ Concrete example pastes for common platforms:
 
 **Optional: source-IP allowlist.** If the customer's PBX has a fixed egress IP, pass `allowed_source_ips: ["1.2.3.4/32"]` on create (or PATCH later). Calls from any other IP are rejected pre-answer. Useful defense-in-depth on top of slug obscurity.
 
+**Manage existing endpoints (the lifecycle the rotation recipe relies on):**
+
+```bash
+# List endpoints (find the id) — returns { data: [...], total, limit, offset }
+curl -s "https://api.goyappr.com/sip-endpoints" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '.data[] | {id, name, is_active, sip_uri}'
+
+# PATCH — add a source-IP allowlist, or flip is_active
+curl -s -X PATCH "https://api.goyappr.com/sip-endpoints/SIP_ENDPOINT_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"allowed_source_ips": ["1.2.3.4/32"], "is_active": true}'
+
+# DELETE — the rotation recipe: delete, then re-create to get a fresh slug/URI
+curl -s -X DELETE "https://api.goyappr.com/sip-endpoints/SIP_ENDPOINT_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY"
+```
+
 **Caller-ID note.** Because the upstream is customer-controlled, the caller-ID arriving in the SIP `From` header cannot be trusted by default. Yappr **skips lead-context lookups** on calls arriving via SIP endpoints unless the agent has `trust_external_sip_caller_id = true`. Set that only when the upstream is operated directly by the customer and they vouch for the caller-ID.
 
 **Pre-launch checklist for SIP endpoints:** all the standard items in Step 5.2 still apply, plus:
@@ -1058,10 +1172,14 @@ Before telling the user they're live, verify each item:
 - [ ] `call.no_answer` and `call.analyzed` events are in the `webhook_events` list
 - [ ] Any custom variables used in the system prompt are documented — caller must supply them at call creation time
 - [ ] Dispositions needed for routing are created
+- [ ] Company timezone is correct (dashboard-only — Company settings) and call windows (`GET /call-windows`) match the desired calling hours — outbound gating defaults **ON** with a Sun–Thu/Fri Israel schedule, so a wrong timezone or no future window silently 202-schedules or 422-rejects calls at the wrong local time. See the [Call windows](#call-windows-business-hours) section.
+- [ ] At least one agent-eval suite passes before going live (`POST /agent-eval/suites/:id/run`) — see the [Agent Eval](#agent-eval--programmatic-regression-testing) section
 
 ### Step 5.3 — Test the Agent
 
-Two options — offer both:
+**Before any manual test, run a regression suite if you have one** — the single manual call below proves the happy path, not that you didn't break greeting routing, refusals, or a flow transition. See the [Agent Eval](#agent-eval--programmatic-regression-testing) section / [`agent-eval-guide.md`](agent-eval-guide.md) to run `POST /agent-eval/suites/:id/run` and gate go-live on the pass rate. For flow agents, also smoke-test the graph with the hermetic [flow simulator](#step-1b6--smoke-test-the-flow-graph-free-hermetic) first.
+
+Then offer these manual options:
 
 **Option A: Web Call (recommended — no phone needed)**
 
@@ -1090,6 +1208,19 @@ curl -s -X POST "https://api.goyappr.com/calls" \
   }'
 ```
 
+**Option C: Send a shareable test link (no dashboard login needed)**
+
+Mint a public web-call link to hand the client so they can try the agent without a Yappr account. Returns a `https://app.goyappr.com/share/{token}` URL.
+
+```bash
+curl -s -X POST "https://api.goyappr.com/shared-links" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "AGENT_ID", "expires_at": "2026-06-30T00:00:00Z"}' | jq .
+```
+
+`expires_at` is optional. To revoke a link, `PATCH /shared-links/:id` with `{"is_revoked": true}` (there is no DELETE). List/manage existing links in [Managing Existing Resources → Shared links](#shared-links).
+
 ### Step 5.4 — Monitoring
 
 After launch, check recent calls:
@@ -1107,7 +1238,16 @@ If the agent triggers on background noise → increase `vad_confidence`
 
 ## Managing Existing Resources
 
-When a user asks to change, view, or manage something — always fetch and present the options first, then act on their selection. Never ask them to provide an ID manually.
+**This is the EDIT path.** Whenever the user wants to change / update / fix / rename / adjust / disable an existing resource (the [create-vs-edit gate](#decision-new-build-or-change-to-an-existing-system) routed you here), work entirely from this section — `GET` the record, `PATCH` only the changed fields, verify with another `GET`. **Do not POST a new resource to "update" one.** Always fetch and present the options first, then act on their selection. Resolve the id from the Phase 0 `EXISTING RESOURCES` block — never ask the user to provide an id manually.
+
+### PATCH gotchas
+
+These are **recoverable** errors — fix the request and retry the PATCH. They are NOT a reason to fall back to POST / recreate the resource:
+
+- **Field names must be snake_case.** A camelCase field (e.g. `flowConfig`, `systemPrompt`) returns `400` with a corrective message. Re-send with snake_case (`flow_config`, `system_prompt`).
+- **`type` (prompt vs flow) is immutable after create.** A PATCH that includes `type` is rejected. Changing *type* genuinely does require a new agent — but ONLY type. Every other field is freely PATCH-able; don't recreate the whole agent for a voice/prompt/webhook change.
+- **`flow_config` cannot be set to `null`.** To take a flow agent out of service, **deactivate it** (`DELETE /agents/:id`, which is a soft-deactivate), don't null its flow.
+- **`flow_config` only applies to `type=flow` agents.** Sending it to a prompt agent is rejected.
 
 ### Agents
 
@@ -1177,13 +1317,21 @@ curl -s -X DELETE "https://api.goyappr.com/tools/TOOL_ID" \
 curl -s "https://api.goyappr.com/leads?limit=20&search=john" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
 
-# Create
+# Create — long_term_context is settable on create (AI memory injected into the agent's
+# system prompt for this lead). Provenance goes in metadata, NOT source: API-created leads
+# are always source:"api" (not caller-settable, to prevent spoofing reporting).
 curl -s -X POST "https://api.goyappr.com/leads" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"phone_number": "+972501234567", "name": "John Smith", "tags": ["Hot Lead"]}'
+  -d '{
+    "phone_number": "+972501234567",
+    "name": "John Smith",
+    "tags": ["Hot Lead"],
+    "long_term_context": "Interested in premium plan. Prefers morning calls.",
+    "metadata": { "origin": "facebook-lead-ads" }
+  }'
 
-# Update (tags replaces all)
+# Update (tags replaces all; long_term_context also settable via PATCH)
 curl -s -X PATCH "https://api.goyappr.com/leads/LEAD_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
@@ -1195,6 +1343,8 @@ curl -s -X DELETE "https://api.goyappr.com/leads/LEAD_ID" \
 ```
 
 ### Dispositions
+
+Only **custom** dispositions can be PATCHed or DELETEd. All 10 seeded defaults are protected — PATCH/DELETE on a default returns `403 PROTECTED` (see [Appendix E](#appendix-e-disposition-reference)).
 
 ```bash
 # List
@@ -1216,6 +1366,29 @@ curl -s -X PATCH "https://api.goyappr.com/dispositions/DISPOSITION_ID" \
 # Delete (403 if protected)
 curl -s -X DELETE "https://api.goyappr.com/dispositions/DISPOSITION_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY"
+```
+
+### Shared links
+
+Public, no-login web-call links for an agent — `https://app.goyappr.com/share/{token}`. Hand one to a client so they can try the agent without a Yappr account (see Step 5.3 Option C). There is **no DELETE** — revoke via PATCH.
+
+```bash
+# List (most recent first) — returns { data: [...] }
+curl -s "https://api.goyappr.com/shared-links" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  | jq '[.data[] | {id, agent_id, url, status, expires_at}]'
+
+# Create — expires_at optional
+curl -s -X POST "https://api.goyappr.com/shared-links" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "AGENT_ID", "expires_at": "2026-06-30T00:00:00Z"}' | jq .
+
+# Revoke (no DELETE — PATCH is_revoked)
+curl -s -X PATCH "https://api.goyappr.com/shared-links/SHARED_LINK_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"is_revoked": true}'
 ```
 
 ### Do-Not-Call list
@@ -1276,6 +1449,44 @@ Gotchas worth flagging to the user:
 - `expires_at` in the past returns 400. Omit (or `null`) for a permanent block.
 - A DNC-blocked call still writes a `call_logs` row and fires a `call.dnc_blocked` webhook — useful for analytics, but do not double-count it as a real attempt.
 
+### Call windows (business hours)
+
+Per-company time-of-day gate on inbound and outbound calls, evaluated in the workspace's timezone. Defaults to **outbound on / inbound off**, with a Sun–Thu 09:00–19:00 + Fri 09:00–11:30 schedule seeded on company creation (Saturday closed).
+
+Outside any allowed window, `POST /calls` returns `202` with `status: "scheduled"` and a `scheduled_for` timestamp — the platform dispatches the call automatically at the next opening. Inbound calls (when enforcement is on for inbound) are hung up before being answered — no `call_logs` row is written.
+
+```bash
+# Read the current configuration
+curl -s "https://api.goyappr.com/call-windows" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Replace the schedule — Sun–Thu split into morning + afternoon blocks
+curl -s -X PUT "https://api.goyappr.com/call-windows" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "outbound_enabled": true,
+    "inbound_enabled": false,
+    "windows": [
+      { "day_of_week": 0, "start_time": "09:00", "end_time": "13:00" },
+      { "day_of_week": 0, "start_time": "14:00", "end_time": "18:00" }
+    ]
+  }'
+
+# Turn outbound gating off without losing the schedule
+curl -s -X PUT "https://api.goyappr.com/call-windows" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "outbound_enabled": false }'
+```
+
+Gotchas worth flagging to the user:
+- `day_of_week` is 0=Sunday … 6=Saturday. A day with no rows is fully closed for whichever direction is enforced.
+- `start_time` must be strictly before `end_time` — no overnight wrap-around. To express e.g. 22:00–02:00, use two rows on consecutive days.
+- Two ranges on the same day must not overlap (`400 INVALID_CALL_WINDOWS`).
+- The timezone comes from `companies.timezone` — set it in the Company settings tab before relying on the schedule.
+- If outbound is enforced and the company has no future window at all (every day empty), `POST /calls` returns `422 OUTSIDE_CALL_WINDOW` instead of queueing indefinitely.
+
 ---
 
 ## Billing
@@ -1305,13 +1516,33 @@ curl -s -X POST "https://api.goyappr.com/billing/topup" \
   -d '{"amount_cents": 2000}'
 ```
 
+### Consumption / spend reporting
+
+`GET /billing/consumption` reports how much the workspace spent over a date range, bucketed however you ask — ideal for the agency/reseller use case ("how much did this client spend on voice calls vs phone numbers this month, per agent").
+
+Query params:
+- `group_by` — `day` | `month` | `total` | `agent` | `product` (default `total`)
+- `from`, `to` — ISO date range
+- `product` — filter to a single product (e.g. voice, phone number)
+- `include_topups` — include credit top-ups in the totals (default excludes them, so you see usage cost only)
+
+Each bucket returns an `amount` and a `count`.
+
+```bash
+# Per-agent spend this month
+curl -s "https://api.goyappr.com/billing/consumption?group_by=agent&from=2026-06-01&to=2026-06-30" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+
 ---
 
 ## Skill Scope
 
-This skill covers: agents, tools, phone numbers, calls, dispositions, leads, lead tags, shared links, billing.
+This skill covers: agents, tools, phone numbers, calls, dispositions, leads, lead tags, shared links, billing, SIP endpoints (BYOC inbound), do-not-call list, call windows (business hours), OAuth integrations, and agent eval (programmatic regression testing).
 
-Out of scope: custom SIP trunks, team/user management, WhatsApp directly (only via webhook to an external service), model training, non-Israeli phone numbers.
+Out of scope: raw carrier SIP **trunk** provisioning (distinct from the supported BYOC **SIP endpoints** feature in Step 5.1b), team/user management, WhatsApp directly (only via webhook to an external service), model training, non-Israeli phone numbers.
+
+**No company API resource.** Workspace-level settings — company **timezone** and team/members — are **dashboard-only**; there is no `POST /company`. The only company-level setting the API can change is **call windows** (`PUT /call-windows`), which assumes the timezone is already correct (set it in the dashboard Company settings first).
 
 If a request is out of scope, say so clearly and offer the developer consultation link: **https://cal.com/yappr/skill-dev-consultation**
 
@@ -1366,7 +1597,7 @@ Adapt language for non-technical users:
 - Female (14): Michal, Rachel, Noa, Maya, Shira, Avigail, Liat, Tamar, Yael, Dvora, Shir, Anat, Dana, Ruth
 - Male (16): Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi, Shlomo, Alon, Yuval
 
-**Default:** `Michal` when use case is unclear. Match gender to the agent's persona in the system prompt.
+**Recommended pick:** `Michal` when use case is unclear. Match gender to the agent's persona in the system prompt. Always set `voice` explicitly in the create payload — the server-side fallback for an omitted voice is `Rachel`, not Michal.
 
 ---
 
@@ -1512,13 +1743,13 @@ Use `metadata` for tracking data (lead IDs, source, CRM record IDs). Use `variab
 | Voicemail | Yes | System |
 | Wrong Number | Yes | System |
 | Do Not Call | Yes | System |
-| Interested | No | AI classifier |
-| Not Interested | No | AI classifier |
-| Callback Requested | No | AI classifier |
-| Appointment Set | No | AI classifier |
-| Issue Resolved | No | AI classifier |
+| Interested | Yes | AI classifier |
+| Not Interested | Yes | AI classifier |
+| Callback Requested | Yes | AI classifier |
+| Appointment Set | Yes | AI classifier |
+| Issue Resolved | Yes | AI classifier |
 
-**Protected dispositions:** cannot be deleted. Attempting to delete returns 403. Do not try to recreate them.
+**Protected dispositions:** all 10 default dispositions are protected — they cannot be edited or deleted. Attempting to PATCH or DELETE one returns `403 PROTECTED`. Do not try to recreate them. Only custom dispositions you create can be edited or deleted.
 
 **No Answer and Failed:** auto-set by the platform. The AI classifier does not set these.
 
@@ -1600,7 +1831,7 @@ If you encounter a bug, unexpected API behaviour, or the user requests a feature
 | `reporter_email` | string | no | User's email for follow-up |
 | `reporter_context` | string | no | Company name, project name, or other context |
 
-**Response:** `{ "status": "created" }` or `{ "status": "duplicate" }` (auto-deduped against open tickets)
+**Response:** `{ "status": "created" }`. Deduplication against open tickets happens server-side and is intentionally **not** surfaced to the caller — every successful report returns `"created"`, even if it was deduped. Do not branch on a `"duplicate"` status; the API never returns one.
 
 **Example — report a bug:**
 ```bash

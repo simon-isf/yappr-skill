@@ -1,13 +1,15 @@
 // book-appointment.ts
-// Yappr tool handler: books appointment and fires secondary actions.
-// Called by the voice agent during a call when it decides to book.
+// EXAMPLE tool-receiver — you host & run this on YOUR OWN infrastructure (e.g. your Supabase project).
+// Yappr is a platform: it does not supply, host, or run tools. You build a receiver endpoint like this,
+// deploy it, then point a Yappr *webhook tool* at its URL. This file is a starting point to ADAPT, not a Yappr feature.
 //
 // This is a BUNDLED handler — booking + customer notification + team notification
 // + CRM update all happen here. The agent makes ONE tool call.
 //
-// Payload received from Yappr agent:
+// Payload received from the Yappr agent (the tool-webhook envelope):
 //   Standard metadata (if include_standard_metadata: true):
-//     call_id, agent_id, duration_seconds
+//     company_id, agent_id, agent_name, call_id, call_direction,
+//     caller_number, callee_number, call_metadata, call_variables
 //   Extraction parameters (defined in tool config):
 //     callerName, preferredDate, preferredTime, notes (optional)
 //
@@ -136,6 +138,7 @@ Deno.serve(async (req: Request) => {
   // Standard metadata from Yappr
   const callId = payload.call_id as string | undefined;
   const agentId = payload.agent_id as string | undefined;
+  const callDirection = payload.call_direction as string | undefined;
 
   // Extraction parameters (defined in tool config)
   const callerName = (payload.callerName ?? payload.caller_name ?? "the caller") as string;
@@ -143,11 +146,14 @@ Deno.serve(async (req: Request) => {
   const preferredTime = (payload.preferredTime ?? payload.preferred_time) as string | undefined;
   const notes = (payload.notes ?? "") as string;
 
-  // Get caller phone from Supabase (via call_id if available)
+  // Resolve the customer's phone from the tool-webhook envelope.
+  // The envelope carries caller_number (the caller) and callee_number (the destination) — not to_number.
+  // Outbound: the lead we dialled is callee_number. Inbound: the person who called us is caller_number.
   let callerPhone = payload.callerPhone as string | undefined;
-  if (!callerPhone && callId) {
-    // Could fetch from Yappr API here but adds latency — better to pass via static param or metadata
-    callerPhone = payload.to_number as string | undefined;
+  if (!callerPhone) {
+    callerPhone = (callDirection === "inbound"
+      ? payload.caller_number
+      : payload.callee_number) as string | undefined;
   }
 
   if (!preferredDate || !preferredTime) {

@@ -1,5 +1,9 @@
 // check-availability.ts
-// Yappr tool handler: checks real-time calendar availability.
+// EXAMPLE tool-receiver — you host & run this on YOUR OWN infrastructure (e.g. your Supabase project).
+// Yappr is a platform: it does not supply, host, or run tools. You build a receiver endpoint like this,
+// deploy it, then point a Yappr *webhook tool* at its URL. This file is a starting point to ADAPT, not a Yappr feature.
+//
+// Checks real-time calendar availability.
 // Used as a safeguard even when slots are pre-fetched at dispatch time.
 // The pre-fetch reduces how often this is called, but it's always available.
 //

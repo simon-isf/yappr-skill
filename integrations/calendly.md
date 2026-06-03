@@ -227,7 +227,11 @@ if (payload.event === "invitee.created") {
   const name = invitee.name;
   const email = invitee.email;
   const startTime = invitee.scheduled_event.start_time;
-  const phone = invitee.questions_and_answers?.find(q => q.question === "Phone")?.answer;
+  // Q&A labels are free-text and defined per event type (e.g. "Phone", "Phone Number").
+  // Match loosely so a renamed label still resolves.
+  const phone = invitee.questions_and_answers?.find(q =>
+    q.question.toLowerCase().includes("phone")
+  )?.answer;
   // Update CRM, send confirmation WhatsApp, etc.
 }
 ```

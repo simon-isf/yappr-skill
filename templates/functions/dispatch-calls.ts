@@ -1,4 +1,7 @@
 // dispatch-calls.ts
+// YOUR OWN glue — you host & run this on your infrastructure (e.g. your Supabase project).
+// It is your call queue's dispatcher, not a Yappr-supplied feature: it drains a table you own
+// and calls Yappr's public POST /calls endpoint. Adapt the table/columns to your setup.
 // Called by pg_cron every minute. Dispatches pending calls to Yappr.
 //
 // Required env vars:
@@ -101,7 +104,15 @@ Deno.serve(async (_req: Request) => {
 
       const yapprData = await yapprRes.json();
 
-      if (yapprRes.ok) {
+      // IMPORTANT: POST /calls does NOT always return a call_logs id.
+      //   • 201 → immediate dial: `id` IS the real call_log id → store as yappr_call_id.
+      //   • 200 → number on DNC: not dialled, but a real call_log id is in `call_id` (status dnc_blocked).
+      //   • 202 → queued (server at capacity) or scheduled (outside call window):
+      //           `id` is a Yappr-side *call_queue* entry id, NOT a call_log id. Storing it as
+      //           yappr_call_id would break later webhook matching (.eq("yappr_call_id", call_id)),
+      //           because the webhook delivers the real call_log id. Keep the row 'pending' to
+      //           re-poll, and stash the queue id separately so you can reconcile via the webhook's call_id.
+      if (yapprRes.status === 201) {
         await supabase
           .from("call_queue")
           .update({
@@ -113,6 +124,31 @@ Deno.serve(async (_req: Request) => {
 
         dispatched++;
         results.push({ id: row.id, yappr_call_id: yapprData.id, status: "ok" });
+      } else if (yapprRes.status === 202) {
+        // Queued or scheduled — yapprData.id is a queue-entry id, not a call id.
+        // Re-poll later; the real call_log id arrives via the webhook (match on its call_id).
+        await supabase
+          .from("call_queue")
+          .update({
+            // yappr_queue_id: a separate column you add to reconcile against the webhook payload.
+            yappr_queue_id: yapprData.id,
+            attempts: row.attempts + 1,
+            status: "pending",
+            next_attempt_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+          })
+          .eq("id", row.id);
+        results.push({ id: row.id, yappr_queue_id: yapprData.id, status: yapprData.status ?? "queued" });
+      } else if (yapprRes.status === 200 && yapprData.status === "dnc_blocked") {
+        // Number is on the company DNC list — not dialled. `call_id` is a real call_log id.
+        await supabase
+          .from("call_queue")
+          .update({
+            yappr_call_id: yapprData.call_id ?? null,
+            status: "completed",
+            disposition: "DNC Blocked",
+          })
+          .eq("id", row.id);
+        results.push({ id: row.id, status: "dnc_blocked" });
       } else if (yapprRes.status === 429 || yapprRes.status === 503) {
         // Rate limited or server at capacity — reschedule in 5 minutes
         await supabase

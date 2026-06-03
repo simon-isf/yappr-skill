@@ -1,4 +1,8 @@
 // send-whatsapp.ts
+// EXAMPLE tool-receiver — you host & run this on YOUR OWN infrastructure (e.g. your Supabase project).
+// Yappr is a platform: it does not supply, host, or run tools. You build a receiver endpoint like this,
+// deploy it, then point a Yappr *webhook tool* at its URL. This file is a starting point to ADAPT, not a Yappr feature.
+//
 // Send WhatsApp messages via Green API.
 // Primary post-call channel for the Israeli market.
 //
