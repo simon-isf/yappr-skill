@@ -532,9 +532,11 @@ Flow agents still have a global `system_prompt` (persona, brand rules, hard cons
 
 Identify the steps. For each step decide:
 - **Conversation node** (LLM talks): what the bot is trying to accomplish, plus N labeled transitions out (e.g. "User confirmed attendance" → next-step). The model picks based on what the user just said.
-- **Tool-call node** (deterministic): which existing tool (by `tool_id`) and what to do on success / error / custom branches (custom branches use simple JSONPath-equality matching like `$.status == "no_availability"`). Tool args are owned by the **tool itself** via `payload_config` (literals + `ai_extract`-by-the-runtime); `tool_call` nodes have **no per-node `args_template`** field. If you need different arg shapes in different flow steps, create separate tools.
+- **Tool-call node** (deterministic): which existing tool (by `tool_id`) and what to do on success / error / custom branches (custom branches use simple JSONPath-equality matching like `$.status == "no_availability"`). Tool args are owned by the **tool itself** via `payload_config` (literals + `ai_extract`-by-the-runtime); `tool_call` nodes have **no per-node `args_template`** field. At call start the effective linked-tool config (including `config_override`) becomes a flat submission schema with one field per extraction parameter; the model never submits a nested `args` object. `required` defaults to true, while optional fields do not block dispatch. Use a node's `config_override` for deliberate per-flow differences, remembering that `payload_config` is replaced as one complete section. Create a new tool when the action is a distinct reusable capability rather than a variation of the same one.
 - **Transfer node** / **End node**: terminal.
 - **Post-call extraction and automation**: there are no `webhook` or `structured_output` flow nodes. For per-call extraction, use the agent-level `extraction_parameters` field. For post-call automation, use `webhook_url` + `webhook_events` on the agent. Both apply to prompt and flow agents — flow agents do not have separate post-end node types.
+
+A flow can expose at most **127 unique typed extraction contracts**. Reusing the same effective tool and extraction schema across nodes shares one contract. If the API returns `too_many_extraction_contracts`, reuse a schema or split the graph into smaller agents.
 
 ### Step 1B.2a — Greeting before flow (`auto_advance: false`)
 
@@ -651,10 +653,10 @@ payload = {
             'include_standard_metadata': True,
             'static_parameters': [],
             'extraction_parameters': [
-                {'name': 'callerName', 'description': 'Full name of the caller as stated'},
-                {'name': 'preferredDate', 'description': 'Requested appointment date in natural language'},
-                {'name': 'preferredTime', 'description': 'Requested appointment time in natural language'},
-                {'name': 'serviceType', 'description': 'Type of service or appointment requested'}
+                {'name': 'callerName', 'description': 'Full name of the caller as stated', 'required': True},
+                {'name': 'preferredDate', 'description': 'Requested appointment date in natural language', 'required': True},
+                {'name': 'preferredTime', 'description': 'Requested appointment time in natural language', 'required': True},
+                {'name': 'serviceType', 'description': 'Type of service or appointment requested', 'required': False}
             ]
         }
     },
@@ -674,6 +676,9 @@ curl -s -X POST 'https://api.goyappr.com/tools' \
 - No snake_case, no spaces, no Hebrew in the name
 - Descriptions can be in Hebrew
 - All parameter names are normalized to camelCase automatically
+- Webhook targets must be final public HTTP(S) URLs; localhost, cloud-metadata hosts, non-global literal or DNS-resolved addresses, mixed public/private DNS answers, and redirects are rejected, so configure the final destination directly
+- Custom `Authorization` / `Content-Type` headers are supported, but routing and framing headers (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Expect`, `Keep-Alive`, `Proxy-*`, `TE`, `Trailer`, `Upgrade`) are rejected
+- Webhook actions run once; do not add `retry_count` because automatic action retries are unsupported
 
 **Attach to agent:**
 ```bash
@@ -687,7 +692,7 @@ One tool per attach call. Increment `execution_order` by 1 for each additional t
 
 ### Step 2.2 — Writing Tool Instructions in the Prompt
 
-The platform auto-registers tool names, descriptions, and parameter schemas with the AI. Do NOT repeat these in the prompt.
+The platform auto-registers tool names, descriptions, and flat parameter schemas with the AI. This applies to prompt agents and to every referenced `tool_call` in a flow. Flow schemas are resolved when the call starts, so a tool/config-override edit applies on the next call. Do NOT repeat the schema in the prompt, and never instruct the model to wrap fields in `args` or send a `node_id`.
 
 What you MUST write in the `<tools>` section of the prompt:
 - **When to call the tool** — specific conditions that must ALL be met
@@ -725,12 +730,12 @@ curl -s -X POST "https://api.goyappr.com/tools/TOOL_ID/test" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
 ```
 
-- `"success": true` + `status_code: 200` → show the user the `payload_sent` field
-- `"error": ...` → explain clearly and give options (fix URL now, or continue and fix later)
+- `"success": true` + downstream `status_code` in `200`–`299` → show the user `payload_sent`, `response_body`, and `delivery_id`
+- HTTP `502` with `DOWNSTREAM_HTTP_ERROR` / `WEBHOOK_NETWORK_ERROR`, or `504` with `WEBHOOK_TIMEOUT` → explain `details` and the sanitized `downstream_response`; never ask the user to expose configured request headers
 
 ### Step 2.4 — What the Tool Webhook Receives
 
-When the agent invokes the tool during a real call, Yappr POSTs this shape to `config.url`:
+When the agent invokes the tool during a real call, Yappr sends this flat shape to `config.url`. `POST` / `PUT` / `PATCH` / `DELETE` use a JSON body; `GET` uses the same fields as query parameters, with objects/arrays serialized as compact JSON strings, and has no body:
 
 ```json
 {

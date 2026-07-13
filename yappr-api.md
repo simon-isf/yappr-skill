@@ -286,7 +286,7 @@ Fetch full config of a single tool.
         { "name": "camelCaseName", "value": "string" }
       ],
       "extraction_parameters": [
-        { "name": "camelCaseName", "description": "string" }
+        { "name": "camelCaseName", "description": "string", "required": true }
       ]
     }
   },
@@ -311,12 +311,13 @@ Create a new webhook tool.
 | `name` | string | yes | camelCase English (e.g. `crmLogger`, `bookAppointment`) |
 | `description` | string | yes | What the tool does — the AI uses this to decide when to call it |
 | `type` | string | yes | Must be `"webhook"` for user-created tools |
-| `config.url` | string | yes | Valid HTTPS URL |
-| `config.method` | string | no | `"POST"` (default) |
-| `config.headers` | object | no | Key-value pairs, e.g. `{"Authorization": "Bearer secret"}` |
-| `config.payload_config.include_standard_metadata` | boolean | no | default `true` — includes `call_id`, `agent_id`, `duration_seconds` |
+| `config.url` | string | yes | Final public HTTP(S) URL. Localhost, cloud-metadata hosts, non-global literal or DNS-resolved addresses, mixed public/private DNS answers, and redirects are rejected; configure the final destination directly. |
+| `config.method` | string | no | One of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. |
+| `config.headers` | object | no | String-valued request headers, e.g. `{"Authorization": "Bearer secret"}`. Routing/framing headers (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Expect`, `Keep-Alive`, `Proxy-*`, `TE`, `Trailer`, `Upgrade`) are rejected. |
+| `config.timeout_seconds` | number | no | 1–60 seconds; default `30`. |
+| `config.payload_config.include_standard_metadata` | boolean | no | Default `true` — includes `company_id`, `agent_id`, `agent_name`, `call_id`, `call_direction`, `caller_number`, `callee_number`, `call_metadata`, and `call_variables`. |
 | `config.payload_config.static_parameters` | array | no | Each item: `{ "name": "camelCase", "value": "string" }` |
-| `config.payload_config.extraction_parameters` | array | no | Each item: `{ "name": "camelCase", "description": "string" }` |
+| `config.payload_config.extraction_parameters` | array | no | Each item: `{ "name": "camelCase", "description": "string", "required": true }`. `required` is optional and defaults to `true`; set it to `false` when a missing value must not block dispatch. |
 | `idempotency_key` | string | no | UUID for safe retries |
 
 **Important constraints:**
@@ -324,6 +325,8 @@ Create a new webhook tool.
 - `extraction_parameters` and `static_parameters` MUST be nested inside `payload_config` inside `config`. NOT at the top level.
 - All parameter names are normalized to camelCase automatically.
 - `description` fields for extraction parameters can be in any language including Hebrew.
+- `required` must be a boolean when provided. Required values are collected before dispatch; optional values are sent only when available.
+- Webhook actions are dispatched once. `retry_count` is unsupported because an automatic replay could duplicate a non-idempotent operation.
 
 **Response:** `201` — full tool object
 
@@ -386,27 +389,69 @@ Detach a tool from an agent.
 
 ### POST /tools/:id/test
 
-Send a test delivery to the tool's webhook URL. Uses sample data built from the tool's `extraction_parameters` and the full standard-metadata envelope (see [Tool Webhook Payload](#tool-webhook-payload)).
+Send a test delivery to the saved tool's configured URL. The request follows the same payload contract and HTTP semantics used during a live call, including static parameters, optional standard metadata, the configured HTTP method, and `timeout_seconds`.
 
-**Scopes:** `tools:read`
+**Scopes:** `tools:update`
 
-**Request body:** none
+**Request body:** optional
 
-**Response:**
 ```json
 {
-  "success": true | false,
-  "status_code": 200,
-  "payload_sent": { ... },
-  "error": "string | null"
+  "agent_id": "optional-company-owned-agent-uuid",
+  "arguments": {
+    "callerName": "Test Caller"
+  },
+  "context": {
+    "call_id": null,
+    "call_direction": "outbound",
+    "caller_number": "+972500000000",
+    "callee_number": "+972500000001",
+    "call_metadata": { "contact_id": "test-contact" },
+    "call_variables": { "LeadName": "Test Caller" }
+  }
 }
 ```
+
+- `agent_id`, when supplied, must identify an agent in the API key's company. It supplies `agent_id` and `agent_name` in the standard envelope.
+- `arguments` may contain only names configured in `payload_config.extraction_parameters`, and every supplied value must be a string. Any omitted configured argument receives a `<test_name>` placeholder.
+- `context` is optional. Its accepted keys are exactly `call_id`, `call_direction`, `caller_number`, `callee_number`, `call_metadata`, and `call_variables`; `call_direction` is `inbound`, `outbound`, `web_call`, or `null`.
+
+**Success (`200`):**
+```json
+{
+  "success": true,
+  "status_code": 200,
+  "response_body": "downstream response preview",
+  "payload_sent": { ... },
+  "delivery_id": "uuid | null"
+}
+```
+
+`payload_sent` is the exact object delivered. `delivery_id` is null only when delivery logging failed; logging failure never changes a successful downstream result.
+
+**Downstream failure (`502`) or timeout (`504`):**
+
+```json
+{
+  "error": "Webhook delivery failed",
+  "code": "DOWNSTREAM_HTTP_ERROR | WEBHOOK_NETWORK_ERROR | WEBHOOK_TIMEOUT",
+  "details": "Webhook returned HTTP 500",
+  "status_code": 500,
+  "downstream_response": "sanitized response preview",
+  "payload_sent": { ... },
+  "delivery_id": "uuid | null"
+}
+```
+
+The response preview is capped and sanitized, and configured request headers are never echoed. Request validation failures return `400`; an unknown tool or supplied agent returns `404`; an invalid internal test-service response returns `500`.
+
+Webhook targets must be final public HTTP(S) URLs. Localhost, cloud-metadata hosts, and non-global IP literals fail validation. Redirects are not followed and fail delivery; configure the final destination directly.
 
 ---
 
 ### Tool Webhook Payload
 
-This is the exact shape Yappr POSTs to a webhook tool's `config.url` when the agent invokes the tool during a call. It is NOT the same as the event-webhook payload (`call.analyzed` etc.) — see [Webhook Events](#webhook-events) for that.
+This is the exact flat payload Yappr sends to a webhook tool's `config.url` when the agent invokes the tool during a call. For `POST`, `PUT`, `PATCH`, and `DELETE`, it is sent as JSON. For `GET`, the same fields are encoded as query parameters (object/array values are compact JSON strings) and no request body is sent. It is NOT the same as the event-webhook payload (`call.analyzed` etc.) — see [Webhook Events](#webhook-events) for that.
 
 **Payload shape (when `config.payload_config.include_standard_metadata` is `true`, the default):**
 
@@ -845,7 +890,24 @@ Get full details of a single call, including resolved lead and disposition objec
       "integration_id": null,
       "arg_sources": { "appointmentDateTime": "ai_extract", "email": "ai_extract" },
       // No method/url/headers — flow tools fire via the dispatcher, not raw HTTP.
-      "request": { "body": { "appointmentDateTime": "...", "email": "..." } },
+      // For webhook tools, body is the exact delivered payload: standard metadata,
+      // then static parameters, then extracted values (later values win collisions).
+      "request": {
+        "body": {
+          "company_id": "uuid",
+          "agent_id": "uuid",
+          "agent_name": "Scheduling Agent",
+          "call_id": "uuid",
+          "call_direction": "outbound",
+          "caller_number": "+972...",
+          "callee_number": "+972...",
+          "call_metadata": {},
+          "call_variables": {},
+          "source": "voice-agent",
+          "appointmentDateTime": "...",
+          "email": "..."
+        }
+      },
       "response": { "success": true, "response_preview": "string", "error": null, "duration_ms": 412 }
     },
     {
@@ -894,7 +956,7 @@ Useful for retry / analytics decisions — e.g. don't auto-retry a call that the
 **`tool_calls`** — One row per tool / integration invocation that fired during the call, in firing order. The `kind` field is the discriminator:
 
 - `webhook_tool` — prompt-mode agent with a tool list. `request` carries the full HTTP envelope (method/url/headers/body). Auth-related headers are redacted as `"[REDACTED]"`.
-- `tool_call` — flow-mode `tool_call` node fired. `request` carries just `body` (the resolved args dict). `tool_id` and `node` identify which tool and flow node ran. `arg_sources` maps each arg to its mode (`literal` or `ai_extract`).
+- `tool_call` — flow-mode `tool_call` node fired. For webhook tools, `request.body` is the exact flat payload delivered to the customer endpoint: optional standard metadata, then configured static parameters, then resolved extraction values (later layers win collisions). System/transfer tool nodes retain their resolved action args. `tool_id` and `node` identify which tool and flow node ran. `arg_sources` maps only resolved tool arguments to their mode (`literal` or `ai_extract`).
 - `integration_call` — flow-mode `integration_call` node fired. Same `request.body`-only shape; `provider`, `action`, `integration_id` identify which connected credential and method ran.
 
 For flow-agent calls, prefer reading `flow_trace.steps[].tool_call` — same per-fire data, inlined per visited step in graph order.
@@ -1600,7 +1662,7 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 | DELETE /tools/:id | `tools:update` |
 | POST /tools/attach | `tools:update` |
 | POST /tools/detach | `tools:update` |
-| POST /tools/:id/test | `tools:read` |
+| POST /tools/:id/test | `tools:update` |
 | GET /phone-numbers (list) | `phone_numbers:search` |
 | POST /phone-numbers/search | `phone_numbers:search` |
 | POST /phone-numbers/purchase | `phone_numbers:purchase` |
@@ -1725,7 +1787,9 @@ Same validation as POST. Plus:
       "name": "Book the calendar event",
       // tool_call nodes have NO args_template — tool args are owned by the
       // tool's payload_config (static_parameters + extraction_parameters).
-      // The same tool used by N flow nodes always sends the same args.
+      // At call start, the effective tool + config_override becomes a flat
+      // model submission schema: one field per extraction parameter, with no
+      // nested args wrapper or model-supplied node_id.
       "tool_id": "<tool uuid from /tools>",
       "config_override": {},
       "pre_fire_announcement": true,  // optional bool — plays a short platform-controlled hold tone while the webhook runs. Use for webhooks > ~500 ms.
@@ -1768,7 +1832,7 @@ Same validation as POST. Plus:
 
 **Tool-call routing (`success` vs `error` vs `custom`)** — deterministic, no LLM, exactly **one** out-edge per fire (mutually exclusive):
 
-1. `error_next_step_id` fires only on hard failures: network timeout, 4xx/5xx, integration disconnected, tool deleted/inactive, missing config.
+1. `error_next_step_id` fires only on hard failures: network timeout, redirect or other non-2xx status, integration disconnected, tool deleted/inactive, missing config.
 2. Otherwise dispatcher walks `custom[]` top-to-bottom — first branch whose `jsonpath` extracts a value `==` `equals` (after stringification) wins, **loop returns**, success is NOT also taken.
 3. If no custom matched → `success_next_step_id` fires.
 
@@ -1826,6 +1890,10 @@ Every entry in `args_template` is an `ArgValue` — a discriminated union with t
 }
 ```
 
+**Flow tool schema inheritance:** when a call starts, each `tool_call` resolves its linked tool plus that node's `config_override`. The runtime registers the effective `payload_config.extraction_parameters` as flat named string fields. `required` defaults to `true` and controls which fields must be collected before dispatch. Optional fields do not block the action. Standard metadata and static parameters are runtime-assembled; the model-facing submitter exposes only extraction fields. Payload merge order is standard metadata → static parameters → extracted values, so an extracted value wins a deliberate name collision. Keep names unique unless that override is intentional. The schema is fixed for that live call; tool/config-override edits apply on the next call.
+
+One flow may expose at most **127 unique typed extraction contracts** (the remaining declaration slots after `pick_transition`). Nodes that reference the same effective tool and extraction schema share a contract; integration arguments participate only when configured as `ai_extract`. A create/update over the limit returns `FLOW_INVALID` with `too_many_extraction_contracts`.
+
 **Mode rules:**
 - `literal` — value is sent as-is after token interpolation. Bare-string shorthand is equivalent to `{mode:'literal', value:'<the string>'}`.
 - `ai_extract` — runtime fills the slot from the conversation. `description` is required (used to guide extraction). The `description` itself is also token-interpolated, so you can splice prior context into the extraction prompt.
@@ -1859,7 +1927,7 @@ Direction details: for inbound calls the caller is the user and the callee is th
 
 #### AI extraction at runtime
 
-When a `tool_call` or `integration_call` node enters and one of its required args is `ai_extract` mode with no value yet (slot empty, or `description` references slots that resolve empty), the runtime pauses the action and asks the user for the missing piece — using each missing arg's `description` as guidance for what to ask. This is conversational, not a form: the agent phrases the question itself, listens for the answer, then fires the action automatically once it has everything.
+When a `tool_call` or `integration_call` node enters and one of its required args has no value yet (slot empty, or `description` references slots that resolve empty), the runtime pauses the action and asks the user for the missing piece — using each missing arg's `description` as guidance for what to ask. This is conversational, not a form: the agent phrases the question itself, listens for the answer, then fires the action automatically once it has everything. For webhook tools, `extraction_parameters[].required` defaults to `true`; set it to `false` for a field that may be omitted without blocking dispatch.
 
 - **Up to 3 retry turns.** If the user dodges, the agent re-asks (in fresh language). After 3 failed attempts, the node routes to its `error_next_step_id` with `missing_required_args_after_3_attempts: <arg names>`.
 - **Cached for the duration of the call.** Once extracted, an arg's value persists in slot storage and is available to any downstream `{{<node_id>.<arg_name>}}` token. Re-entering the same node (e.g. a loop) reuses the cached value rather than re-asking.
@@ -1886,7 +1954,7 @@ When a `tool_call` or `integration_call` node enters and one of its required arg
                     "description": "ISO-8601 end time, 30 minutes after start" }
   },
   "pre_fire_announcement": true,  // optional bool — plays a short platform-controlled hold tone the moment this node fires, so the caller doesn't sit in silence while the action runs. Stops automatically when the action returns. Recommended for create_event / send_email / network-bound actions; skip for check_availability (which is fast). Tone is NOT configurable.
-  "timeout_secs": 30,             // optional number 1–300 — hard cap on execution time. On timeout the action is cancelled and the node routes to error_next_step_id with `tool_timeout_after_<N>s`. Null/omitted = platform default (30s).
+  "timeout_secs": 30,             // optional number, >0 and ≤600 — explicit hard cap. On timeout the action is cancelled and the node routes to error_next_step_id with `tool_timeout_after_<N>s`. When omitted, webhook nodes use effective config.timeout_seconds + 1s dispatch overhead; other tool/integration nodes default to 30s.
 
   "transitions": {
     "success_next_step_id": "confirm_booked",
