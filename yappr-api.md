@@ -1140,6 +1140,67 @@ Every key in that array must be present in your `metadata` body. The five **buil
 
 ---
 
+### POST /calls — web call session (browser SDK)
+
+Mint a short-lived, single-use token for an **in-browser** voice call via the [`@goyappr/client`](https://www.npmjs.com/package/@goyappr/client) SDK. Same endpoint as an outbound call — just set `type: "web"`. **No call is placed** and no phone number is needed; the token is what the visitor's browser uses to connect.
+
+**Scopes:** `calls:create`
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `type` | string | yes | `"web"`. Omit (or `"phone"`) for a normal outbound phone call — fully backward compatible. |
+| `agent_id` | uuid | yes | Agent the web caller talks to. |
+| `variables` | object | no | `{{Variable}}` values injected into the prompt. |
+| `metadata` | object | no | Arbitrary data attached to the resulting call log. |
+| `allowed_origins` | string[] | no | Optional browser-origin allow-list for the session. |
+
+**Response 201**
+
+```json
+{
+  "type": "web",
+  "token": "wcs_…",
+  "expires_at": "ISO8601",
+  "agent_id": "…",
+  "agent_name": "…",
+  "connection": {
+    "base_url": "…",
+    "web_call_url": "…",
+    "turn_credentials_url": "…",
+    "api_key": "…"
+  }
+}
+```
+
+**Two-plane model.** Your server holds the secret API key and calls this endpoint to mint the token (control plane). The browser receives only `token` + `connection` and runs the WebRTC call (data plane) — your secret key never reaches the client. Every web call is metered and billed to the key's company exactly like any other call.
+
+**Browser usage:**
+
+```bash
+npm install @goyappr/client
+```
+
+```js
+import { YapprConversation } from "@goyappr/client";
+
+// `session` = the JSON your server got back from POST /calls {type:"web"}
+const call = await YapprConversation.startSession({
+  token: session.token,
+  connection: session.connection,       // carries the endpoint URLs + public key
+  onStatusChange: ({ status }) => {},   // connecting | connected | disconnected | failed
+  onModeChange:   ({ mode }) => {},     // "speaking" | "listening"
+  onError:        (msg) => {},
+});
+
+call.setMicMuted(true);
+call.getOutputVolume();                 // 0–1, drive a visualizer
+await call.endSession();
+```
+
+The browser presents the token as the `x-yappr-web-token` header to the endpoints in `connection` — the SDK does this for you; you never set it. **Preview limitations:** audio only (no live transcript yet — `onMessage` is reserved); very restrictive networks that block UDP may fail to connect, surfaced via `onError`.
+
+---
+
 ### GET /calls/:id/recording
 
 Redirect to a call recording. Returns 302 to a short-lived signed audio URL.
