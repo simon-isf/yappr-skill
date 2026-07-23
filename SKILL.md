@@ -846,6 +846,15 @@ The most common pre-fetched variables:
 
 ---
 
+## PHASE 3B: Web calls in the browser (@goyappr/client)
+
+When the user wants voice **on their own website** (not a phone call), use the browser SDK instead of `POST /calls` with `to`/`from`:
+
+1. **Server mints a session** — `POST /calls {type:"web", agent_id}` with the secret API key. Returns `{ token, connection }` (see **POST /calls — web call session** in `yappr-api.md`). No call is placed; the secret key stays on the server.
+2. **Browser connects** — `npm install @goyappr/client`, then `YapprConversation.startSession({ token, connection })`. The developer owns the UI; the SDK handles mic + WebRTC. Controls: `setMicMuted`, `setVolume`, `getInputVolume`/`getOutputVolume`, `endSession`; callbacks `onStatusChange`, `onModeChange`, `onConnect`, `onDisconnect`, `onError`.
+
+Billing, voice, and language come from the agent config — same as any call. Audio-only in preview (no live transcript yet).
+
 ## PHASE 4: Post-Call Automation
 
 What happens after a call ends. Configure this based on per-disposition routing answers from Phase 0.
