@@ -1197,9 +1197,9 @@ call.getOutputVolume();                 // 0–1, drive a visualizer
 await call.endSession();
 ```
 
-**Post-call data (same as phone).** When a web call ends it runs the full post-call pipeline keyed to the call id: **transcript, summary, recording, and disposition** land on the call record (`GET /calls/:id`), and the agent's configured **post-call webhook fires** with the same payload as a phone call (transcript, summary, `call_metadata`, `call_variables`). There is no live in-browser transcript yet (`onMessage` reserved), but the server-side transcript is available the instant the call ends.
+**Post-call data (same as phone).** When a web call ends it runs the full post-call pipeline keyed to the call id: **transcript, summary, recording, and disposition** land on the call record (`GET /calls/:id`), and the agent's configured **post-call webhook fires** with the same payload as a phone call (transcript, summary, `call_metadata`, `call_variables`). There is no live in-browser transcript yet (`onMessage` reserved), but the server-side transcript is available shortly after the call ends (it is generated post-call from the recording — allow a few seconds before fetching `GET /calls/:id`).
 
-The browser presents the token as the `x-yappr-web-token` header to the endpoints in `connection` — the SDK does this for you; you never set it. **Preview limitations:** no live in-browser transcript yet (`onMessage` reserved — server-side transcript above is unaffected); session `variables` at mint are stored but not yet injected into the web prompt; very restrictive networks that block UDP may fail to connect, surfaced via `onError`.
+The browser presents the token as the `x-yappr-web-token` header to the endpoints in `connection` — the SDK does this for you; you never set it. Pass a `variables` object at mint (`POST /calls {type:"web", agent_id, variables}`) and it is injected into the agent's system prompt as `{{Variable}}` tokens, exactly like a phone call. **Preview limitations:** no live in-browser transcript yet (`onMessage` reserved — server-side transcript above is unaffected); very restrictive networks that block UDP may fail to connect, surfaced via `onError`.
 
 ---
 
