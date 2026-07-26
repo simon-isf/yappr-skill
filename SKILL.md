@@ -1037,7 +1037,7 @@ curl -s -X POST "https://api.goyappr.com/sip-endpoints" \
 
 The response includes `sip_uri` — that's everything the customer needs. There is no `sip_username` or `sip_password` to copy.
 
-**Hand the URI to the customer's telephony.** They paste it as the SIP destination in their PBX/CPaaS outbound route. No authentication setup. UDP, TCP, and TLS are all supported by the upstream Telnyx SIP gateway; G711/G722 codecs are advertised.
+**Hand the URI to the customer's telephony.** They paste it as the SIP destination in their PBX/CPaaS outbound route. No authentication setup. UDP, TCP, and TLS are all supported by the upstream SIP gateway; G711/G722 codecs are advertised.
 
 Concrete example pastes for common platforms:
 - **Twilio Studio** — set the "Connect Call To" SIP value in the appropriate widget to `sip_uri`
@@ -1053,7 +1053,7 @@ Concrete example pastes for common platforms:
 **Pre-launch checklist for SIP endpoints:** all the standard items in Step 5.2 still apply, plus:
 
 - [ ] Customer's PBX/CPaaS outbound SIP route is set to the exact `sip_uri` value (no auth)
-- [ ] A test call from the customer's system reaches the agent (you should see `📞 BYOC SIP call` in pipecat logs)
+- [ ] A test call from the customer's system reaches the agent (the call appears in the dashboard call log, and via `GET /calls`)
 - [ ] The customer understands the caller-ID trust model (default: untrusted)
 - [ ] The endpoint is marked `is_active: true`
 - [ ] If the URI ever needs to be revoked, the recipe is delete-and-recreate (not rotate)

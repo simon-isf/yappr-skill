@@ -1,6 +1,6 @@
 # Integrations Guide — OAuth-backed third-party tools
 
-Yappr's `integrations` feature lets companies connect third-party services via OAuth and reference them from `integration_call` nodes in flow agents. Tokens are encrypted (Supabase Vault key) and refreshed automatically by the bot at call time.
+Yappr's `integrations` feature lets companies connect third-party services via OAuth and reference them from `integration_call` nodes in flow agents. Tokens are encrypted at rest and refreshed automatically by Yappr at call time.
 
 **v1 supports**: Google Calendar, Gmail.
 
@@ -20,11 +20,11 @@ This file is the orientation page. The full action catalog, args, response seman
    credential's id.
 3. They paste that id into the integration_call node's `integration_id`
    field in their flow_config.
-4. On each call that hits the node, the bot fetches a fresh access
-   token via a SECURITY DEFINER RPC and calls the Google API.
+4. On each call that hits the node, Yappr fetches a fresh access
+   token and calls the Google API.
 ```
 
-The encryption key lives in Supabase Vault — never in env vars, never returned by any API.
+The encryption key is held in a managed secrets vault — never in env vars, never returned by any API.
 
 **The public API does not expose a connect endpoint.** Popup orchestration + redirect handling don't fit a REST contract cleanly, so the OAuth handshake lives in the dashboard only. The API exposes list (`GET /integrations`) and revoke (`DELETE /integrations/:id`) — that's the lifecycle surface customers can drive headlessly.
 
@@ -80,7 +80,7 @@ Tool_call nodes (custom webhooks via the company's `tools` table) can also dispa
 
 ### Token refresh failure during a call
 
-The bot refreshes tokens on demand under an asyncio.Lock. After 4 consecutive refresh failures (or `invalid_grant` from Google), the integration is auto-marked `status='disconnected'`. Subsequent integration_call nodes fail with `"integration_disconnected"` and route to the `error` branch.
+Yappr refreshes tokens on demand, serialized per credential so concurrent calls can't double-refresh. After 4 consecutive refresh failures (or `invalid_grant` from Google), the integration is auto-marked `status='disconnected'`. Subsequent integration_call nodes fail with `"integration_disconnected"` and route to the `error` branch.
 
 **Mitigation:** wire every integration_call node's `error_next_step_id` to either:
 - A handoff conversation node ("Let me have someone call you back")
@@ -93,7 +93,7 @@ Same effect as a refresh failure. The user reconnects from the dashboard's Integ
 
 ### Cross-company access attempts
 
-The encryption RPCs are `service_role`-only. The `integration_credentials` table has RLS scoped by company. The bot fetches by `integration_id`; the RPC additionally filters `WHERE deleted_at IS NULL`. Cross-company access is impossible by construction.
+Stored credentials are encrypted at rest and scoped to the owning company, and a disconnected credential is never resolvable. Cross-company access is impossible by construction.
 
 ---
 
