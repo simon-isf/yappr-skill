@@ -2048,7 +2048,7 @@ When a `tool_call` or `integration_call` node enters and one of its required arg
 
 #### Calendar response post-processing — what the agent sees
 
-Calendar action responses (`create_event`, `list_events`, `check_availability`) are post-processed before the voice agent receives them, because Gemini Live's ISO 8601 parser handles timezone offsets unreliably. The runtime:
+Calendar action responses (`create_event`, `list_events`, `check_availability`) are post-processed before the voice agent receives them, because the voice model's ISO 8601 parser handles timezone offsets unreliably. The runtime:
 
 1. Strips the offset and seconds from each event's `start.dateTime` / `end.dateTime`, leaving wall-clock format (`"2026-05-10 16:30"`).
 2. Removes the per-event `start.timeZone` / `end.timeZone` fields (otherwise Live can mis-read "16:30 Asia/Jerusalem" as a re-projection target and re-introduce the bug).
@@ -2283,7 +2283,7 @@ Response:
     {
       "id": "uuid",
       "provider": "google_calendar",
-      "account_label": "team@clinicpro.ai",
+      "account_label": "team@yourcompany.com",
       "scopes": ["https://www.googleapis.com/auth/calendar", "openid", "email"],
       "status": "active",
       "created_at": "...",
@@ -2673,8 +2673,6 @@ Returns the full run, with `case` (and nested `agent` + `persona`) expanded inli
   "mode": "text",
   "agent_id": "uuid",
   "persona_id": "uuid",
-  "agent_model": "<internal>",     // surfaced for cost auditing
-  "persona_model": "<internal>",
   "started_at": "2026-05-07T08:11:00Z",
   "ended_at":   "2026-05-07T08:11:34Z",
   "duration_ms": 34200,
@@ -2710,8 +2708,8 @@ Append-only ordered list of turns. **Scopes:** `agent_eval:read`.
 ```jsonc
 {
   "data": [
-    { "id": "uuid", "run_id": "uuid", "turn_number": 0, "role": "persona", "text": "Hi, I got a missed call from this number?", "model": "<internal>", "input_tokens": 120, "output_tokens": 18, "cost_cents": 1, "latency_ms": 880, "created_at": "..." },
-    { "id": "uuid", "run_id": "uuid", "turn_number": 1, "role": "agent",   "text": "Hi! Thanks for calling back...",            "model": "<internal>", "input_tokens": 540, "output_tokens": 32, "cost_cents": 1, "latency_ms": 1100, "created_at": "..." },
+    { "id": "uuid", "run_id": "uuid", "turn_number": 0, "role": "persona", "text": "Hi, I got a missed call from this number?", "input_tokens": 120, "output_tokens": 18, "cost_cents": 1, "latency_ms": 880, "created_at": "..." },
+    { "id": "uuid", "run_id": "uuid", "turn_number": 1, "role": "agent",   "text": "Hi! Thanks for calling back...",            "input_tokens": 540, "output_tokens": 32, "cost_cents": 1, "latency_ms": 1100, "created_at": "..." },
     { "id": "uuid", "run_id": "uuid", "turn_number": 2, "role": "tool_result", "text": null, "tool_calls": null, "flow_event": null, "input_tokens": 0, "output_tokens": 0, "cost_cents": 0, "latency_ms": null, "created_at": "..." },
     { "id": "uuid", "run_id": "uuid", "turn_number": 3, "role": "flow_event", "text": null, "flow_event": { "type": "flow_eval_decision", "step_id": "ask_date", "decision": "got_date", "valid": true }, "created_at": "..." }
   ]
@@ -2738,7 +2736,7 @@ curl "https://api.goyappr.com/agent-eval/runs/$RUN_ID/evaluation" \
 
 Best-effort cancel. **Scopes:** `agent_eval:run`.
 
-If the worker has not yet claimed the run, it transitions to `cancelled` immediately and is never executed. If the worker already started it, the cancellation is signalled and pipecat terminates at the next turn boundary with `termination_reason='cancelled'`. Cancelled runs are still billed for any turns produced before the cancel signal landed.
+If the worker has not yet claimed the run, it transitions to `cancelled` immediately and is never executed. If the worker already started it, the cancellation is signalled and the voice runtime terminates at the next turn boundary with `termination_reason='cancelled'`. Cancelled runs are still billed for any turns produced before the cancel signal landed.
 
 Returns the updated run object. 409 if the run is already in a terminal state.
 
