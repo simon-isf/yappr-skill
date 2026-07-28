@@ -1119,6 +1119,279 @@ If the agent triggers on background noise → increase `vad_confidence`
 
 ---
 
+## PHASE 6 (optional): Campaigns — Bulk Outbound Dialing
+
+**Run this phase only when the user wants a list dialed for them** — "call these 800 leads", "run a renewals campaign", "dial my CSV until someone answers", "retry no-answers three times over two days". For one-off or event-driven calls, stay with Phase 3 (`POST /calls`).
+
+A campaign is a **managed dialer over your leads**: you enroll contacts, arm stop rules, set pacing, and launch. The platform then hands eligible contacts to the ordinary outbound queue, minute by minute, until every contact has stopped or run out of attempts. Full endpoint reference: [yappr-api.md — Campaigns](yappr-api.md).
+
+Three things to say to the user before you build one, because they surprise people:
+
+1. **A campaign call is an ordinary outbound call** — same queue, same weight, same billing as `POST /calls`. Pacing controls only how fast the campaign *hands calls in*; it never gets priority, and it never bypasses the do-not-call list, business hours, the credit floor, or the concurrency cap.
+2. **A number can be dialed by one active campaign at a time**, workspace-wide. Two overlapping lists will not double-call the same person.
+3. **Nothing dials until you explicitly launch.** `POST /campaigns` always creates a `draft`.
+
+### Prerequisites (check these first — they are the launch preflight)
+
+| Requirement | How to check |
+|---|---|
+| An agent, with a **positive** `max_call_duration_secs` | `GET /agents/:id` — `0` means unlimited and campaigns refuse it, because worst-case cost would be unbounded |
+| An active from-number | `GET /phone-numbers` — needs `is_active: true` and `status: "active"` |
+| A reachable workspace calling window | `GET /call-windows` — this is the schedule the campaign obeys; confirm the timezone too (dashboard-only) |
+| Credit above the call floor | `GET /billing` |
+| A compliance basis the user can attest to | Ask (see Step 6.4) |
+| An agent that does **not** depend on custom `{{Variables}}` | Campaign calls are placed by the platform and carry **no per-call `variables`**, so a custom `{{AvailableSlots}}` would render empty. Built-ins (`{{CurrentDate}}`, `{{CallerPhone}}`, `{{Timezone}}`, …) still work, and per-contact context belongs in the lead's memory (`notes` at enroll → `long_term_context`). If the prompt genuinely needs per-lead pre-fetched values, dispatch with Phase 3 Pattern 2/3 instead of a campaign |
+
+### Step 6.1 — Create the draft
+
+Name is the only required field, but pass whatever you already know. Every field below is PATCH-able later.
+
+```bash
+curl -s -X POST "https://api.goyappr.com/campaigns" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "March renewals",
+    "description": "Existing customers, renewal due in April",
+    "agent_id": "AGENT_ID",
+    "from_phone_number_id": "PHONE_NUMBER_ID"
+  }' | jq '{id, status, name}'
+```
+
+Save the returned `id` into the Phase 0 `EXISTING RESOURCES` block. `status` is `draft` — guaranteed, not incidental.
+
+- `409 DUPLICATE_NAME` → the workspace already has a non-archived campaign with that name. Pick a new name, or `GET /campaigns` and reuse the existing one (this is the create-vs-edit gate again: PATCH the existing campaign rather than minting a near-duplicate).
+- `400` naming a field → the writable allowlist is strict, and **unknown or read-only keys are rejected, never ignored**. If you sent `status`, `spent_cents`, or a misspelling like `stop_dispositions`, fix the key and retry.
+
+### Step 6.2 — Enroll contacts
+
+Two inputs, usable in the same request, capped at **1,000 contacts per request** (send several requests for a bigger list). Enrolling works on a `draft` **and** on a `running` campaign — you can top up a live list.
+
+**From existing leads** (use this when the leads are already in Yappr, e.g. imported earlier or created by a lead-source integration):
+
+```bash
+# Resolve ids first. GET /leads supports limit/offset/search (name, phone, email) —
+# there is no tag filter, so page through and select client-side if you need one.
+curl -s "https://api.goyappr.com/leads?limit=100" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq -r '[.data[] | select(.tags[]?.name == "Renewal") | .id]'
+
+curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"lead_ids": ["LEAD_ID_1", "LEAD_ID_2", "LEAD_ID_3"]}' | jq .
+```
+
+**From raw phone numbers** (use this for a CSV or a list the user pasted — leads are created or matched for you):
+
+```bash
+python3 -c "
+import json
+payload = {'phone_numbers': [
+    {'phone': '0501234567', 'name': 'ישראל כהן', 'notes': 'Renewal due 12 April, prefers mornings'},
+    {'phone': '+972521234567', 'name': 'Dana L.', 'email': 'dana@example.com'},
+    '0539876543'
+]}
+with open('/tmp/enroll.json', 'w', encoding='utf-8') as f:
+    json.dump(payload, f, ensure_ascii=False)
+"
+curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @/tmp/enroll.json | jq .
+```
+
+Each item is `{phone, name?, email?, notes?}` or a bare string. Numbers are canonicalized before anything is written, so `0501234567` and `+972501234567` are the same person and cannot be enrolled twice. `notes` becomes that lead's long-term memory (injected into the agent's prompt on the call) — a genuinely useful place for "renewal due 12 April".
+
+**Always read the report back to the user.** The response is itemized, never a bare success:
+
+```json
+{ "enrolled": 412, "already_enrolled": 3, "leads_created": 380, "leads_matched": 35,
+  "invalid_phone": [ { "phone": "05012" } ], "on_do_not_call": ["+972501234567"],
+  "not_found": [], "total_leads": 1042 }
+```
+
+- `on_do_not_call` — excluded at enroll time. Say so explicitly: these people will not be called, and that is correct.
+- `invalid_phone` — unparseable numbers. Show the samples so the user can fix their list.
+- `already_enrolled` — re-enrolling is idempotent, so a sync script can be naive.
+- `409 ALREADY_IN_ACTIVE_CAMPAIGN` — see the failure table below. The report in the body still tells you what *did* land.
+
+### Step 6.3 — Pick stop rules by disposition **id**
+
+This is the most consequential configuration step and the easiest to get wrong. A stop rule answers: *"once we learn this about a contact, stop calling them."*
+
+Read the workspace's outcomes first:
+
+```bash
+curl -s "https://api.goyappr.com/dispositions" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  | jq '[.data[] | {id, label, is_protected}]'
+```
+
+Then arm the set **by id**:
+
+```bash
+curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "stop_disposition_ids": ["DO_NOT_CALL_ID", "NOT_INTERESTED_ID", "WRONG_NUMBER_ID", "APPOINTMENT_SET_ID"],
+    "stop_on_no_answer": false,
+    "stop_on_voicemail": true,
+    "stop_on_human_connect": true,
+    "human_connect_seconds": 20,
+    "max_attempts": 3
+  }' | jq '{stop_disposition_ids, stop_on_voicemail, max_attempts}'
+```
+
+**Why ids and not labels.** Labels are per-workspace text and are renameable; ids are stable. A stop set stored by label would silently disarm the moment somebody renamed "Not Interested". The API only accepts ids, and every id must belong to this workspace (otherwise `400`).
+
+**Why `No Answer`, `Failed`, and `Voicemail` must NOT go in `stop_disposition_ids`.** Those three labels are *also* auto-assigned by the platform, and the outcome classifier legitimately assigns them to calls where a human really did talk — a receptionist answering a 90-second call can land "No Answer". Put them in the stop set and you permanently retire real conversations as never-reached. Use the booleans instead, which are evaluated on the call's **outcome class** rather than its label:
+
+| Instead of putting this in the stop set | Use |
+|---|---|
+| `No Answer` | `stop_on_no_answer: true` (default `false` — normally you *want* to retry an unanswered call) |
+| `Voicemail` | `stop_on_voicemail: true` |
+| `Failed` | nothing — platform failures use the separate `max_infra_retries` budget and never consume a dial attempt |
+| "we reached a human, we're done" | `stop_on_human_connect: true` (**default**) + `human_connect_seconds` |
+
+A launch needs at least one stop rule. `stop_on_human_connect` defaults to `true`, so the default config already has one — but a campaign whose whole point is "keep calling until they book" should arm the real outcome set anyway, or people who already said no will be redialled until the attempt cap.
+
+**Two independent stop conditions, whichever fires first:** `max_attempts` and the stop set. Everything that isn't a stop outcome retries after `retry_completed_seconds`, and an unanswered call retries after `retry_no_answer_seconds`.
+
+### Step 6.4 — Configure pacing and the compliance basis
+
+```bash
+curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "regulatory_basis": "existing_customer",
+    "max_calls_per_day": 150,
+    "min_seconds_between_calls": 45,
+    "max_in_flight": 2,
+    "max_attempts": 3,
+    "retry_no_answer_seconds": 900,
+    "retry_completed_seconds": 14400,
+    "disposition_timeout_seconds": 1800,
+    "budget_cents": 5000
+  }' | jq '{regulatory_basis, max_calls_per_day, max_in_flight, budget_cents}'
+```
+
+| Control | Sensible starting point | Why |
+|---|---|---|
+| `max_calls_per_day` | 150–200 | Resets on the workspace's own calendar day |
+| `min_seconds_between_calls` | 30–60 | Spacing between admissions |
+| `max_in_flight` | 2 (max 8) | How many attempts this campaign may have outstanding. It is **self-restraint, not a capacity grant** — the platform's shared outbound lanes are the real ceiling, so raising it does not make the campaign faster once the queue is busy |
+| `max_attempts` | 3 | Per-contact dial cap |
+| `retry_no_answer_seconds` | 900 | Redial gap after nobody picks up |
+| `budget_cents` | the amount the user is comfortable spending | Enforced against spend **plus** in-flight reservations, so a campaign can't blow the cap with calls already dialing |
+
+**`regulatory_basis` is required before launch** — one of `consent`, `existing_customer`, `non_marketing`, `registry_screened`. Ask the user which is true; do not pick for them. It is recorded on the launch audit event with the enrolled count, and it is the artefact that exists if anyone later asks why a person was called.
+
+**When the campaign may dial** comes from the workspace call windows (`GET`/`PUT /call-windows`), not from the campaign. If the user wants campaign-specific hours, set the workspace schedule accordingly and say so.
+
+### Step 6.5 — Launch
+
+```bash
+curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/launch" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  | jq '{status, error, message, started_at}'
+```
+
+`200` with `status: "running"` means it's live. A `422` means nothing changed and one specific thing is missing — see the preflight table below. Fix it and re-launch; there is no partial launch state.
+
+### Step 6.6 — Poll `/stats` and interpret `last_tick_result`
+
+The pacer ticks **once a minute**, so poll every 30–60s. Anything faster tells you nothing new.
+
+```bash
+curl -s "https://api.goyappr.com/campaigns/CAMPAIGN_ID/stats" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  | jq '{status, last_tick_result, last_error, calls_today, max_calls_per_day,
+         attempts_in_flight, leads_by_status, spent_cents, budget_cents}'
+```
+
+`leads_by_status` is your progress bar; `last_tick_result` is the machine-readable answer to **"why is nothing happening right now"**. Translate it for the user instead of showing the raw token:
+
+| `last_tick_result` | What to tell the user | Action |
+|---|---|---|
+| `admitted` | Calls are going out | none |
+| `no_eligible_leads` | Everyone is either done or waiting for their next retry slot | none — check `leads_by_status` |
+| `spacing` | Pacing gap between calls | none (lower `min_seconds_between_calls` to speed up) |
+| `max_in_flight` | The campaign's own concurrency cap is full | none; raising it rarely helps |
+| `daily_cap_reached` | Today's cap is used up; resumes tomorrow | raise `max_calls_per_day` if they want more today |
+| `outside_call_window` | Outside business hours; resumes at the next opening | check `GET /call-windows` if the hours look wrong |
+| `no_reachable_call_window` | No calling hours are configured at all → status `paused_config` | fix `PUT /call-windows`, then `resume` |
+| `insufficient_credit` / `no_billing_account` | Balance too low → status `paused_insufficient_credit` | top up; **it resumes by itself** |
+| `credit_reserve_would_breach_floor` | Balance can't cover the next call's worst case | top up |
+| `budget_exhausted` | The campaign's own budget cap is reached → `paused_budget` | raise `budget_cents`, then `resume` |
+| `from_number_unavailable` | The calling number went inactive → `paused_infra` | assign an active number, then `resume` |
+| `agent_has_no_duration_cap` | The agent's max call duration was set to unlimited → `paused_config` | set a positive `max_call_duration_secs`, then `resume` |
+| `platform_admission_disabled` | The platform paused new campaign admissions; in-flight calls continue | wait; report it if it persists |
+| `resumed_credit_ok` | Auto-resumed after a top-up | none |
+| `completed` | Every contact is done | report the outcome breakdown |
+| `error` | The tick errored — read `last_error` | report it (see Reporting Issues) |
+
+To report outcomes, pull the contact list and, for detail, the calls themselves:
+
+```bash
+curl -s "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads?status=completed_success&limit=50" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  | jq '[.data[] | {phone: .to_number_e164, name: .lead.name,
+                    outcome: .last_disposition.label, attempts: .attempt_count}]'
+```
+
+### Step 6.7 — Pause, resume, stop, archive
+
+```bash
+curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/pause"  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .status
+curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/resume" -H "Authorization: Bearer $YAPPR_API_KEY" | jq .status
+curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/stop"   -H "Authorization: Bearer $YAPPR_API_KEY" | jq .status
+curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID"      -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Remove one person from this campaign (addressed by lead_id, terminal)
+curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads/LEAD_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+
+- `pause` is a **manual** pause and stays paused through a top-up — only `paused_insufficient_credit` auto-resumes. Resuming is explicit.
+- `stop` is terminal and excludes every not-yet-dialed contact. Calls already in flight finish and still bill.
+- `DELETE /campaigns/:id` archives: the campaign disappears from `GET /campaigns` and all live contacts are retired. **Confirm with the user first** — it is not reversible. Prefer `pause` or `stop` when they just want the dialing to end.
+- Excluding a contact removes them **from this campaign only**. To suppress a person everywhere, add them to the do-not-call list (`POST /do-not-call`).
+
+### Failure modes you will actually hit
+
+**`422 CAMPAIGN_NOT_READY` on launch/resume.** One blocking cause per response, in `message`. Nothing changed; fix and re-launch.
+
+| Message | Fix |
+|---|---|
+| Assign an agent before launching | `PATCH` with `agent_id` |
+| Assign a phone number to call from before launching | `PATCH` with `from_phone_number_id` |
+| `regulatory_basis` is required before launching | `PATCH` with `consent` / `existing_customer` / `non_marketing` / `registry_screened` — ask the user which is true |
+| Configure at least one stop rule before launching | Set `stop_disposition_ids`, or one of `stop_on_no_answer` / `stop_on_voicemail` / `stop_on_human_connect` |
+| The assigned agent no longer exists | Point `agent_id` at a live agent (`GET /agents`) |
+| The assigned agent has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` — `0` = unlimited, which campaigns refuse because worst-case cost would be unbounded |
+| The phone number assigned to this campaign is no longer active | Pick a number with `is_active: true` and `status: "active"` |
+| This workspace has no upcoming calling window | `PUT /call-windows` (and confirm the workspace timezone, which is dashboard-only) |
+| Enroll at least one contact before launching | `POST /campaigns/:id/leads` — and check the enroll report: everything may have been filtered as DNC or invalid |
+
+**`409 ALREADY_IN_ACTIVE_CAMPAIGN` on enroll.** One or more numbers are already live in another active campaign. A number can only be dialed by one campaign at a time, workspace-wide — this is the guard that stops the same person being called twice as fast. Do not retry blindly. Instead: `GET /campaigns?status=running,paused` and find the other campaign; then either finish/stop it, exclude the overlapping contacts there, or drop them from this enroll batch. The 409 body still contains the full report, so contacts that did land are enrolled.
+
+**`paused_insufficient_credit` auto-resumes; `paused` does not.** When the balance falls under the floor the campaign parks itself as `paused_insufficient_credit` and the tick re-checks every minute — after a top-up (checkout, auto-topup, or credit added by an admin) it returns to `running` on its own, with `last_tick_result: "resumed_credit_ok"`. Do not call `launch` in a loop, and do not tell the user to relaunch. Every **other** paused state (`paused`, `paused_budget`, `paused_infra`, `paused_config`) needs an explicit `resume` after the cause is fixed — deliberately, so a human pause is never undone by a payment.
+
+**`awaiting_disposition` means "wait", not "stuck".** Outcomes are classified asynchronously after the call ends — usually within seconds, occasionally much later. A contact sits in `awaiting_disposition` until it's classified or until `disposition_timeout_seconds` (default 1800) elapses, and `stop_on_unclassified` then decides whether to retire or retry it. **Never redial a contact in this state** and never "help" by placing a `POST /calls` to that number: the platform is deliberately holding it, and a manual dial can call somebody who already asked you to stop. If a user reports "it's stuck", check `attempts_in_flight` and `last_tick_result` before concluding anything.
+
+**Other errors:** `400` naming a field means the writable allowlist rejected a key or a value range — fix the request, never work around it by re-creating the campaign. `409 DUPLICATE_NAME` means that name is taken by a non-archived campaign. `400 Campaign is completed/stopped/archived` means you're editing a terminal campaign; create a new one.
+
+**Parsing campaign errors.** The three coded campaign errors put the machine code in `error` and the human text in `message` (`{"error": "CAMPAIGN_NOT_READY", "message": "Assign an agent before launching"}`), which is the reverse of the platform's usual `{"error": "<human>", "code": "<CODE>"}`. Read `code` first, then fall back to `error` when it looks like a code, and always surface `message` to the user — it names the one thing to fix.
+
+### Report it like this
+
+When a campaign is live, tell the user: how many contacts enrolled (and how many were excluded as DNC/invalid), the stop rules in plain language ("we stop calling someone once they book, say no, or we reach a human"), the pace ("up to 150 calls a day, one every 45 seconds, within your 09:00–19:00 hours"), the spend cap, and how they'll know it's done. Then verify with `GET /campaigns/:id/stats` and quote the real numbers back — never just the launch response.
+
+---
+
+
 ## Managing Existing Resources
 
 When a user asks to change, view, or manage something — always fetch and present the options first, then act on their selection. Never ask them to provide an ID manually.
