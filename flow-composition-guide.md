@@ -117,8 +117,8 @@ It does NOT see other steps' instructions or transitions. **Per-step isolation**
 
 Tool-call nodes don't go through the conversational routing path. The runtime fires the tool the moment a transition lands on a tool node:
 1. Look up the tool by `tool_id` (from the company's `tools` table)
-2. Shallow-merge `tool.config` ⊕ `node.config_override` (array replacement)
-3. Resolve the tool's args from its own `payload_config` — `static_parameters` (literals) plus `extraction_parameters` (filled by the live agent runtime from the conversation). **`tool_call` nodes have no per-node `args_template`** — args are owned by the tool, so the same tool used by N flow nodes always sends the same shape.
+2. Shallow-merge `tool.config` ⊕ `node.config_override` (top-level replacement; overriding `payload_config` replaces that complete section)
+3. Resolve the tool's args from the effective `payload_config` — `static_parameters` (literals) plus `extraction_parameters` (filled by the live agent runtime from the conversation). **`tool_call` nodes have no per-node `args_template`** — args come from the linked tool unless that node deliberately supplies a different `config_override`.
 4. Execute deterministically (webhook / system / transfer / integration)
 5. Route on the result — **deterministic, exactly one out-edge per fire, no LLM involved**:
    - **`error`** fires only on hard failures: 4xx/5xx, network timeout, integration disconnected, tool deleted/inactive, missing config.

@@ -81,7 +81,7 @@ Run these in a fresh Claude Code session in any directory (the skill is loaded f
 ## Test 5 — template integrity
 
 ```bash
-cd /Users/user/yappr-skill/templates/flows
+cd templates/flows
 for f in *.json; do
   python -c "import json; json.load(open('$f'))" && echo "$f OK"
 done
