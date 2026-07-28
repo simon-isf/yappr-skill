@@ -1285,7 +1285,7 @@ Three things to say to the user before you build one, because they surprise peop
 
 ### Step 6.1 — Create the draft
 
-Name is the only required field, but pass whatever you already know. Every field below is PATCH-able later.
+Name is the only required field, but **no configuration field has a default** — anything you never send stays `null` and `launch` refuses with `422 CAMPAIGN_NOT_READY` naming it. So either send the full configuration here, or plan on Steps 6.3 and 6.4 filling every gap. Everything is PATCH-able until the campaign is terminal.
 
 ```bash
 curl -s -X POST "https://api.goyappr.com/campaigns" \
@@ -1378,8 +1378,7 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
     "stop_disposition_ids": ["DO_NOT_CALL_ID", "NOT_INTERESTED_ID", "WRONG_NUMBER_ID", "APPOINTMENT_SET_ID"],
     "stop_on_no_answer": false,
     "stop_on_voicemail": true,
-    "stop_on_human_connect": true,
-    "human_connect_seconds": 20,
+    "randomize_retry_time": true,
     "max_attempts": 3
   }' | jq '{stop_disposition_ids, stop_on_voicemail, max_attempts}'
 ```
@@ -1390,12 +1389,12 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
 
 | Instead of putting this in the stop set | Use |
 |---|---|
-| `No Answer` | `stop_on_no_answer: true` (default `false` — normally you *want* to retry an unanswered call) |
+| `No Answer` | `stop_on_no_answer: true`. Normally you want `false` here — an unanswered call is usually worth retrying |
 | `Voicemail` | `stop_on_voicemail: true` |
 | `Failed` | nothing — platform failures use the separate `max_infra_retries` budget and never consume a dial attempt |
-| "we reached a human, we're done" | `stop_on_human_connect: true` (**default**) + `human_connect_seconds` |
+| "we reached a human, we're done" | Create a disposition for that outcome (`POST /dispositions`) and put its id in `stop_disposition_ids`. There is no built-in rule — what counts as a real conversation differs per workspace |
 
-A launch needs at least one stop rule. `stop_on_human_connect` defaults to `true`, so the default config already has one — but a campaign whose whole point is "keep calling until they book" should arm the real outcome set anyway, or people who already said no will be redialled until the attempt cap.
+A launch needs at least one stop rule, and **nothing is armed for you** — no configuration field has a default, so a campaign you never gave a stop rule is refused rather than quietly given one. Arm the real outcome set: without it, people who already said no are redialled until the attempt cap.
 
 **Two independent stop conditions, whichever fires first:** `max_attempts` and the stop set. Everything that isn't a stop outcome retries after `retry_completed_seconds`, and an unanswered call retries after `retry_no_answer_seconds`.
 
@@ -1411,9 +1410,14 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
     "min_seconds_between_calls": 45,
     "max_in_flight": 2,
     "max_attempts": 3,
-    "retry_no_answer_seconds": 900,
-    "retry_completed_seconds": 14400,
-    "disposition_timeout_seconds": 1800,
+    "max_infra_retries": 3,
+    "retry_no_answer_seconds": 3600,
+    "retry_completed_seconds": 86400,
+    "randomize_retry_time": true,
+    "disposition_timeout_seconds": 900,
+    "double_dial_enabled": false,
+    "double_dial_gap_seconds": 90,
+    "stop_on_unclassified": false,
     "budget_cents": 5000
   }' | jq '{regulatory_basis, max_calls_per_day, max_in_flight, budget_cents}'
 ```
@@ -1424,10 +1428,15 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
 | `min_seconds_between_calls` | 30–60 | Spacing between admissions |
 | `max_in_flight` | 2 (max 8) | How many attempts this campaign may have outstanding. It is **self-restraint, not a capacity grant** — the platform's shared outbound lanes are the real ceiling, so raising it does not make the campaign faster once the queue is busy |
 | `max_attempts` | 3 | Per-contact dial cap |
-| `retry_no_answer_seconds` | 900 | Redial gap after nobody picks up |
+| `retry_no_answer_seconds` | 3600 | Redial gap after nobody picks up. Also covers voicemail and busy |
+| `retry_completed_seconds` | 86400 | Redial gap after a call that connected but didn't hit a stop rule |
+| `randomize_retry_time` | ask the user | `false` keeps the wait exact — a one-week wait retries at the same hour a week later. `true` picks a different hour inside the calling window, so repeat attempts don't always land at the same moment. Either way the retry is never *earlier* than the wait |
+| `double_dial_enabled` | `false` | A second ring moments after an unanswered first one. The pair counts as one attempt |
 | `budget_cents` | the amount the user is comfortable spending | Enforced against spend **plus** in-flight reservations, so a campaign can't blow the cap with calls already dialing |
 
 **`regulatory_basis` is required before launch** — one of `consent`, `existing_customer`, `non_marketing`, `registry_screened`. Ask the user which is true; do not pick for them. It is recorded on the launch audit event with the enrolled count, and it is the artefact that exists if anyone later asks why a person was called.
+
+**Every field above is required before launch**, along with `stop_on_no_answer`, `stop_on_voicemail`, `stop_on_unclassified` and `double_dial_gap_seconds`. There are no defaults, so `launch` returns `422` listing whatever is still `null` — send them all and the first launch attempt succeeds.
 
 **When the campaign may dial** comes from the workspace call windows (`GET`/`PUT /call-windows`), not from the campaign. If the user wants campaign-specific hours, set the workspace schedule accordingly and say so.
 
@@ -1509,7 +1518,8 @@ curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads/LEAD_ID" 
 | Assign an agent before launching | `PATCH` with `agent_id` |
 | Assign a phone number to call from before launching | `PATCH` with `from_phone_number_id` |
 | `regulatory_basis` is required before launching | `PATCH` with `consent` / `existing_customer` / `non_marketing` / `registry_screened` — ask the user which is true |
-| Configure at least one stop rule before launching | Set `stop_disposition_ids`, or one of `stop_on_no_answer` / `stop_on_voicemail` / `stop_on_human_connect` |
+| Configure at least one stop rule before launching | Set `stop_disposition_ids`, or one of `stop_on_no_answer` / `stop_on_voicemail` |
+| Finish configuring the campaign before launching. Not set: … | Every config field is `null` until you send it; the message names each one. `PATCH` them and launch again |
 | The assigned agent no longer exists | Point `agent_id` at a live agent (`GET /agents`) |
 | The assigned agent has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` — `0` = unlimited, which campaigns refuse because worst-case cost would be unbounded |
 | The phone number assigned to this campaign is no longer active | Pick a number with `is_active: true` and `status: "active"` |

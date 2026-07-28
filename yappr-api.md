@@ -1564,14 +1564,12 @@ Foreign keys are expanded to **full objects**, per the API's FK convention — `
   "from_phone_number_id": "uuid | null",
   "from_number": "+972... | null",      // audit snapshot, taken at launch
 
-  "retry_rules": {},
   "calling_window": {},
 
   "stop_disposition_ids": ["uuid"],
   "stop_on_no_answer": false,
   "stop_on_voicemail": false,
-  "stop_on_human_connect": true,
-  "human_connect_seconds": 20,
+  "randomize_retry_time": true,
   "stop_on_unclassified": false,
 
   "max_attempts": 3,
@@ -1630,34 +1628,39 @@ Create a campaign. **It always lands as `draft`** — `status` is not writable, 
 
 This exact allowlist applies to both `POST` and `PATCH`. **Any other key — including a typo or a read-only field — is rejected with `400`** and a message listing the writable set. This is deliberate: silently ignoring a misspelled `stop_dispositions` would leave you believing you armed a kill switch when you did not.
 
-| Field | Type | Default | Validation / notes |
-|-------|------|---------|--------------------|
+**No configuration field has a default.** A field you never send stays `null`, and `launch` returns `422 CAMPAIGN_NOT_READY` naming it. The *Suggested* column is what the dashboard prefills for a human — visible and editable there, never substituted here. How many times to call someone, and when to stop, are not decisions the platform makes on your behalf.
+
+| Field | Type | Suggested | Validation / notes |
+|-------|------|-----------|--------------------|
 | `name` | string | — | **Required on create.** Trimmed. Must be unique among the workspace's non-archived campaigns → `409 DUPLICATE_NAME` |
 | `description` | string | null | Free text |
-| `agent_id` | uuid | null | Required before launch |
-| `from_phone_number_id` | uuid | null | Required before launch; must be an active number the workspace owns |
-| `retry_rules` | object | `{}` | JSON object (not an array). See [retry_rules and calling_window](#retry_rules-and-calling_window) before using it |
-| `calling_window` | object | `{}` | JSON object. **Not the gate that decides when a campaign dials** — see the same note |
+| `agent_id` | uuid | — | Required before launch |
+| `from_phone_number_id` | uuid | — | Required before launch; must be an active number the workspace owns |
+| `calling_window` | object | `{}` | JSON object. **Not the gate that decides when a campaign dials** — see [calling_window](#calling_window) |
+| `variables` | object | `{}` | `{{Placeholder}}` values shared by every call in the campaign. Flat string map; reserved built-in names are rejected |
 | `stop_disposition_ids` | uuid[] | `[]` | Array of **disposition ids**, never labels. Every id must belong to this workspace, or `400` |
 | `stop_on_no_answer` | boolean | `false` | Retire a contact the first time nobody picks up |
 | `stop_on_voicemail` | boolean | `false` | Retire a contact on a voicemail-class outcome |
-| `stop_on_human_connect` | boolean | `true` | Retire a contact once a human demonstrably answered — independent of taxonomy |
-| `human_connect_seconds` | int | 20 | 5–300. Talk time that counts as "a human answered" |
 | `stop_on_unclassified` | boolean | `false` | `true` retires a contact whose call was never classified before `disposition_timeout_seconds`; `false` retries it |
 | `max_attempts` | int | 3 | 1–10. Per-contact dial cap |
-| `max_infra_retries` | int | 5 | 0–20. Separate budget for platform-side failures, which never count against `max_attempts` |
-| `disposition_timeout_seconds` | int | 1800 | 60–86400. How long to wait for the outcome classifier before deciding without it |
-| `retry_no_answer_seconds` | int | 60 | 30–604800. Wait before redialing an unanswered contact |
-| `retry_completed_seconds` | int | 14400 | 60–604800. Wait before redialing a contact whose call connected but landed a non-stop outcome |
-| `double_dial_enabled` | boolean | `false` | Pair a second ring with an unanswered attempt |
-| `double_dial_gap_seconds` | int | 90 | 10–3600 |
+| `max_infra_retries` | int | 3 | 0–20. Separate budget for platform-side failures, which never count against `max_attempts` |
+| `disposition_timeout_seconds` | int | 900 | 60–86400. How long to wait for the outcome classifier before deciding without it |
+| `retry_no_answer_seconds` | int | 3600 | 30–604800. Wait before redialing an unanswered contact. Also covers voicemail and busy |
+| `retry_completed_seconds` | int | 86400 | 60–604800. Wait before redialing a contact whose call connected but landed a non-stop outcome |
+| `randomize_retry_time` | boolean | `false` | Which time of day the retry lands on. `false` keeps the wait exact — a one-week wait retries at the same hour a week later. `true` picks a different hour inside the calling window. The wait length is unchanged either way; a randomized retry is never *earlier* than the configured wait |
+| `double_dial_enabled` | boolean | `false` | Ring a second time shortly after an unanswered first ring. The pair counts as one attempt |
+| `double_dial_gap_seconds` | int | 90 | 10–3600. Required before launch even when `double_dial_enabled` is `false` |
 | `max_calls_per_day` | int | 200 | 1–100000. Resets on the workspace's own calendar day |
 | `min_seconds_between_calls` | int | 30 | 0–86400. Minimum spacing between two admissions |
 | `max_in_flight` | int | 2 | 1–8. How many attempts *this* campaign may have outstanding. Self-restraint, not a capacity grant — the platform's shared outbound lanes are the real ceiling |
 | `budget_cents` | int \| null | null | Positive integer, or `null` for no cap. Enforced against `spent_cents + reserved_cents` |
-| `regulatory_basis` | string | null | One of `consent`, `existing_customer`, `non_marketing`, `registry_screened`. **Required before launch** |
+| `regulatory_basis` | string | — | One of `consent`, `existing_customer`, `non_marketing`, `registry_screened`. **Required before launch** |
 | `starts_at` | ISO8601 | null | Do not admit before this instant |
 | `ends_at` | ISO8601 | null | Do not admit after this instant |
+
+`retry_rules` is **not** writable. It was an earlier structured retry matrix that the dialer never evaluated; the scalar fields above are the whole retry configuration.
+
+To stop calling people you have already spoken to, create a disposition for that outcome (`POST /dispositions`) and put its id in `stop_disposition_ids`. There is no built-in "reached a human" rule — what counts as a real conversation differs per workspace, so it lives in your own outcome list where it is visible and changeable.
 
 ```bash
 curl -s -X POST "https://api.goyappr.com/campaigns" \
@@ -1668,7 +1671,18 @@ curl -s -X POST "https://api.goyappr.com/campaigns" \
     "agent_id": "AGENT_ID",
     "from_phone_number_id": "PHONE_NUMBER_ID",
     "regulatory_basis": "existing_customer",
+    "stop_disposition_ids": ["NOT_INTERESTED_DISPOSITION_ID", "BOOKED_DISPOSITION_ID"],
+    "stop_on_no_answer": false,
+    "stop_on_voicemail": true,
+    "stop_on_unclassified": false,
     "max_attempts": 3,
+    "max_infra_retries": 3,
+    "disposition_timeout_seconds": 900,
+    "retry_no_answer_seconds": 3600,
+    "retry_completed_seconds": 86400,
+    "randomize_retry_time": true,
+    "double_dial_enabled": false,
+    "double_dial_gap_seconds": 90,
     "max_calls_per_day": 150,
     "min_seconds_between_calls": 45,
     "max_in_flight": 2,
@@ -1682,14 +1696,11 @@ Never writable; sending any of them returns `400`. Read them from `GET /campaign
 
 `status`, `daily_admitted_count`, `daily_window_date`, `last_admitted_at`, `spent_cents`, `reserved_cents`, `estimate_cents`, `last_tick_at`, `last_tick_result`, `last_error`, `started_at`, `completed_at`, `total_leads`, `stats`, `from_number`, `company_id`, `created_by`, `created_at`, `updated_at`.
 
-#### retry_rules and calling_window
+#### calling_window
 
-Both are stored as-is and echoed back, and the dashboard's campaign wizard writes them (`retry_rules` = `{max_attempts_default, fallback, by_disconnect_reason, by_disposition}` keyed by disposition **id**; `calling_window` = `{tz, days:[0..6], start:"HH:MM", end:"HH:MM"}`). For an API-driven campaign, prefer the scalar controls, which are the ones the pacer reads:
+`{tz, days:[0..6], start:"HH:MM", end:"HH:MM"}`, stored as-is and echoed back. It can only ever *narrow* the workspace calling hours — the gate the pacer actually evaluates is the **workspace** call windows (`GET`/`PUT /call-windows`). A campaign with no reachable workspace window refuses to launch and pauses itself as `paused_config`.
 
-- retry timing → `retry_no_answer_seconds`, `retry_completed_seconds`, `max_attempts`, `max_infra_retries`
-- when the campaign may dial → the **workspace** call windows (`GET`/`PUT /call-windows`). That is the gate the pacer evaluates; a campaign with no reachable workspace window refuses to launch and pauses itself as `paused_config`.
-
-Leave both at `{}` unless you are deliberately mirroring dashboard state.
+Leave it at `{}` to follow the workspace hours.
 
 ---
 
@@ -1923,7 +1934,8 @@ curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/launch" \
 | Assign an agent before launching | `PATCH` with `agent_id` |
 | Assign a phone number to call from before launching | `PATCH` with `from_phone_number_id` |
 | `regulatory_basis` is required before launching | `PATCH` with one of the four bases |
-| Configure at least one stop rule before launching | Set `stop_disposition_ids`, or one of `stop_on_no_answer` / `stop_on_voicemail` / `stop_on_human_connect` |
+| Configure at least one stop rule before launching | Set `stop_disposition_ids`, or one of `stop_on_no_answer` / `stop_on_voicemail` |
+| Finish configuring the campaign before launching. Not set: … | Every config field is `null` until you send it; the message names each one. `PATCH` them and launch again |
 | The assigned agent no longer exists | Point `agent_id` at a live agent |
 | The assigned agent has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` — `0` means unlimited, which makes the campaign's worst-case cost unbounded |
 | The phone number assigned to this campaign is no longer active | Pick an `is_active` number with `status: "active"` |
@@ -1981,7 +1993,7 @@ Two independent per-contact stop conditions, whichever fires first:
 Rules that matter:
 
 - **`stop_disposition_ids` holds disposition ids, never labels.** Labels are renameable per workspace; ids are stable. Read them from `GET /dispositions`.
-- **Never put `No Answer`, `Failed`, or `Voicemail` in `stop_disposition_ids`.** Those three labels are *also* auto-assigned, and the classifier legitimately assigns them to real conversations — putting them in the stop set retires people you actually reached. Use `stop_on_no_answer` / `stop_on_voicemail` (and `stop_on_human_connect`) instead, which are evaluated on the call's outcome class rather than its label.
+- **Never put `No Answer`, `Failed`, or `Voicemail` in `stop_disposition_ids`.** Those three labels are *also* auto-assigned, and the classifier legitimately assigns them to real conversations — putting them in the stop set retires people you actually reached. Use `stop_on_no_answer` / `stop_on_voicemail` instead, which are evaluated on the call's outcome class rather than its label.
 - **Outcomes are classified asynchronously after the call ends**, typically within seconds but occasionally much later. A contact sits in `awaiting_disposition` until it's classified or until `disposition_timeout_seconds` elapses; `stop_on_unclassified` decides what happens then. The platform will not redial a contact in `awaiting_disposition`, and neither should you.
 - **A disposition that is a stop rule on a live campaign cannot be deleted.** `DELETE /dispositions/:id` is refused at the database layer (it surfaces as a `500`, not a clean error) rather than silently disarming your kill switch. Remove the id from every non-terminal campaign's `stop_disposition_ids` first. (The 10 seeded defaults are `403 PROTECTED` anyway, so this bites on custom outcomes.)
 
@@ -1996,7 +2008,7 @@ Rules that matter:
 
 | Status | Code / shape | Cause |
 |---|---|---|
-| 400 | message names the field | Unknown or read-only key, out-of-range value, non-object `retry_rules`/`calling_window`, stop-disposition id from another workspace, empty PATCH, editing a terminal campaign, enrolling into a terminal campaign, over 1,000 contacts in one enroll |
+| 400 | message names the field | Unknown or read-only key, out-of-range value, non-object `calling_window`, stop-disposition id from another workspace, empty PATCH, editing a terminal campaign, enrolling into a terminal campaign, over 1,000 contacts in one enroll |
 | 404 | — | Campaign not in this workspace (or archived); contact not enrolled |
 | 409 | `DUPLICATE_NAME` | Another non-archived campaign already uses that name |
 | 409 | `ALREADY_IN_ACTIVE_CAMPAIGN` | A number is live in another active campaign |
