@@ -1,6 +1,6 @@
 ---
 name: yappr-agent-builder
-description: Build, configure, and launch complete Yappr AI voice agent systems end-to-end — both single-prompt agents and flow agents (graph state machines for procedural conversations like booking, intake, qualification). Use when users want to create a voice agent, design a conversation flow with branching, connect Google Calendar / scheduling, set up outbound call dispatch, configure post-call automation, manage leads, or go live with a phone number. Discovery-driven — queries the live account before asking the user anything.
+description: Build, configure, and launch complete Yappr AI voice agent systems end-to-end — both single-prompt agents and flow agents (graph state machines for procedural conversations like booking, intake, qualification). Use when users want to create a voice agent, design a conversation flow with branching, connect Google Calendar / scheduling, set up outbound call dispatch, run a bulk outbound calling campaign over a lead list, configure post-call automation, manage leads, or go live with a phone number. Discovery-driven — queries the live account before asking the user anything.
 ---
 
 # Yappr Super Voice AI Agent Builder
@@ -211,6 +211,13 @@ curl -s "https://api.goyappr.com/phone-numbers" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq '[.data[] | {id, number, status, inbound_agent_id, outbound_agent_id}]'
 ```
 
+Add a fourth call when the request involves calling a list of people (bulk dialing, "call these leads", retries over days) — an existing campaign may already own those numbers:
+
+```bash
+curl -s "https://api.goyappr.com/campaigns" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '[.data[] | {id, name, status, total_leads, last_tick_result}]'
+```
+
 These jq filters all keep each resource's `id`. **Do not discard the ids** — capture them into the `EXISTING RESOURCES (id → name)` block of the Step 0.3 config. Every later edit (PATCH/DELETE/attach) is addressed by id, and Step 1.1 ("never ask for an id manually") depends on those ids being captured here.
 
 Summarize what you found and present it to the user before asking any questions. Example:
@@ -268,7 +275,8 @@ EXISTING RESOURCES (id → name — carry these for any later edit)
   Agents:        [{id, name}]
   Tools:         [{id, name}]
   Phone numbers: [{id, number, inbound_agent_id, outbound_agent_id}]
-  Dispositions:  [{id, label}]
+  Dispositions:  [{id, label}]   # ids are also how campaign stop rules are addressed (Phase 6)
+  Campaigns:     [{id, name, status}]  # only when bulk dialing is in scope
   # These ids are how every later PATCH/DELETE/attach is addressed.
   # When the user asks to "change X", resolve X against this map and PATCH by id —
   # do not POST a new resource. Step 1.1 ("never ask for an id manually") relies on this.
@@ -571,7 +579,7 @@ Flow agents still have a global `system_prompt` (persona, brand rules, hard cons
 
 Identify the steps. For each step decide:
 - **Conversation node** (LLM talks): what the bot is trying to accomplish, plus N labeled transitions out (e.g. "User confirmed attendance" → next-step). The model picks based on what the user just said.
-- **Tool-call node** (deterministic): which existing tool (by `tool_id`) and what to do on success / error / custom branches (custom branches use simple JSONPath-equality matching like `$.status == "no_availability"`). Tool args are owned by the **tool itself** via `payload_config` (literals + `ai_extract`-by-the-runtime); `tool_call` nodes have **no per-node `args_template`** field. At call start the effective linked-tool config (including `config_override`) becomes a flat submission schema with one field per extraction parameter; the model never submits a nested `args` object. `required` defaults to true, while optional fields do not block dispatch. Use a node's `config_override` for deliberate per-flow differences, remembering that `payload_config` is replaced as one complete section. First `GET /tools` and reuse an existing tool if its capability matches (the same tool row can be referenced from N flow nodes); `PATCH` it if only the URL/description/params changed. Create a NEW tool ONLY when the argument *shape* genuinely differs across nodes.
+- **Tool-call node** (deterministic): which existing tool (by `tool_id`) and what to do on success / error / custom branches (custom branches use simple JSONPath-equality matching like `$.status == "no_availability"`). Tool args are owned by the **tool itself** via `payload_config` (literals + `ai_extract`-by-the-runtime); `tool_call` nodes have **no per-node `args_template`** field. At call start the effective linked-tool config (including `config_override`) becomes a flat submission schema with one field per extraction parameter; the model never submits a nested `args` object. `required` defaults to true, while optional fields do not block dispatch. First `GET /tools` and reuse an existing tool if its capability matches (the same tool row can be referenced from N flow nodes); `PATCH` it when every consumer should inherit the change. Use a node's `config_override` for deliberate per-flow differences, remembering that `payload_config` is replaced as one complete section. Create a NEW tool ONLY when the argument *shape* genuinely differs across nodes.
 - **Transfer node** / **End node**: terminal.
 - **Post-call extraction and automation**: there are no `webhook` or `structured_output` flow nodes. For per-call extraction, use the agent-level `extraction_parameters` field. For post-call automation, use `webhook_url` + `webhook_events` on the agent. Both apply to prompt and flow agents — flow agents do not have separate post-end node types.
 
@@ -843,9 +851,12 @@ Best for: low volume, ad-hoc calls, testing, simple automation.
 The caller calls `POST /api-v1/calls` directly from their server, script, or automation.
 
 ```bash
+CALL_REQUEST_ID="$(uuidgen)"
+
 curl -s -X POST "https://api.goyappr.com/calls" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $CALL_REQUEST_ID" \
   -d '{
     "agent_id": "AGENT_ID",
     "to": "+972XXXXXXXXX",
@@ -860,6 +871,8 @@ curl -s -X POST "https://api.goyappr.com/calls" \
 
 CRITICAL: `to` and `from` must never be the same number.
 
+**Safe retry rule.** Generate one `Idempotency-Key` for each intended call. If the response is lost or the API returns a temporary idempotency error, retry the identical body with the same key—never generate a replacement key for an uncertain request. A completed result replays the original status/body without creating another call. A concurrent request returns `409` with `Retry-After`; the same key with a different body returns `409`. Keys remain valid for eight days and are scoped to the workspace, so API-key rotation does not break retries.
+
 **One number, many agents.** The `from` field is a per-call override. Any active number in the company can be paired with any agent — the phone number's `outbound_agent_id` only seeds the dashboard default, it does not constrain the API. Users do NOT need to buy a separate number for each agent. Reuse a single outbound number across every agent; just change `agent_id` per call.
 
 **Pattern 2: Supabase Call Queue**
@@ -871,7 +884,7 @@ A `call_queue` table in Supabase holds pending calls. A cron job or edge functio
 // 1. Fetch pending leads from queue
 // 2. For each lead, fetch pre-call data (calendar slots, CRM context)
 // 3. Format variables
-// 4. POST /api-v1/calls with variables injected
+// 4. POST /api-v1/calls with variables injected and the stable queue-row ID as Idempotency-Key
 // 5. Mark lead as dispatched in queue
 ```
 
@@ -902,6 +915,12 @@ Walk the user through the Make/n8n HTTP module configuration:
 - URL: `https://api.goyappr.com/calls`
 - Headers: `Authorization: Bearer {{YAPPR_API_KEY}}`
 - Body: JSON with `agent_id`, `to`, `from`, `metadata`, `variables`
+
+**Pattern 4: Campaigns (managed bulk dialing)**
+Best for: dialing a whole list — with retries, per-contact stop rules, daily caps, a spend cap, and business-hours pacing — without building any of that yourself.
+Instead of draining your own queue, you enroll contacts into a campaign and the platform paces the calls into the same outbound queue `POST /calls` uses. Reach for this whenever the user says "call these N leads" or wants retry logic across days. Full journey: [PHASE 6 — Campaigns](#phase-6-optional-campaigns--bulk-outbound-dialing).
+
+Choosing between Pattern 2/3 and Pattern 4: if the user needs per-lead pre-fetched `variables` (e.g. `{{AvailableSlots}}` computed per contact at dispatch time), keep your own dispatcher — campaign calls are placed by the platform and do not carry per-contact `variables`. If the user needs list management, retries, and pacing, use a campaign.
 
 ### Step 3.1 — Variable Pre-Fetch
 
@@ -1678,6 +1697,37 @@ curl -s -X PATCH "https://api.goyappr.com/shared-links/SHARED_LINK_ID" \
   -d '{"is_revoked": true}'
 ```
 
+### Campaigns
+
+Full journey (create → enroll → stop rules → pacing → launch → monitor) is [PHASE 6](#phase-6-optional-campaigns--bulk-outbound-dialing). The edit path for an existing campaign:
+
+```bash
+# List (filter by status; comma-separated)
+curl -s "https://api.goyappr.com/campaigns?status=running,paused" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  | jq '[.data[] | {id, name, status, total_leads, last_tick_result}]'
+
+# Get full config (agent, from-number and stop dispositions are expanded)
+curl -s "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Patch config — safe while running; the next tick picks it up
+curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"max_calls_per_day": 300, "min_seconds_between_calls": 20}'
+
+# Progress + why nothing is dialing
+curl -s "https://api.goyappr.com/campaigns/CAMPAIGN_ID/stats" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '{status, last_tick_result, leads_by_status}'
+```
+
+Gotchas worth flagging to the user:
+- Only the config allowlist is writable. `status`, `spent_cents`, `daily_admitted_count`, `last_tick_result` and the other engine-owned fields are rejected with `400` — change status through `launch` / `pause` / `resume` / `stop`, never a PATCH.
+- A `completed`, `stopped` or `archived` campaign cannot be edited (`400`). Create a new one.
+- `DELETE /campaigns/:id` **archives** (hides it and retires live contacts) — confirm first; prefer `pause`/`stop` to just halt dialing.
+- `paused_insufficient_credit` resumes by itself after a top-up. A manual `paused` does not.
+
 ### Do-Not-Call list
 
 Per-company suppression list. Outbound call placement (`POST /calls` and the queue dispatcher) consults this list before dialing — matched destinations get a `call_logs` row with `status: "dnc_blocked"` and no carrier leg / no charge. Phone numbers are normalized to E.164 before storage, so any common input format works.
@@ -1825,7 +1875,7 @@ curl -s "https://api.goyappr.com/billing/consumption?group_by=agent&from=2026-06
 
 ## Skill Scope
 
-This skill covers: agents, tools, phone numbers, calls, dispositions, leads, lead tags, shared links, billing, SIP endpoints (BYOC inbound), do-not-call list, call windows (business hours), OAuth integrations, and agent eval (programmatic regression testing).
+This skill covers: agents, tools, phone numbers, calls, campaigns (bulk outbound dialing), dispositions, leads, lead tags, shared links, billing, SIP endpoints (BYOC inbound), do-not-call list, call windows (business hours), OAuth integrations, and agent eval (programmatic regression testing).
 
 Out of scope: raw carrier SIP **trunk** provisioning (distinct from the supported BYOC **SIP endpoints** feature in Step 5.1b), team/user management, WhatsApp directly (only via webhook to an external service), model training, non-Israeli phone numbers.
 
@@ -1847,6 +1897,9 @@ For exact error codes and HTTP status meanings, see `yappr-api.md`. Quick refere
 | 401 | Auth failed — verify API key and scopes |
 | 402 | Billing — add balance or payment method |
 | 403 | Forbidden — resource not found or protected |
+| 404 | Not found in this workspace (or archived) |
+| 409 | Conflict — duplicate name, idempotency-key reuse, or a contact already live in another campaign |
+| 422 | Preconditions not met — e.g. `CAMPAIGN_NOT_READY` (launch preflight), `OUTSIDE_CALL_WINDOW`. `message` names the single blocking cause; fix it and retry |
 | 429 | Rate limit or concurrent call limit — wait and retry |
 | 500 | Server error — retry once |
 
