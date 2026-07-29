@@ -1396,6 +1396,8 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
 
 A launch needs at least one stop rule, and **nothing is armed for you** — no configuration field has a default, so a campaign you never gave a stop rule is refused rather than quietly given one. Arm the real outcome set: without it, people who already said no are redialled until the attempt cap.
 
+**A call's outcome is authoritative.** A contact is never advanced without one — classification is asynchronous, so a contact sits in `awaiting_disposition` until its outcome arrives, however long that takes. Only that contact waits; the campaign keeps calling everyone else. There is no timeout that decides on your behalf.
+
 **Two independent stop conditions, whichever fires first:** `max_attempts` and the stop set. Everything that isn't a stop outcome retries after `retry_completed_seconds`, and an unanswered call retries after `retry_no_answer_seconds`.
 
 ### Step 6.4 — Configure pacing and the compliance basis
@@ -1414,7 +1416,6 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
     "retry_no_answer_seconds": 3600,
     "retry_completed_seconds": 86400,
     "randomize_retry_time": true,
-    "disposition_timeout_seconds": 900,
     "double_dial_enabled": false,
     "double_dial_gap_seconds": 90,
     "stop_on_unclassified": false,
@@ -1427,7 +1428,7 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
 | `max_calls_per_day` | 150–200 | Resets on the workspace's own calendar day |
 | `min_seconds_between_calls` | 30–60 | Spacing between admissions |
 | `max_in_flight` | 2 (max 8) | How many attempts this campaign may have outstanding. It is **self-restraint, not a capacity grant** — the platform's shared outbound lanes are the real ceiling, so raising it does not make the campaign faster once the queue is busy |
-| `max_attempts` | 3 | Per-contact dial cap |
+| `max_attempts` | 3 | Per-contact dial cap, 1–999 |
 | `retry_no_answer_seconds` | 3600 | Redial gap after nobody picks up. Also covers voicemail and busy |
 | `retry_completed_seconds` | 86400 | Redial gap after a call that connected but didn't hit a stop rule |
 | `randomize_retry_time` | ask the user | `false` keeps the wait exact — a one-week wait retries at the same hour a week later. `true` picks a different hour inside the calling window, so repeat attempts don't always land at the same moment. Either way the retry is never *earlier* than the wait |
@@ -1530,7 +1531,7 @@ curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads/LEAD_ID" 
 
 **`paused_insufficient_credit` auto-resumes; `paused` does not.** When the balance falls under the floor the campaign parks itself as `paused_insufficient_credit` and the tick re-checks every minute — after a top-up (checkout, auto-topup, or credit added by an admin) it returns to `running` on its own, with `last_tick_result: "resumed_credit_ok"`. Do not call `launch` in a loop, and do not tell the user to relaunch. Every **other** paused state (`paused`, `paused_budget`, `paused_infra`, `paused_config`) needs an explicit `resume` after the cause is fixed — deliberately, so a human pause is never undone by a payment.
 
-**`awaiting_disposition` means "wait", not "stuck".** Outcomes are classified asynchronously after the call ends — usually within seconds, occasionally much later. A contact sits in `awaiting_disposition` until it's classified or until `disposition_timeout_seconds` (default 1800) elapses, and `stop_on_unclassified` then decides whether to retire or retry it. **Never redial a contact in this state** and never "help" by placing a `POST /calls` to that number: the platform is deliberately holding it, and a manual dial can call somebody who already asked you to stop. If a user reports "it's stuck", check `attempts_in_flight` and `last_tick_result` before concluding anything.
+**`awaiting_disposition` means "wait", not "stuck".** Outcomes are classified asynchronously after the call ends — usually within seconds, occasionally much later. A contact sits in `awaiting_disposition` until its outcome arrives — **indefinitely**, because the outcome is authoritative and the platform never advances a contact without one. Only that contact waits; the campaign keeps calling everyone else. When the outcome does arrive and it is `Unclassified`, `stop_on_unclassified` decides whether to retire or retry. **Never redial a contact in this state** and never "help" by placing a `POST /calls` to that number: the platform is deliberately holding it, and a manual dial can call somebody who already asked you to stop. If a user reports "it's stuck", check `attempts_in_flight` and `last_tick_result` before concluding anything.
 
 **Other errors:** `400` naming a field means the writable allowlist rejected a key or a value range — fix the request, never work around it by re-creating the campaign. `400 Campaign is completed/stopped/archived` means you're editing a terminal campaign; create a new one.
 

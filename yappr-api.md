@@ -1574,7 +1574,6 @@ Foreign keys are expanded to **full objects**, per the API's FK convention — `
 
   "max_attempts": 3,
   "max_infra_retries": 5,
-  "disposition_timeout_seconds": 1800,
   "retry_no_answer_seconds": 60,
   "retry_completed_seconds": 14400,
   "double_dial_enabled": false,
@@ -1641,10 +1640,9 @@ This exact allowlist applies to both `POST` and `PATCH`. **Any other key — inc
 | `stop_disposition_ids` | uuid[] | `[]` | Array of **disposition ids**, never labels. Every id must belong to this workspace, or `400` |
 | `stop_on_no_answer` | boolean | `false` | Retire a contact the first time nobody picks up |
 | `stop_on_voicemail` | boolean | `false` | Retire a contact on a voicemail-class outcome |
-| `stop_on_unclassified` | boolean | `false` | `true` retires a contact whose call was never classified before `disposition_timeout_seconds`; `false` retries it |
-| `max_attempts` | int | 3 | 1–10. Per-contact dial cap |
+| `stop_on_unclassified` | boolean | `false` | What to do when the outcome that ARRIVES is `Unclassified` — the call happened but matched none of your outcomes. `true` retires, `false` retries. **Not a timeout**: a contact is never advanced without an outcome, however long classification takes; only that contact waits, the campaign keeps calling everyone else |
+| `max_attempts` | int | 3 | 1–999. Per-contact dial cap |
 | `max_infra_retries` | int | 3 | 0–20. Separate budget for platform-side failures, which never count against `max_attempts` |
-| `disposition_timeout_seconds` | int | 900 | 60–86400. How long to wait for the outcome classifier before deciding without it |
 | `retry_no_answer_seconds` | int | 3600 | 30–604800. Wait before redialing an unanswered contact. Also covers voicemail and busy |
 | `retry_completed_seconds` | int | 86400 | 60–604800. Wait before redialing a contact whose call connected but landed a non-stop outcome |
 | `randomize_retry_time` | boolean | `false` | Which time of day the retry lands on. `false` keeps the wait exact — a one-week wait retries at the same hour a week later. `true` picks a different hour inside the calling window. The wait length is unchanged either way; a randomized retry is never *earlier* than the configured wait |
@@ -1654,7 +1652,7 @@ This exact allowlist applies to both `POST` and `PATCH`. **Any other key — inc
 | `min_seconds_between_calls` | int | 30 | 0–86400. Minimum spacing between two admissions |
 | `max_in_flight` | int | 2 | 1–8. How many attempts *this* campaign may have outstanding. Self-restraint, not a capacity grant — the platform's shared outbound lanes are the real ceiling |
 | `budget_cents` | int \| null | null | Positive integer, or `null` for no cap. Enforced against `spent_cents + reserved_cents` |
-| `regulatory_basis` | string | — | One of `consent`, `existing_customer`, `non_marketing`, `registry_screened`. **Required before launch** |
+| `regulatory_basis` | string | — | `lawful_basis_confirmed` (a single attestation that you have consent or another lawful basis — what the dashboard records), or a specific basis: `consent`, `existing_customer`, `non_marketing`, `registry_screened`. **Required before launch** |
 | `starts_at` | ISO8601 | null | Do not admit before this instant |
 | `ends_at` | ISO8601 | null | Do not admit after this instant |
 
@@ -1677,7 +1675,6 @@ curl -s -X POST "https://api.goyappr.com/campaigns" \
     "stop_on_unclassified": false,
     "max_attempts": 3,
     "max_infra_retries": 3,
-    "disposition_timeout_seconds": 900,
     "retry_no_answer_seconds": 3600,
     "retry_completed_seconds": 86400,
     "randomize_retry_time": true,
@@ -1993,7 +1990,7 @@ Rules that matter:
 
 - **`stop_disposition_ids` holds disposition ids, never labels.** Labels are renameable per workspace; ids are stable. Read them from `GET /dispositions`.
 - **Never put `No Answer`, `Failed`, or `Voicemail` in `stop_disposition_ids`.** Those three labels are *also* auto-assigned, and the classifier legitimately assigns them to real conversations — putting them in the stop set retires people you actually reached. Use `stop_on_no_answer` / `stop_on_voicemail` instead, which are evaluated on the call's outcome class rather than its label.
-- **Outcomes are classified asynchronously after the call ends**, typically within seconds but occasionally much later. A contact sits in `awaiting_disposition` until it's classified or until `disposition_timeout_seconds` elapses; `stop_on_unclassified` decides what happens then. The platform will not redial a contact in `awaiting_disposition`, and neither should you.
+- **Outcomes are classified asynchronously after the call ends**, typically within seconds but occasionally much later. A contact sits in `awaiting_disposition` until its outcome arrives — **indefinitely**. The outcome is authoritative and the platform never advances a contact without one; only that contact waits, while the campaign keeps calling everyone else. `stop_on_unclassified` applies when the outcome that arrives *is* `Unclassified`, not when none has arrived yet. The platform will not redial a contact in `awaiting_disposition`, and neither should you.
 - **A disposition that is a stop rule on a live campaign cannot be deleted.** `DELETE /dispositions/:id` is refused at the database layer (it surfaces as a `500`, not a clean error) rather than silently disarming your kill switch. Remove the id from every non-terminal campaign's `stop_disposition_ids` first. (The 10 seeded defaults are `403 PROTECTED` anyway, so this bites on custom outcomes.)
 
 ### Compliance
