@@ -1632,7 +1632,7 @@ This exact allowlist applies to both `POST` and `PATCH`. **Any other key — inc
 
 | Field | Type | Suggested | Validation / notes |
 |-------|------|-----------|--------------------|
-| `name` | string | — | **Required on create.** Trimmed. Must be unique among the workspace's non-archived campaigns → `409 DUPLICATE_NAME` |
+| `name` | string | — | **Required on create.** Trimmed. Does not have to be unique — reuse a name freely; a campaign is identified by its `id` |
 | `description` | string | null | Free text |
 | `agent_id` | uuid | — | Required before launch |
 | `from_phone_number_id` | uuid | — | Required before launch; must be an active number the workspace owns |
@@ -1713,7 +1713,6 @@ Update any subset of the writable fields above. Safe while a campaign is `runnin
 - `400` when the campaign is `completed`, `stopped`, or `archived` (no longer editable)
 - `400` when the body contains no writable field
 - `400` on an unknown/read-only key, an out-of-range value, or a `stop_disposition_ids` entry from another workspace
-- `409 DUPLICATE_NAME` on a name collision
 
 **Response:** `200` — full updated campaign object.
 
@@ -2010,7 +2009,6 @@ Rules that matter:
 |---|---|---|
 | 400 | message names the field | Unknown or read-only key, out-of-range value, non-object `calling_window`, stop-disposition id from another workspace, empty PATCH, editing a terminal campaign, enrolling into a terminal campaign, over 1,000 contacts in one enroll |
 | 404 | — | Campaign not in this workspace (or archived); contact not enrolled |
-| 409 | `DUPLICATE_NAME` | Another non-archived campaign already uses that name |
 | 409 | `ALREADY_IN_ACTIVE_CAMPAIGN` | A number is live in another active campaign |
 | 422 | `CAMPAIGN_NOT_READY` | Launch preflight failed; `message` names the single blocking cause |
 

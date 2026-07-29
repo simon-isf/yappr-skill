@@ -1301,7 +1301,7 @@ curl -s -X POST "https://api.goyappr.com/campaigns" \
 
 Save the returned `id` into the Phase 0 `EXISTING RESOURCES` block. `status` is `draft` — guaranteed, not incidental.
 
-- `409 DUPLICATE_NAME` → the workspace already has a non-archived campaign with that name. Pick a new name, or `GET /campaigns` and reuse the existing one (this is the create-vs-edit gate again: PATCH the existing campaign rather than minting a near-duplicate).
+- Names need not be unique, so a create never fails on the name. That makes the create-vs-edit gate your judgement, not the API's: `GET /campaigns` first and PATCH an existing campaign rather than minting a near-duplicate of it.
 - `400` naming a field → the writable allowlist is strict, and **unknown or read-only keys are rejected, never ignored**. If you sent `status`, `spent_cents`, or a misspelling like `stop_dispositions`, fix the key and retry.
 
 ### Step 6.2 — Enroll contacts
@@ -1532,7 +1532,7 @@ curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads/LEAD_ID" 
 
 **`awaiting_disposition` means "wait", not "stuck".** Outcomes are classified asynchronously after the call ends — usually within seconds, occasionally much later. A contact sits in `awaiting_disposition` until it's classified or until `disposition_timeout_seconds` (default 1800) elapses, and `stop_on_unclassified` then decides whether to retire or retry it. **Never redial a contact in this state** and never "help" by placing a `POST /calls` to that number: the platform is deliberately holding it, and a manual dial can call somebody who already asked you to stop. If a user reports "it's stuck", check `attempts_in_flight` and `last_tick_result` before concluding anything.
 
-**Other errors:** `400` naming a field means the writable allowlist rejected a key or a value range — fix the request, never work around it by re-creating the campaign. `409 DUPLICATE_NAME` means that name is taken by a non-archived campaign. `400 Campaign is completed/stopped/archived` means you're editing a terminal campaign; create a new one.
+**Other errors:** `400` naming a field means the writable allowlist rejected a key or a value range — fix the request, never work around it by re-creating the campaign. `400 Campaign is completed/stopped/archived` means you're editing a terminal campaign; create a new one.
 
 **Parsing campaign errors.** The three coded campaign errors put the machine code in `error` and the human text in `message` (`{"error": "CAMPAIGN_NOT_READY", "message": "Assign an agent before launching"}`), which is the reverse of the platform's usual `{"error": "<human>", "code": "<CODE>"}`. Read `code` first, then fall back to `error` when it looks like a code, and always surface `message` to the user — it names the one thing to fix.
 
