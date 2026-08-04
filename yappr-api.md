@@ -1169,7 +1169,9 @@ Initiate an outbound call.
 **Phone validation (enforced at API and DB layers):**
 - Both numbers must match `^\+[1-9][0-9]{7,14}$` — leading `+`, 8–15 digits, no spaces or dashes.
 - Israeli numbers (`+972…`) must be exactly 12 or 13 characters total (`+972` followed by an 8-digit landline or 9-digit mobile). Anything longer or shorter is rejected.
-- Malformed `to` → `400 INVALID_TO_NUMBER`. Malformed `from` → `400 INVALID_FROM_NUMBER`. Bad numbers never reach the carrier and never create a `call_log` row.
+- The `to` prefix must be reachable. `057` is a retired Israeli mobile block, so `+97257…` is rejected even though it is well-formed and the right length.
+- Malformed or unreachable `to` → `400 INVALID_TO_NUMBER`. Malformed `from` → `400 INVALID_FROM_NUMBER`. Bad numbers never reach the carrier and never create a `call_log` row.
+- If a number passes validation but the carrier still refuses the dial, the call fails **once** with an actionable reason on the call record (and a `call.failed` webhook). It is not retried — a rejected destination cannot succeed on a retry.
 
 **`variables` vs `metadata` distinction:**
 - `variables` → injected into the system prompt before the call starts (use for per-call context the agent should know)
