@@ -1874,11 +1874,48 @@ curl -s "https://api.goyappr.com/billing/consumption?group_by=agent&from=2026-06
 
 ---
 
+## Affiliate Program (referral reporting)
+
+If the workspace is in Yappr's referral program, two read-only endpoints report what it has earned. **Reporting only** — nothing here enrolls a partner, changes a commission rate, or sends a payout. Those are done by Yappr; say so plainly rather than implying the user can self-serve them.
+
+```bash
+# Lifetime summary + the last 12 months
+curl -s "https://api.goyappr.com/affiliates/stats" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+
+# Narrower window (summary stays lifetime)
+curl -s "https://api.goyappr.com/affiliates/stats?months=3" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '.months'
+
+# Sub-affiliates — empty on most accounts
+curl -s "https://api.goyappr.com/affiliates/downline" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '.data'
+```
+
+Reporting rules — these are the ones that get quoted wrong:
+
+- **"How much am I owed" is `summary.outstanding_cents`, never `earned_cents`.** `earned` includes commission on revenue that is still inside the hold period; `outstanding` (`payable − paid`) is what is actually claimable now. When the two differ, explain it in one line: *"$X of that is on revenue too recent to have cleared the N-day hold."*
+- **Never state a commission percentage from memory.** Read `commission_rate_pct` (and `override_rate_pct`) off the response — rates are per-account, and a change applies forward only, so an older month can legitimately reflect a different rate.
+- **Never multiply revenue by the rate to get commission.** `commission_rate_pct` is today's rate; history keeps the rate it was earned at. `referred_revenue_cents * commission_rate_pct` can be several times `direct_earned_cents` on an account whose rate has changed. Quote the earned figures; use the rate only for "what the next dollar earns".
+- **A negative month is a refund, not a bug.** `commission_cents` and `referred_revenue_cents` go negative in a month where refunds or chargebacks outweighed sales; the reversal is priced at the rate that applied to the original sale. Show it as a negative line rather than dropping it, or the table stops adding up.
+- **Make the monthly table add up.** `earned_before_window_cents` + the sum of `months[].commission_cents` = `summary.earned_cents`. If you print months, print the "earlier" bucket too, or the column contradicts the total.
+- **A negative `outstanding_cents` means overpaid**, not a negative balance. Say it in words, don't render `-$65.00`.
+- `clients_invited` comes from the referral graph, so a referred workspace that never spent still counts. Don't reconcile it against revenue.
+- The user's own spend never earns them commission.
+- `payout_sent_cents` is bucketed by when the payout was **sent**, not by the period it covered.
+- On `/affiliates/downline`, `my_direct_cents` (the partner's own spend) and `my_override_cents` (their customers' spend) are different money — don't fuse them into one number without saying which is which.
+
+Show dollars, not cents (see Communication Style), and never hand over a bare `ref_code` — give the whole link: `https://app.goyappr.com/signup?ref=<ref_code>`.
+
+If the user asks to change their rate, enroll a sub-affiliate, or trigger a payout: the API cannot do it. Route them to Yappr support rather than guessing at terms.
+
+---
+
 ## Skill Scope
 
-This skill covers: agents, tools, phone numbers, calls, campaigns (bulk outbound dialing), dispositions, leads, lead tags, shared links, billing, SIP endpoints (BYOC inbound), do-not-call list, call windows (business hours), OAuth integrations, and agent eval (programmatic regression testing).
+This skill covers: agents, tools, phone numbers, calls, campaigns (bulk outbound dialing), dispositions, leads, lead tags, shared links, billing, affiliate/referral reporting (read-only), SIP endpoints (BYOC inbound), do-not-call list, call windows (business hours), OAuth integrations, and agent eval (programmatic regression testing).
 
-Out of scope: raw carrier SIP **trunk** provisioning (distinct from the supported BYOC **SIP endpoints** feature in Step 5.1b), team/user management, WhatsApp directly (only via webhook to an external service), model training, non-Israeli phone numbers.
+Out of scope: raw carrier SIP **trunk** provisioning (distinct from the supported BYOC **SIP endpoints** feature in Step 5.1b), team/user management, WhatsApp directly (only via webhook to an external service), model training, non-Israeli phone numbers, and affiliate enrollment / commission rates / payouts (the API reports them; only Yappr sets them).
 
 **No company API resource.** Workspace-level settings — company **timezone** and team/members — are **dashboard-only**; there is no `POST /company`. The only company-level setting the API can change is **call windows** (`PUT /call-windows`), which assumes the timezone is already correct (set it in the dashboard Company settings first).
 

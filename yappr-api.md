@@ -3527,3 +3527,161 @@ When `group_by=agent`, each row carries an `agent_id` field. Agent grouping curr
 | GET /agent-eval/runs (list/get/turns/evaluation) | `agent_eval:read` |
 | POST /agent-eval/runs/:id/cancel | `agent_eval:run` |
 | GET /billing/consumption | `billing:read` |
+
+---
+
+# Affiliates
+
+Read-only reporting on your workspace's referral program: which companies signed up through your referral link, how much billed revenue they generated, and how much commission you have earned on it.
+
+**There is no write surface.** Enrollment, commission rates, hold periods and payouts are configured by Yappr — no endpoint here changes a rate, enrolls a partner, or records a payout.
+
+**The workspace is always the one the API key belongs to.** Neither route takes a company parameter — not in the path, the query string, or a body. A key can only ever read its own workspace's affiliate data.
+
+**Money convention:** every `*_cents` field is an integer number of **US cents** (`2500` = $25.00). Rates are percentages (`commission_rate_pct`), not basis points.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/affiliates/stats` | Lifetime summary + trailing monthly breakdown |
+| GET | `/affiliates/downline` | One row per enrolled sub-affiliate |
+
+**Scopes:** `affiliates:read` for both.
+
+## earned vs payable vs paid
+
+Four words, and confusing any two of them produces a wrong number on screen:
+
+| Term | Meaning |
+|---|---|
+| `earned` | Commission accrued on revenue already booked — **including** revenue still inside the hold period. |
+| `payable` | The slice of `earned` whose underlying revenue has aged past the account's `hold_days`. |
+| `paid` | Payouts already sent, excluding voided ones. |
+| `outstanding` | `payable − paid`. **The only number to pay from or promise against.** |
+
+On an account with `hold_days: 0`, `payable` tracks `earned` immediately. With a non-zero hold, recent revenue counts toward `earned` but not toward `payable` until it ages out — that gap is the point of the hold, not a bug.
+
+## Tiers
+
+- **Tier 1 (direct)** — companies that signed up through your own referral link.
+- **Tier 2 (override)** — companies referred by a partner *you* recruited, where that partner has been enrolled as a sub-affiliate by Yappr.
+
+Depth and the per-tier rate are part of the account's configured terms. **Most accounts are tier-1 only**: their override fields read `0` and `GET /affiliates/downline` returns an empty list. Read the rates off the response — never hardcode one. They differ per account, and a rate change applies **forward only**, so earlier months keep the rate that was in force when the revenue landed.
+
+---
+
+## GET /affiliates/stats
+
+Lifetime totals plus a trailing month-by-month breakdown.
+
+**Scopes:** `affiliates:read`
+
+**Query params:**
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `months` | int | 12 | Length of the trailing window `months[]` covers, including the current (partial) month. Values below 1 are treated as 1. The `summary` block is lifetime and is unaffected by this param. |
+
+**Response:**
+```jsonc
+{
+  "ref_code": "AB12CD34",               // your code — the link is https://app.goyappr.com/signup?ref=AB12CD34
+  "commission_rate_pct": 10.0,          // this account's DIRECT (tier-1) rate — read it, never assume it
+  "override_rate_pct": 2.5,             // tier-2 rate; 0 on tier-1-only accounts
+  "hold_days": 30,                      // days revenue must age before it becomes payable; 0 = no hold
+  "months_window_months": 12,           // how many months months[] covers
+  "summary": {                          // lifetime, not windowed
+    "clients_invited": 7,               // tier-1 companies, whether or not they ever paid
+    "sub_affiliates": 2,                // enrolled partners in your downline
+    "referred_revenue_cents": 240000,   // tier-1 billed revenue
+    "override_revenue_cents": 80000,    // tier-2 billed revenue
+    "earned_cents": 26000,              // direct + override
+    "direct_earned_cents": 24000,
+    "override_earned_cents": 2000,
+    "payable_cents": 21500,             // the part of earned that has cleared the hold
+    "paid_cents": 15000,                // non-voided payouts
+    "outstanding_cents": 6500,          // payable − paid; NOT clamped at zero
+    "earned_before_window_cents": 4000  // earned older than the months[] window
+  },
+  "months": [
+    {
+      "month": "2026-07",
+      "clients_invited": 1,               // companies that signed up that month
+      "referred_revenue_cents": 42000,    // tier-1 revenue booked that month
+      "commission_cents": 4400,           // direct + override for the month
+      "direct_commission_cents": 4200,
+      "override_commission_cents": 200,
+      "payable_commission_cents": 0,      // still inside the hold
+      "payout_sent_cents": 5000           // bucketed by when the payout was SENT
+    }
+    // … one row per month in the window, newest first. Quiet months are rows of zeros, not gaps.
+  ]
+}
+```
+
+Note: unlike most endpoints, this one returns the stats object at the top level — there is no `data` wrapper and no `company_id` echo. The workspace is always the one owning the API key.
+
+```bash
+curl -s "https://api.goyappr.com/affiliates/stats?months=3" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+
+Things that will bite you:
+
+- **The table must reconcile.** `earned_before_window_cents` + the sum of every `months[].commission_cents` equals `summary.earned_cents`, exactly. Render an "Earlier" bucket from it, or your monthly column will silently disagree with the lifetime total you printed above it.
+- **`outstanding_cents` is deliberately not clamped at zero.** A negative value means more has been paid out than is currently payable — render it as an *overpaid* state, not as a negative currency amount.
+- **Never re-derive commission from revenue × rate.** `commission_rate_pct` is the rate in force *today*; every past commission was priced at the rate in force when that customer paid. On an account whose rate has changed, `referred_revenue_cents * commission_rate_pct / 100` can be several times `direct_earned_cents`, and the earned figure is the correct one. The example above happens to line up only because that account has never had a rate change. Quote `direct_earned_cents` / `override_earned_cents`; use the rate fields only to say what the *next* dollar earns.
+- **Month figures can be negative.** A refund or chargeback is booked in the month it happens and reverses the commission at the rate that originally applied, so `commission_cents` (and `referred_revenue_cents`) go negative in a month with more refunds than sales. Do not clamp them — the reconciliation above depends on the negative rows being present.
+- **`clients_invited` comes from the referral graph, not from revenue.** A referred company that never spent a cent still counts, so `clients_invited: 3` alongside `referred_revenue_cents: 0` is a real and correct state. Do not try to reconcile the two.
+- A month with revenue and `payable_commission_cents: 0` is normal on an account with a hold — that revenue simply has not aged out yet.
+- `payout_sent_cents` is bucketed by the month the payout was sent, not the month the commission was earned. The two columns are not meant to line up row by row.
+- Your own workspace's spend never earns you commission, and a workspace cannot refer itself.
+
+---
+
+## GET /affiliates/downline
+
+One row per **enrolled sub-affiliate** — a partner you recruited whom Yappr has enrolled with their own terms.
+
+**Scopes:** `affiliates:read`
+
+No query params.
+
+The roster is driven from the referral graph, not from the money, so a partner enrolled yesterday with no customers yet is a **row of zeros** rather than a missing row — "live, nothing yet" is a state worth showing.
+
+Returns an empty list on tier-1-only accounts (the common case), and on accounts whose recruits have not been enrolled. A company that merely shares its own referral link does **not** appear here: enrollment is deliberate, and neither its name nor its customers' revenue is disclosed to you until it happens.
+
+**Response:**
+```jsonc
+{
+  "data": [
+    {
+      "company_id": "uuid",              // the sub-affiliate's workspace
+      "name": "string",                  // their workspace name
+      "ref_code": "EF56GH78",            // their own referral code
+      "customers": 4,                    // companies they referred that have generated billed revenue
+      "downline_revenue_cents": 80000,   // billed revenue from those companies
+      "my_override_cents": 2000,         // your tier-2 commission on it (earned)
+      "my_override_payable_cents": 1600, // the part of that override which has cleared your hold
+      "my_direct_cents": 900             // your tier-1 commission on the partner's OWN spend
+    }
+  ]
+}
+```
+
+Note: the response carries only `data` — there is no top-level `company_id` echo. The `company_id` inside each row is the sub-affiliate's own workspace id.
+
+```bash
+curl -s "https://api.goyappr.com/affiliates/downline" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '.data'
+```
+
+`my_direct_cents` and `my_override_cents` are different money and must not be added into one "from this partner" figure without saying so: the first is your ordinary tier-1 commission on what the partner spends with Yappr themselves, the second is your override on what *their* customers spend. Summed across all rows, `my_override_cents` equals `summary.override_earned_cents` from `/affiliates/stats`.
+
+---
+
+## Scope Map (affiliates)
+
+| Resource + Action | Required Scope |
+|---|---|
+| GET /affiliates/stats | `affiliates:read` |
+| GET /affiliates/downline | `affiliates:read` |
