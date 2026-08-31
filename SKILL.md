@@ -222,7 +222,7 @@ These jq filters all keep each resource's `id`. **Do not discard the ids** — c
 
 Summarize what you found and present it to the user before asking any questions. Example:
 
-> "I've checked your account. You have 2 agents (Maya — Hebrew, Michal — Hebrew), 3 phone numbers (one unassigned), and a $45.20 balance. Your dispositions are: Interested, Not Interested, Callback Requested, Appointment Set, Issue Resolved, No Answer, Failed, Voicemail, Wrong Number, Do Not Call.
+> "I've checked your account. You have 2 agents (Maya — Hebrew, Michal — Hebrew), 3 phone numbers (one unassigned), and a $45.20 balance. Your dispositions are: Interested, Not Interested, Callback Requested, Appointment Set, Issue Resolved, Voicemail, Wrong Number, Do Not Call, Transferred to a Person, Unclassified, No Answer, Failed.
 >
 > Now — tell me about the voice agent system you want to build."
 
@@ -554,12 +554,12 @@ curl -s -X POST "https://api.goyappr.com/dispositions" \
   -d '{"label": "Appointment Set", "color": "#22c55e"}'
 ```
 
-**Default dispositions already seeded per company** (do not recreate):
-Interested, Not Interested, Callback Requested, Appointment Set, Issue Resolved, Voicemail, Wrong Number, Do Not Call, No Answer, Failed
+**Default dispositions already seeded per company** (do not recreate), in the order `GET /dispositions` returns them:
+Interested, Not Interested, Callback Requested, Appointment Set, Issue Resolved, Voicemail, Wrong Number, Do Not Call, Transferred to a Person, Unclassified, No Answer, Failed
 
-Protected dispositions (cannot be edited or deleted via RLS): all 10 default dispositions are protected. Users can add custom dispositions but cannot modify the defaults.
+Six of those are protected — Voicemail, Do Not Call, Transferred to a Person, Unclassified, No Answer, Failed. `DELETE` on one returns `403 PROTECTED`, and you should not rename one either: the platform matches its own classification against those exact strings. The other six are ordinary rows the user may rename, recolour or delete. See Appendix E.
 
-No Answer and Failed are auto-set by the system. The AI classifier sets all others. If classification fails, disposition is null.
+No Answer and Failed are normally auto-set by the platform — though the classifier also assigns `Failed` to a handover nobody answered. The AI classifier sets the rest. If classification fails, the call lands on `Unclassified`.
 
 ---
 
@@ -2114,24 +2114,32 @@ Use `metadata` for tracking data (lead IDs, source, CRM record IDs). Use `variab
 
 ### Default Dispositions (seeded per company)
 
+Listed in the order `GET /dispositions` returns them (by `position`).
+
 | Label | Protected | Set by |
 |-------|-----------|--------|
-| No Answer | Yes | System (automatic — set when call is not answered) |
-| Failed | Yes | System (automatic — set on connection error) |
-| Voicemail | Yes | System |
-| Wrong Number | Yes | System |
+| Interested | No | AI classifier |
+| Not Interested | No | AI classifier |
+| Callback Requested | No | AI classifier |
+| Appointment Set | No | AI classifier |
+| Issue Resolved | No | AI classifier |
+| Voicemail | Yes | AI classifier |
+| Wrong Number | No | AI classifier |
 | Do Not Call | Yes | System |
-| Interested | Yes | AI classifier |
-| Not Interested | Yes | AI classifier |
-| Callback Requested | Yes | AI classifier |
-| Appointment Set | Yes | AI classifier |
-| Issue Resolved | Yes | AI classifier |
+| Transferred to a Person | Yes | AI classifier (calls the platform recorded as handed to a human) |
+| Unclassified | Yes | System (automatic — set when the call could not be classified) |
+| No Answer | Yes | System (automatic — set when call is not answered) |
+| Failed | Yes | System (automatic — set on connection error), and the AI classifier on a handover nobody answered |
 
-**Protected dispositions:** all 10 default dispositions are protected — they cannot be edited or deleted. Attempting to PATCH or DELETE one returns `403 PROTECTED`. Do not try to recreate them. Only custom dispositions you create can be edited or deleted.
+**Set by** is where a label normally comes from, not a guarantee about where it can come from: every one of a company's labels — protected ones included — is offered to the classifier on every call.
 
-**No Answer and Failed:** auto-set by the platform. The AI classifier does not set these.
+**Protected dispositions:** six of the twelve — Voicemail, Do Not Call, Transferred to a Person, Unclassified, No Answer, Failed. `DELETE` on one returns `403 PROTECTED`. Do not `PATCH` one either: the platform assigns these by matching its own classification against those exact labels, so renaming one silently stops it ever being assigned again — and the API will not stop you. Do not try to recreate any default; `POST /dispositions` with an existing label returns `409 DUPLICATE_LABEL`. The other six defaults are ordinary rows — rename, recolour or delete them freely.
 
-**null disposition:** if AI classification fails (e.g., very short call, unclear outcome), the disposition field is null. Always handle the null case in post-call automation.
+**No Answer and Failed:** auto-set by the platform — No Answer when nobody picks up, Failed on a connection error. The classifier never reaches for No Answer, but it does assign `Failed` in one case of its own: a handover the destination did not answer, on a call whose conversation reached no other outcome.
+
+**Transferred to a Person:** for calls the agent handed to a human. A transfer is not automatically the outcome — if the agent's own conversation already reached one (the caller booked, said no, was a wrong number), that outcome wins, and a booking closed by the human after the handover is still `Appointment Set`. A handover the platform knows nobody answered never gets this label, because nobody was reached — that call keeps the outcome its own conversation reached, or `Failed` if it reached none. Where the platform has no record either way — every transfer placed before pickups were recorded, and any call whose pickup never registered — the label still applies, because it describes the handoff and the handoff is established fact; the call's `summary` then says outright that whether anyone answered was not recorded. So read `Transferred to a Person` as "the call was handed over", never as "somebody answered". The handover itself is recorded on the call regardless (`transferred_at`, `transfer_target`), so classify on the outcome and read the transfer from the call record.
+
+**Unclassified and null:** when the platform cannot classify a call it lands on `Unclassified`, and on `null` only in the window before classification arrives (or if that label was somehow removed). Handle both in post-call automation — a campaign's `stop_on_unclassified` decides whether an `Unclassified` outcome retires a contact or retries it.
 
 ### Custom Dispositions
 
@@ -2180,8 +2188,9 @@ The user says any of:
 
 ### Gotchas to mention up front
 
-- **`tool_policy: "mock"` is the right default for CI** — tools never fire, every call returns synthetic success. Switch to `real` only for occasional pre-prod sanity checks.
-- **Agents and personas are billed at different rates** ($2/$10 vs $1/$4 per 1M tokens). A typical 10-turn case lands $0.005-$0.05; a 50-case suite for under a dollar is normal.
+- **`tool_policy: "mock"` is the right default for CI** — webhook tools never fire, each returns a fixed synthetic success, and the invocation is still recorded so `must_call_tool` passes. This covers a flow agent's tool steps AND a single-prompt agent's attached tools; switch to `real` only for occasional pre-prod sanity checks.
+- **`allowlist` does not hold back connected apps** — it differentiates webhook tools only, so Google Calendar / Gmail steps dispatch for real under `allowlist`. Use `mock` to hold those back. See `agent-eval-guide.md` for the full carve-out list.
+- **Agents and personas are billed at the same rate** ($1 per 1M input tokens, $6 per 1M output). A typical 10-turn case lands $0.005-$0.05; a 50-case suite for under a dollar is normal. Input dominates cost heavily — the agent's context is re-sent every turn, so case length drives the bill far more than run count.
 - **Webhooks fire per-run** (`agent_eval.run.completed` / `.failed`) — wire a CI worker to react instead of polling if you have many cases.
 - **`must_reach_node` only works for flow agents** — using it on a prompt-mode agent fails the assertion every time.
 
