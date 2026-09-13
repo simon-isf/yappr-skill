@@ -71,7 +71,8 @@ curl -s -X POST "https://api.goyappr.com/resource" \
 |--------|---------|--------|
 | 400 | Bad request — field missing or invalid | Check error message |
 | 401 | Auth failed — invalid or missing key, or missing scope | Verify key and scopes |
-| 402 | Billing — insufficient balance or no payment method | Guide to billing setup |
+| 402 | Billing — cannot be paid for now. A call needs at least $1.00 of credit; automatic payment attempts may be cooling down or stopped after failed payments | Do not retry immediately; guide the user to add credits or update the payment method when required |
+| 503 | `BILLING_UNAVAILABLE` — the balance could not be settled *yet*: a top-up or its outcome is still being resolved, a charge landed but the credit has not appeared, or the balance check itself failed | Retry after a few seconds. This is NOT "out of money" |
 | 403 | Forbidden — resource not found or wrong company | Check resource IDs |
 | 429 | API-key request rate limit | Wait for `Retry-After`, then retry |
 | 500 | Server error | Retry once; if persistent, report |
@@ -93,7 +94,7 @@ List all agents for the authenticated company.
 | `limit` | int | 20 | max 100 |
 | `offset` | int | 0 | pagination |
 
-**Response:** Each list item is the **full agent object** — same shape as `GET /agents/:id`, including `system_prompt`, `temperature`, all `vad_*`, silence/max timeouts, `background_sound`, `type`, `flow_config`, `webhook_url`, `webhook_events`, `extraction_parameters`, AND a nested `tools[]` array. The result is wrapped in a `pagination` envelope — without `limit`/`offset` only the first 20 agents are returned (silent truncation for larger fleets).
+**Response:** Each list item is the **full agent object** — same shape as `GET /agents/:id`, including `system_prompt`, `temperature`, all `vad_*`, silence/max timeouts, `background_sound`, `type`, `flow_config`, `webhook_url`, `webhook_events`, `webhook_headers`, `extraction_parameters`, AND a nested `tools[]` array. The result is wrapped in a `pagination` envelope — without `limit`/`offset` only the first 20 agents are returned (silent truncation for larger fleets).
 
 ```json
 {
@@ -130,6 +131,7 @@ Fetch complete config of a single agent.
   "greeting_message": "string | null",
   "webhook_url": "string | null",
   "webhook_events": ["call.started", "call.answered", "call.ended", "call.failed", "call.no_answer", "call.dnc_blocked", "transcript.ready", "call.analyzed"],
+  "webhook_headers": {"Authorization": "Bearer …"} | null,
   "extraction_parameters": [{"name": "camelCaseName", "description": "AI instruction for what to extract from the call"}],
   "vad_stop_secs": 0.5,
   "vad_start_secs": 0.2,
@@ -168,13 +170,14 @@ Create a new agent.
 |-------|------|----------|------------|
 | `name` | string | yes | Non-empty |
 | `system_prompt` | string | yes | Non-empty |
-| `voice` | string | no | A valid voice name from the Voice Catalog. **Omitting it defaults to Rachel** (not Michal) — to get the Michal default recommended elsewhere, pass `"voice": "Michal"` explicitly. |
+| `voice` | string | no | A valid voice name from the Voice Catalog. **Omitting it defaults to Rachel** (not Michal) — to get the Michal default recommended elsewhere, pass `"voice": "Michal"` explicitly. An expressive-family voice also rejects `temperature` and the three `vad_*` fields in the same request, and cannot be used on a flow agent. |
 | `language` | string | yes | `"he"` or `"en"` |
 | `temperature` | float | no | 0.0–2.0, default 0.5 |
 | `agent_speaks_first` | boolean | no | default `true` |
 | `greeting_message` | string | no | Required if `agent_speaks_first: true` |
 | `webhook_url` | string | no | Valid HTTPS URL |
 | `webhook_events` | string[] | no | Array of valid event names |
+| `webhook_headers` | object \| null | no | Flat header name → string-value map sent with every webhook delivery for this agent (e.g. an auth token). `null` clears it. Headers that would override routing or HTTP framing (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Expect`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Proxy-*`) are rejected with 400. |
 | `extraction_parameters` | array | no | Each item: `{ "name": "camelCase", "description": "what to extract" }`. Values extracted from call transcript and included in `call.analyzed` webhook + stored on call log. |
 | `vad_stop_secs` | float | no | 0.05–5.0, default 0.5 |
 | `vad_start_secs` | float | no | 0.05–2.0, default 0.2 |
@@ -1007,7 +1010,7 @@ Useful for retry / analytics decisions — e.g. don't auto-retry a call that the
 
 **`disconnect_reason`** — Optional human-readable termination reason (e.g. `"Voicemail detected"`, `"Completed"`). Also first-write-wins. May be `null` for short or atypical hangups.
 
-**`transferred_at` / `transfer_target`** — Populated when the call was handed off via SIP transfer: `transferred_at` is the handoff timestamp, `transfer_target` is the destination it was transferred to. Both `null` when no transfer occurred.
+**`transferred_at` / `transfer_target`** — Populated when the call was handed off to another phone number: `transferred_at` is the handoff timestamp, `transfer_target` is the destination it was transferred to. Both `null` when no transfer occurred.
 
 **`extracted_data`** — Object of the agent's extraction-parameter values (keyed by the `name`s from `extraction_parameters`). This is where the values surfaced in the `call.analyzed` webhook are stored on the call log. Present only when the agent extracted at least one value; the key is omitted entirely when empty.
 
@@ -1134,6 +1137,33 @@ For flow-agent calls, prefer reading `flow_trace.steps[].tool_call` — same per
 | `flow_node_entered` | `{step_id, node_kind, name, reason, via_transition_id?}` — `node_kind` is one of `start`, `conversation`, `tool_call`, `integration_call`, `transfer`, `end`. |
 | `flow_eval_decision` | `{step_id, decision, reasoning?, turn_id?, target_step_id?, valid}` |
 | `flow_tool_result` | `{step_id, kind, status, tool_name, tool_id?, provider?, action?, integration_id?, args, arg_sources, response_preview, raw_response_preview?, error, duration_ms}` — `kind` is `tool_call` or `integration_call`; integration-specific fields populated for the latter. `raw_response_preview` is a nullable legacy field for historical rows; new Google events retain only the user-facing result in `response_preview`. |
+| `transfer_started` | `{destination, source, command_id, ...}` — the caller was handed off to a human. `destination` is the E.164 number dialled; `source` is `prompt_tool` or `flow_node`. The originating context is merged in: `tool_name` for prompt agents, `from_flow_node` for flow agents. **Accepted is not answered** — see below. |
+| `transfer_failed` | `{error_code, destination, source, ...}` — the handoff did not complete and, in every case except `NOT_CONNECTED`, the caller stayed with the agent. Same originating context as above. |
+
+**Transfers emit these on both agent types** — a `transfer` node in a flow, or a transfer tool on a prompt agent — because both run the same underlying handoff.
+
+`transfer_failed.error_code` is one of:
+
+| `error_code` | Meaning | Caller experience |
+|---|---|---|
+| `NO_DESTINATION` | No number configured on the tool or node | Keeps talking to the agent |
+| `INVALID_DESTINATION` | The configured value is not a dialable number | Keeps talking to the agent |
+| `NO_TELEPHONY_LEG` | Web (browser) call — there is no phone leg to hand off | Keeps talking to the agent |
+| `ALREADY_TRANSFERRING` | A handoff for this call is already in flight | One handoff, not two |
+| `CALL_ENDED` | The call ended before the handoff could start | Already gone |
+| `CARRIER_REJECTED` | The carrier refused the request | Keeps talking to the agent |
+| `CARRIER_UNREACHABLE` | The request could not be delivered | Keeps talking to the agent |
+| `NO_API_KEY` | Telephony not configured for this deployment | Keeps talking to the agent |
+| `NOT_CONNECTED` | Accepted, but the destination never answered — busy, rejected, or rang out | Hears ringback, then the call ends |
+
+`NOT_CONNECTED` is the one reported *after* the fact rather than at request time, so a call may emit
+`transfer_started` and later `transfer_failed`. That pair means the caller was handed off and nobody
+picked up. Its `data` also carries `hangup_cause` and `transferred_at`, and `source` is
+`carrier_webhook`.
+
+A successful handoff also sets `transferred_at` and `transfer_target` on the call, and the call is
+billed as two segments: the agent portion at the standard rate and the human conversation at the
+transfer rate.
 
 **Recording URL notes:**
 - `recording_url` is a permanent signed URL (contains `?sig=...` — do not modify)
@@ -2852,17 +2882,21 @@ Get billing status and balance.
 
 ### POST /billing/topup
 
-Add credits to the account. Charges the saved payment method.
+Create a hosted Checkout page for adding credits to the account.
 
 **Scopes:** `billing:manage`
 
 **ALWAYS require explicit user confirmation before calling this endpoint.**
 
+This endpoint never charges the saved card off-session. Send the user to the
+returned `checkoutUrl` so they can confirm the payment interactively.
+
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `amount_cents` | int | yes | Amount in cents — e.g. `2000` = $20.00. Must be a **positive integer** — floats, zero, and negatives return `400 amount_cents must be a positive integer (e.g., 1000 for $10.00)`. |
 
-**Response:** `200` — updated billing object
+**Response:** `200` —
+`{ "checkoutUrl": "https://checkout.stripe.com/...", "sessionId": "cs_..." }`
 
 ---
 
@@ -2913,7 +2947,7 @@ Deduplication against open tickets happens server-side and is **intentionally no
 
 Events sent to the agent's configured `webhook_url` as calls progress.
 
-Configure on agent: `webhook_url` (HTTPS URL) + `webhook_events` (array of event names).
+Configure on agent: `webhook_url` (HTTPS URL) + `webhook_events` (array of event names). Optionally `webhook_headers` (a name → value object) to send custom headers, such as an auth token, on every delivery.
 
 **Payload shape:**
 ```json
@@ -2956,15 +2990,46 @@ To get the complete call record including resolved lead + disposition object: `G
 
 ---
 
-## Voice Catalog (30 voices)
+## Voice Catalog (38 voices, two families)
 
 Use the friendly name in API calls (e.g. `"voice": "Maya"`). The platform resolves internally — never use raw voice IDs.
+
+**The voice name is the ONLY selector.** There is no `engine`, `model` or provider field on an agent; sending `engine` or `engine_voice` returns `400`. Which family a voice belongs to decides what else the agent supports, and naming a voice from the other family on `PATCH /agents/:id` moves the agent onto it.
+
+### Standard family (30 voices)
+
+Available to every workspace. Default for a new agent (`Rachel`). Supports the whole agent surface, including `temperature`, the three `vad_*` settings and `type: "flow"` agents.
 
 **Female voices (14):**
 Michal, Rachel, Noa, Maya, Shira, Avigail, Liat, Tamar, Yael, Dvora, Shir, Anat, Dana, Ruth
 
 **Male voices (16):**
 Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi, Shlomo, Alon, Yuval
+
+### Expressive family (8 voices)
+
+Wider emotional range, more natural interruption handling, and their own turn-taking. **Opt-in per workspace** — where the family is not switched on, these names are rejected and the `400` lists only the voices that workspace may use. Never promise one to a customer before a create or patch has actually accepted it.
+
+| Voice | Gender | Character | English accent |
+|-------|--------|-----------|----------------|
+| Keren | female | Precise | — |
+| Eitan | male | Composed | North American |
+| Hila | female | Sunny | North American |
+| Ido | male | Agile | Australian-influenced |
+| Boaz | male | Calm | British-influenced |
+| Tali | female | Soothing | Irish-influenced |
+| Erez | male | Solid | Irish-influenced |
+| Efrat | female | Steady | — |
+
+The accent applies only when the agent speaks English; all eight speak Hebrew.
+
+**What they do not take.** These four are rejected with a `400` when sent alongside an expressive voice, because the voice runs its own turn-taking and expressiveness and the value would change nothing:
+
+`temperature`, `vad_stop_secs`, `vad_start_secs`, `vad_confidence`
+
+They are also unavailable on `type: "flow"` agents. Everything else is identical: prompt, greeting, `agent_speaks_first`, language, tools, webhooks, extraction parameters, the call guards (`silence_timeout_secs`, `max_continuous_speech_secs`, `max_call_duration_secs`), `background_sound` and `lead_memory_enabled`.
+
+**Switching is lossless.** The standard voice stays on the row while the agent is on an expressive one, so `PATCH {"voice": "Rachel"}` restores exactly the voice it had before. Existing `temperature` / `vad_*` values are left untouched and simply not read — you never have to clear them to switch, you only cannot set them in the same request.
 
 **Use-case mapping:**
 
@@ -3642,8 +3707,8 @@ For the conceptual deep-dive open [`agent-eval-guide.md`](agent-eval-guide.md). 
 
 | Role | Input | Output |
 |---|---|---|
-| Agent | $2 / 1M tokens | $10 / 1M tokens |
-| Persona | $1 / 1M tokens | $4 / 1M tokens |
+| Agent | $1 / 1M tokens | $6 / 1M tokens |
+| Persona | $1 / 1M tokens | $6 / 1M tokens |
 
 **Webhooks**: eval runs do **not** emit webhooks (`agent_eval.*` is not a valid `webhook_events` value — POST/PATCH /agents reject it with 400). Poll `GET /agent-eval/runs/:id`, or `GET /agent-eval/suites/:suite_id/runs/:suite_run_id` for suite aggregates.
 
@@ -3785,7 +3850,7 @@ Create a case.
 | `pass_threshold` | number (0-100) | no (default 80) | Weighted-score threshold for `pass_fail=true` |
 | `agent_overrides` | object \| null | no | Per-case overrides applied to the agent's saved config at run time |
 | `tool_policy` | "mock" \| "real" \| "allowlist" | no (default "mock") | See "Tool policy" below |
-| `tool_allowlist` | string[] | no | Tool names that fire for real when `tool_policy='allowlist'` |
+| `tool_allowlist` | string[] | no | Tool **ids** (or names) that fire for real when `tool_policy='allowlist'`. Prefer ids — names are not unique per company, so a name arms every tool sharing it |
 
 ### Assertion shapes
 
@@ -3798,15 +3863,49 @@ Create a case.
 { "kind": "custom_llm_judge",  "rubric": "The agent must offer at least two alternative dates if the first is declined.","weight": 2 }
 ```
 
-Score formula: `score = sum(weight * passed?1:0) / sum(weight) * 100`. `must_reach_node` is only meaningful for flow agents.
+**Field names and aliases.** The discriminator is `type`, and `kind` is an
+accepted alias — both work, and `type` wins if you send both. Likewise the
+matcher is `pattern` (regex) with `phrase` as the substring-matching alias;
+`pattern` wins if both are present. `match_type` (`substring` | `regex`)
+overrides the default for either, and `case_sensitive` defaults to `false`.
+
+Prefer `phrase` for literal text: it needs no escaping, so `"12.30"` matches
+only `12.30` and not `12X30`. Use `pattern` (or `match_type: "regex"`) when you
+actually want a regex.
+
+An assertion missing its `type`/`kind`, or a `must_say` / `must_not_say`
+missing both `phrase` and `pattern`, fails with a reason naming the missing
+field. It is never a silent pass — a failing assertion with the reason
+`assertion is missing a ...` means the case is malformed, not that the agent
+misbehaved.
+
+Score formula: `score = sum(weight * passed?1:0) / sum(weight) * 100`.
+
+`must_reach_node` matches the `node_entered` events from
+`GET /agent-eval/runs/{id}/turns`, so it only means anything for flow agents;
+on failure the reason lists the nodes the flow actually reached.
+
+`custom_llm_judge` is graded by an LLM that sees the full transcript (both
+sides), the business tool calls with their arguments, and the flow nodes
+entered. Internal routing calls (`pick_transition`, `submitFlowArgs_*`) are
+excluded, so a "must not call any tool" rubric is not tripped by the flow
+engine's own bookkeeping. Grading is strict: anything the run does not
+positively demonstrate fails.
 
 ### Tool policy
 
 | Policy | Behaviour |
 |---|---|
-| `mock` (default) | All tools return synthetic success results. Free, deterministic — the right choice for CI. |
+| `mock` (default) | Webhook tools make no request; each returns the fixed result `{"success": true, "status_code": 200}`. The request body is still assembled, so `must_call_tool` + `args_match` still work. Free, deterministic — the right choice for CI. |
 | `real` | Tools fire for real. Charges real third-party costs (e.g. real calendar holds). |
-| `allowlist` | Tools listed in `tool_allowlist` (camelCase names) fire for real, the rest mock. |
+| `allowlist` | Webhook tools matching an entry in `tool_allowlist` fire for real, the rest return the same synthetic success. |
+
+Caveats that bite:
+
+- `allowlist` differentiates **webhook tools only**. Connected-app steps (Google Calendar, Gmail) dispatch for real under both `real` and `allowlist`. Use `mock` to hold those back.
+- `mock` skips target validation and the network hop, so it does not prove the endpoint is reachable. And the synthetic body being fixed means a step branching on the response *content* always takes its success edge.
+- The policy applies to **both agent types**: a flow agent's tool steps and connected-app steps, and a single-prompt agent's attached tools, which the model calls directly. Hang-up and transfer tools make no request, so they are policy-independent — in a run they end it, and a transfer never dials its destination.
+- `must_call_tool` matches the **tool's** name, not the flow step's name and not the camelCase name the model calls it by. A prompt-agent tool named "Book Appointment" is invoked as `bookAppointment` and recorded as "Book Appointment".
 
 **Returns:** `201` — full `EvalCase` with expanded `agent` + `persona`.
 
@@ -3946,6 +4045,19 @@ Run a single case ad-hoc. Blocks up to 60 seconds waiting for the run to fully f
 
 **Errors:** 400 (validation), 404 (case not found). There is no synchronous 402 — insufficient balance surfaces asynchronously as `status=failed` with a code in the run's `error` field (discovered by polling).
 
+**Run `error` codes** (stable; treat anything unrecognized as `eval_failed`):
+
+| Code | What happened |
+|---|---|
+| `insufficient_credits` | Balance is under the minimum a run needs. Add credits. |
+| `insufficient_credits_no_topup` | Same, and automatic top-up is off for the workspace. |
+| `topup_did_not_complete` | An automatic top-up was attempted and did not go through — the payment method needs attention. |
+| `topup_threshold_below_eval_floor` | The workspace's low-balance threshold sits below the minimum a run needs, so a top-up never fires for runs. Raise the threshold or add credits. |
+| `workspace_suspended` | Billing is suspended for the workspace. |
+| `agent_inactive` | The agent under test is deactivated — reactivate it and re-run. |
+| `agent_tools_unavailable` | The run was stopped rather than scored without the agent's tools. Retry shortly. |
+| `eval_unreachable` / `eval_dispatch_failed` / `eval_timeout` / `eval_failed` | Transport or runtime failure. Retry. |
+
 ---
 
 ## GET /agent-eval/runs
@@ -4083,13 +4195,18 @@ Aggregated debits from your credit account, bucketed by date and product.
   "group_by": "day",
   "data": [
     { "period": "2026-05-06", "product": "voice_call", "total_amount_cents": 1240, "count": 18 },
-    { "period": "2026-05-06", "product": "eval_run",   "total_amount_cents": 12,   "count": 47 },
+    { "period": "2026-05-06", "product": "eval_run",   "total_amount_cents": 12,   "count": 47,
+      "input_tokens": 5580000, "output_tokens": 33100, "total_tokens": 5613100 },
     { "period": "2026-05-07", "product": "voice_call", "total_amount_cents": 980,  "count": 14 }
   ]
 }
 ```
 
 When `group_by=agent`, each row carries an `agent_id` field. Agent grouping currently only populates for `voice_call`.
+
+**Token usage.** Buckets for token-metered products also carry `input_tokens`, `output_tokens` and `total_tokens`. Today that means `eval_run` — eval charges are a direct function of tokens, so these fields are what explain a line item. Products that don't meter tokens **omit the fields entirely** rather than returning `0`, so an absent `total_tokens` means "not applicable", never "nothing used".
+
+Expect input to dominate output heavily on evals (often 150:1) — the agent's context is re-sent every turn, so input accumulates with case length while output stays roughly flat per turn. When a suite costs more than expected, case length and prompt size are the lever, not run count.
 
 ---
 

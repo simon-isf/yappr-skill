@@ -461,6 +461,8 @@ See Appendix A for the full voice selection guide.
 
 Recommended pick: `Michal` when use case is unclear. **Always pass `voice` explicitly** — if you omit it, the server falls back to `Rachel`, not Michal.
 
+Some workspaces also have an **expressive family** of eight voices (Keren, Eitan, Hila, Ido, Boaz, Tali, Erez, Efrat). Do not reach for one unless the user asks for a more natural or expressive voice, and never promise one before a create or patch has actually accepted it — the family is opt-in per workspace and a `400` listing the workspace's voices is how you find out it is not on. An agent on one of them takes no `temperature` and no `vad_*` settings, and cannot be a flow agent, so skip Step 1.6 for it.
+
 ### Step 1.6 — VAD Presets
 
 Use the right preset for the call type. See Appendix B for values.
@@ -1981,9 +1983,13 @@ Adapt language for non-technical users:
 | Sales / outbound | Yael, Anat | Gil, Nir |
 | Medical / professional | Avigail, Tamar | Yosef, Shlomo |
 
-**Full catalog (30 voices):**
+**Full standard catalog (30 voices):**
 - Female (14): Michal, Rachel, Noa, Maya, Shira, Avigail, Liat, Tamar, Yael, Dvora, Shir, Anat, Dana, Ruth
 - Male (16): Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi, Shlomo, Alon, Yuval
+
+**Expressive family (8 voices, opt-in per workspace):** Keren (f, precise), Eitan (m, composed), Hila (f, sunny), Ido (m, agile), Boaz (m, calm), Tali (f, soothing), Erez (m, solid), Efrat (f, steady).
+
+Wider emotional range and more natural interruption handling. The voice name is the only selector — there is no engine field, and naming one of these on `PATCH /agents/:id` moves the agent onto that family (losslessly; patching a standard voice back restores the original). They reject `temperature` and the three `vad_*` settings, and are not available on flow agents. Where the family is not switched on for the workspace, the name is rejected with a `400` listing the voices that workspace may use — treat that as the answer, not as an error to retry. Full reference: `yappr-api.md` → Voice Catalog.
 
 **Recommended pick:** `Michal` when use case is unclear. Match gender to the agent's persona in the system prompt. Always set `voice` explicitly in the create payload — the server-side fallback for an omitted voice is `Rachel`, not Michal.
 
@@ -2015,7 +2021,9 @@ VAD (Voice Activity Detection) controls when the agent considers the caller done
 - "Agent triggers on background noise" → increase `vad_confidence` and/or `vad_start_secs`
 - "Agent doesn't hear short responses" → decrease `vad_confidence` or `vad_start_secs`
 
-**Architecture note:** The Yappr voice engine runs two VAD layers simultaneously. Platform VAD must always remain enabled — it's what lets the AI hear the audio stream. The three parameters above only affect the local Silero VAD layer used for pipeline-level turn-taking. Do not attempt to disable Platform VAD.
+**Architecture note:** On a standard-family voice the platform runs two turn-taking layers at once. Platform VAD must always remain enabled — it's what lets the AI hear the audio stream. The three parameters above only affect the local layer used for pipeline-level turn-taking. Do not attempt to disable Platform VAD.
+
+**This whole appendix does not apply to the expressive family.** Those eight voices (Appendix A) do their own turn-taking, so `vad_stop_secs`, `vad_start_secs`, `vad_confidence` and `temperature` are rejected with a `400` rather than stored. If a customer on an expressive voice reports "the agent cuts me off" or "the agent is slow to respond", there is no setting to tune — the answer is prompt work, or moving the agent to a standard voice where these presets exist. `silence_timeout_secs` and the Appendix C call guards DO still apply on both families.
 
 ---
 
