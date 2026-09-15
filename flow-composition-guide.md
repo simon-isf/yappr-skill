@@ -92,7 +92,7 @@ Both are "atomic call actions" that are configurable two ways depending on the a
 |---|---|---|
 | Trigger | LLM **decides** to call the system tool | Flow **routes** to the node |
 | Configure via | `tools` table (system tool with `handler: "transfer_call"` or `"end_call"`) | The Transfer / End node itself |
-| Same runtime? | Yes — both call into bot.py's `SYSTEM_TOOL_HANDLERS` | Yes |
+| Same runtime? | Yes — both run through the same voice runtime | Yes |
 
 You don't mix these. A flow agent cannot have the LLM decide to end mid-conversation — there are no LLM-callable tools in conversation nodes. Instead, add a transition like "Caller wants to end the call" → routes to an End node.
 

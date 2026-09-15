@@ -89,7 +89,7 @@ done
 
 All three (booking-google-calendar.json, lead-qualification.json, rsvp.json) must parse as valid JSON.
 
-For server-side schema validation, use the api-v1 endpoint:
+For server-side schema validation, use the hosted validation endpoint:
 
 ```bash
 curl -X POST "https://api.goyappr.com/agents/<existing-flow-agent>/flow/test" \

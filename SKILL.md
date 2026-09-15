@@ -443,7 +443,7 @@ Use `{{VariableName}}` syntax directly in the system prompt. Variables are subst
 | `{{CallDirection}}` | `"inbound"`, `"outbound"`, or `"web_call"` |
 | `{{Timezone}}` | Company's configured timezone |
 
-**Custom variables:** any `{{VariableName}}` you add to the prompt. Must be supplied in the `variables` dict when creating the call (`POST /api-v1/calls`). See Appendix D for the pre-fetch pattern.
+**Custom variables:** any `{{VariableName}}` you add to the prompt. Must be supplied in the `variables` dict when creating the call (`POST /calls`). See Appendix D for the pre-fetch pattern.
 
 **When to use variables vs. tools:**
 
@@ -850,7 +850,7 @@ How calls get initiated. Choose the right pattern based on the user's lead sourc
 
 **Pattern 1: Direct API**
 Best for: low volume, ad-hoc calls, testing, simple automation.
-The caller calls `POST /api-v1/calls` directly from their server, script, or automation.
+The caller calls `POST /calls` directly from their server, script, or automation.
 
 ```bash
 CALL_REQUEST_ID="$(uuidgen)"
@@ -886,7 +886,7 @@ A `call_queue` table in Supabase holds pending calls. A cron job or edge functio
 // 1. Fetch pending leads from queue
 // 2. For each lead, fetch pre-call data (calendar slots, CRM context)
 // 3. Format variables
-// 4. POST /api-v1/calls with variables injected and the stable queue-row ID as Idempotency-Key
+// 4. POST /calls with variables injected and the stable queue-row ID as Idempotency-Key
 // 5. Mark lead as dispatched in queue
 ```
 
@@ -950,7 +950,7 @@ What happens after a call ends. Configure this based on per-disposition routing 
 
 ### Layer 1 — Webhook Event Guide
 
-Configure the agent's `webhook_url` and `webhook_events` (via PATCH /api-v1/agents/:id or at creation time).
+Configure the agent's `webhook_url` and `webhook_events` (via PATCH /agents/:id or at creation time).
 
 **Event reference:**
 
@@ -974,15 +974,15 @@ The event body is `{ event, timestamp, agent_id, company_id, call_id, data: {...
 
 > **WARNING:** The `call.analyzed` payload is minimal. It does NOT include:
 > - The lead object (name, tags, history, metadata)
-> - Metadata passed at call creation time (`metadata` field from POST /api-v1/calls)
+> - Metadata passed at call creation time (`metadata` field from POST /calls)
 > - Cost data
 > - The full disposition object — only the label string is included, and it may be `null` if AI classification failed
 >
-> **To get the full call record** including resolved lead, full disposition object, and all metadata: `GET /api-v1/calls/:id` after receiving the webhook.
+> **To get the full call record** including resolved lead, full disposition object, and all metadata: `GET /calls/:id` after receiving the webhook.
 >
 > **Pattern for needing the lead's name in a post-call WhatsApp:**
-> - Option A: pass `"name": "ישראל כהן"` in `metadata` when creating the call → read from webhook's call record after fetching `GET /api-v1/calls/:id`
-> - Option B: fetch `GET /api-v1/calls/:id` immediately after receiving the webhook — the response includes the full lead object
+> - Option A: pass `"name": "ישראל כהן"` in `metadata` when creating the call → read from webhook's call record after fetching `GET /calls/:id`
+> - Option B: fetch `GET /calls/:id` immediately after receiving the webhook — the response includes the full lead object
 
 ### Step 4.1 — Disposition Routing Architecture
 
@@ -2073,7 +2073,7 @@ Pre-fetch data before calling the Yappr API, inject as variables. This reduces i
 
 ```
 How it works:
-1. dispatch-calls.ts fetches data BEFORE calling POST /api-v1/calls
+1. dispatch-calls.ts fetches data BEFORE calling POST /calls
 2. Data is formatted as a string and passed in the variables dict
 3. Variables are substituted into the system prompt before the call starts
 4. Agent uses pre-loaded data from the prompt; tool is only called as fallback

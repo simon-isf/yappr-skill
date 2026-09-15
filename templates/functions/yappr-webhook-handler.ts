@@ -55,7 +55,7 @@ async function fetchYapprCall(callId: string): Promise<Record<string, unknown> |
 
 // ── DISPOSITION HANDLERS ─────────────────────────────────────────────────────
 // Customize these based on your use case.
-// callData = full call object from GET /api-v1/calls/:id (has lead, disposition, transcript, summary)
+// callData = full call object from GET /calls/:id (has lead, disposition, transcript, summary)
 // webhookData = raw webhook payload (minimal: direction, status, phone numbers, disposition label)
 
 async function handleAppointmentSet(callData: Record<string, unknown>, supabase: ReturnType<typeof createClient>) {
