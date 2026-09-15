@@ -249,7 +249,7 @@ Ask these in a natural conversation, not as a form. Group related questions. Ada
 10. What scheduling system, if any? (Google Calendar / Calendly / Cal.com / Monday / custom API / none)
 11. What other systems need updating after calls? (HubSpot / Monday / Pipedrive / Google Sheets / none)
 12. Post-call messaging? (WhatsApp via Green API / email / none)
-13. Do you have a Supabase project? (if yes: URL, anon key, service key — needed for call queue and edge function templates)
+13. Where will you host the webhook receivers and call-queue jobs? (any server or serverless runtime works; the templates are written for Deno/Supabase). Never collect keys or secrets in chat — the customer sets them in their own environment.
 
 **Lead intake:**
 14. Where do leads come from? (Facebook Lead Ads / website form / CRM export / automation platform / manual)
