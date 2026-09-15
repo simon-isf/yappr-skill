@@ -353,7 +353,10 @@ revision — anything else is `422 WORKFLOW_TOOL_IMPORT_REQUIRED`. Revisions are
 a workflow that already pinned an earlier revision keeps it until it is published again.
 
 Keys contain 16–128 letters, digits, `_` or `-`. Preserve the identical accepted body
-and key after a lost response; changed content conflicts with `409`. Poll the returned
+and key after a lost response; reusing a key with changed content is
+`409 WORKFLOW_TOOL_IDEMPOTENCY_CONFLICT`. A stale `expected_head_revision_id` /
+`expected_head_generation` pair on `PATCH /tools/{id}` is `409 WORKFLOW_TOOL_CONFLICT`
+and saves nothing — re-read `GET /tools/{id}` and send its current pair. Poll the returned
 tool identity until materialization is terminal. A pending request is not a duplicate
 creation opportunity. Invalid contracts return `422`; unavailable control returns
 `503`, never permission to switch to legacy tooling. Accepted changes are at most
@@ -1319,8 +1322,9 @@ handed back before dialling.
 Send an `Idempotency-Key` of 1–200 printable characters. An identical retry returns the
 original acceptance instead of placing a second call; reusing the key with different
 details is `409 WORKFLOW_IDEMPOTENCY_CONFLICT`. Workflow admission rejects any property
-outside `agent_id`, `to`, `from`, `variables`, `metadata` and `workflow_revision_id` with
-`422 WORKFLOW_REQUEST_INVALID`. `409 WORKFLOW_UNPUBLISHED` means publish the agent first.
+outside `agent_id`, `to`, `from`, `variables`, `metadata`, `workflow_revision_id` and
+`type` with `422 WORKFLOW_REQUEST_INVALID`; `type` is optional and its only accepted
+value is `"phone"`. `409 WORKFLOW_UNPUBLISHED` means publish the agent first.
 `503 WORKFLOW_ADMISSION_UNAVAILABLE` means **no call was placed** — retry the same body
 with the same key.
 
