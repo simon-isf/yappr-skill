@@ -1336,13 +1336,14 @@ Tell them apart by the fields, not by `status`:
 | Returned to the queue | no `id` at all — `status`, `message` and a short `reason` only | Prepared and handed back before dialling; it is retried automatically. Never resend it yourself. |
 
 Send an `Idempotency-Key` of 1–200 visible ASCII characters (`!` through `~`; a space is
-rejected). An identical retry returns the original acceptance instead of placing a second
-call; reusing the key with different details is `409 WORKFLOW_IDEMPOTENCY_CONFLICT`. Workflow admission rejects any property
-outside `agent_id`, `to`, `from`, `variables`, `metadata`, `workflow_revision_id` and
-`type` with `422 WORKFLOW_REQUEST_INVALID`; `type` is optional and its only accepted
-value is `"phone"`. `409 WORKFLOW_UNPUBLISHED` means publish the agent first.
-`503 WORKFLOW_ADMISSION_UNAVAILABLE` means **no call was placed** — retry the same body
-with the same key.
+rejected) — that charset is checked on every outbound call, whatever kind of agent it
+names. An identical retry returns the original acceptance instead of placing a second
+call; reusing the key with different details is `409 WORKFLOW_IDEMPOTENCY_CONFLICT`.
+Workflow admission rejects any property outside `agent_id`, `to`, `from`, `variables`,
+`metadata`, `workflow_revision_id` and `type` with `422 WORKFLOW_REQUEST_INVALID`; `type`
+is optional and its only accepted value is `"phone"`. `409 WORKFLOW_UNPUBLISHED` means
+publish the agent first. `503 WORKFLOW_ADMISSION_UNAVAILABLE` means **no call was placed**
+— retry the same body with the same key.
 
 **`from` is a per-call override, not a fixed binding.** Any active number in the company can be paired with any agent on any outbound call. The `outbound_agent_id` configured on a phone number (via `POST /phone-numbers/configure`) only sets the dashboard's default and does not constrain the API — callers choose `agent_id` + `from` independently per request. This means one number can serve many agents; purchasing a separate number per agent is unnecessary for outbound.
 
@@ -3103,7 +3104,7 @@ Poll the exact attempt with increasing intervals, bounded by `expires_at`. Stop 
 
 Safe read DTOs expose only local Yappr IDs, toolkit, label, verified provider identity when available, readiness, decimal-string `binding_revision`/`authorization_epoch`, disconnect progress and timestamps. Replacement increments immutable identity and authorization generations for future bindings; pinned work never silently changes accounts. Disconnect blocks new actions immediately, while already sent actions may finish. `manual_revocation_required` means a human should remove access in the provider account settings. Connection deletion is not proof that a grant was revoked.
 
-`400` covers malformed/foreign cursors and invalid fields, `401` invalid or insufficiently scoped API keys, `404` missing/cross-company resources, `409` active/closed/ambiguous authorization state, `429` bounded start limits, and `503` unavailable control/storage. These routes pass the connection service's body and status through unchanged, so besides the `CONNECTION_*` codes a code prefixed `BROKER_` can arrive, always with `503`: retry the same request, and if it persists start a fresh connection rather than looping. Treat any unfamiliar code by its status; the forwarded names are not a contract. Error messages never echo submitted credentials. Legacy `DELETE /integrations/{id}` retains its separate `204` contract during migration.
+`400` covers malformed/foreign cursors and invalid fields, `401` invalid or insufficiently scoped API keys, `404` missing/cross-company resources, `409` active/closed/ambiguous authorization state, `429` bounded start limits, and `503` unavailable control/storage. These routes pass the connection service's body and status through unchanged, so besides the `CONNECTION_*` codes a code this reference does not list can arrive, at one of the statuses above. Treat it by its status, never by its name: on `503`, retry the same request, and if it persists start a fresh connection rather than looping. The forwarded names are not a contract. Error messages never echo submitted credentials. Legacy `DELETE /integrations/{id}` retains its separate `204` contract during migration.
 
 ## GET /integrations
 
