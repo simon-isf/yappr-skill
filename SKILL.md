@@ -187,6 +187,34 @@ working once placement has been claimed. Pin a batch to one tested published ver
 with `workflow_revision_id` when a mid-batch publication would change behaviour. See
 **Call requests** in `yappr-api.md`.
 
+### Duplicating an agent to A/B test a change
+
+The house shape for "I found a setup that works, let me try a variation without
+touching it": duplicate → edit the copy → publish → route a number or a split to
+it.
+
+Read the source agent first — its settings and its current draft — so you know
+what the copy inherits before you make it. Duplicate with
+`POST /agents/{id}/duplicate` and an `Idempotency-Key`, sending only the fields
+you want to override (usually just `name`); everything else, including the
+workflow document and its tool bindings, comes from the source. The copy answers
+no calls yet: it is created both unpublished and switched off, on purpose, so a
+copy can never quietly start taking traffic.
+
+Change what you actually want to test on the copy — a prompt line, a voice, a
+step in the workflow — then publish it explicitly, the same as any other agent.
+An unpublished copy is not "receiving less traffic"; it is receiving none.
+
+Never re-POST `/agents/{id}/duplicate` without reusing the same `Idempotency-Key`
+across a retry: a new key makes a second, independent copy, not a fixed version
+of the first. And a copy is not isolated from its source's tools — its bindings
+pin the exact tool revisions the source uses, so archiving one affects both
+agents.
+
+Full field-by-field detail — what is copied, what is deliberately skipped, the
+tool-reference-invalid case, idempotency scoping — is in
+**POST /agents/:id/duplicate** in `yappr-api.md`.
+
 ### There is one kind of agent
 
 **A new agent is a workflow agent, and nothing else can be created.** `POST /agents` takes

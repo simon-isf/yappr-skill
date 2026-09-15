@@ -207,6 +207,58 @@ replay.
 
 ---
 
+### POST /agents/:id/duplicate
+
+Copy an existing agent: its ordinary settings (voice, engine and engine_voice
+together, VAD, timeouts, background sound, extraction parameters, and the rest) and
+its current **draft** workflow document — bindings, positions, everything — become
+one new agent. The body, or no body at all, is optional; `{"name":"...","description":"...","language":"he"}`
+are the only fields accepted, all optional. `name` defaults to `"<source name> (copy)"`,
+or the Hebrew equivalent when the copy's language is `he`; omitting `description` or
+`language` copies the source's own value, and sending `description: null` clears it on
+the copy. An `Idempotency-Key` header (16–128 letters, digits, `_` or `-`) is required,
+exactly as on create.
+
+The copy is created **unpublished** (`published_workflow_revision_id: null`) and
+**switched off** (`is_active: false`) — two independent reasons it takes no calls the
+moment it exists. Publish it yourself with the workflow endpoints, same as any other
+new agent; duplicating never publishes.
+
+The copy's workflow bindings keep the source's exact `tool_revision_id` pins, so the
+copy shares its source's tools rather than getting new ones. This is deliberate, and
+it has a consequence worth knowing: archiving a tool later breaks both agents
+together, not just the one you meant to change.
+
+**Not copied — the phone side.** No phone number or SIP endpoint is repointed at the
+copy, and no shared web-call link is minted for it. A copy answers nothing until you
+configure that yourself with `POST /phone-numbers/configure` or a split.
+
+**Not copied — history.** Call logs, workflow revisions, eval suites and any
+in-flight settings promotion all start empty; the copy has zero revisions.
+
+The `Idempotency-Key` is scoped to this company, this endpoint, **and the source
+agent id**: the same key replayed against the same source returns the original copy
+with `200`. The same key aimed at a different source, or one already spent on
+`POST /agents`, is `409 AGENT_IDEMPOTENCY_CONFLICT` — never a silent replay of the
+wrong copy. If the copy that key made has since been archived or removed, the key
+cannot be reused (`410 AGENT_CREATION_GONE`); use a new key to make another copy.
+
+If the source's workflow binds a tool that no longer resolves — deleted or
+archived since the source last saved — the duplicate fails loudly instead of
+producing a copy nobody can publish: `409 WORKFLOW_REFERENCE_INVALID`, nothing
+written. Restore or remove the tool on the **source**, then duplicate again.
+
+**Scopes:** `agents:create` — duplicating adds an agent to the workspace, so a
+read-only key cannot do it.
+
+**Request body:** Optional `name`, `description`, `language`. Nothing else is
+accepted.
+
+**Response:** `201` — the copy, in the same shape `POST /agents` returns. `200` on
+an idempotent replay.
+
+---
+
 ### PATCH /agents/:id
 
 Update any subset of agent fields. Only include fields that should change.
