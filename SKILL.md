@@ -42,6 +42,33 @@ Read ordinary settings with `GET /agents/:id/settings`; preserve its exact
 analysis settings through legacy graph fields, and never treat a successful save
 as proof that a real call or provider connection is ready.
 
+### What each phase actually runs
+
+Before, During and After are not three lists that run "around" the call; each has its
+own contract and the author needs it stated before they place a step.
+
+**Before** runs before the caller and the agent are connected. On an inbound call it
+runs after the call arrives and before it is answered, inside a short platform window —
+30 seconds at most today — and the caller hears ringing until it finishes. On an
+outbound call it runs before the dial, inside five minutes. `before.on_failure`
+decides what an over-run or a failure means: `continue_with_available` answers or dials
+with whatever Before produced, `stop_admission` declines the inbound caller outright.
+Keep Before to what the agent must know in order to open its mouth; chaining several
+tools that may each take the full tool timeout will not fit an inbound window.
+
+**During** is the conversation, and it ends on *any* ending, a caller hangup included.
+When the caller hangs up the conversation stops immediately, actions already in flight
+finish and record their result, nothing new is dispatched, and the phase is over. Do not
+design a During step that assumes the caller is still there when it returns.
+
+**After** runs for the ending that actually happened. A trigger matches its event
+exactly, so a follow-up on `call.ended` does not run for `call.no_answer`. A
+`<artifact>.ready` event — transcript, recording, analysis, lead, billing — fires when
+that producer settles, whatever its status, so a call nobody answered still opens its
+After phase; a step that `requires` an artifact that settled without being produced is
+blocked, and stops the phase if its failure policy says stop. Prefer one trigger per
+ending you actually handle over one trigger that assumes the happy path.
+
 ### Unified Tools journey
 
 For workflow-owned agents, use the **Unified versioned Tools** contract in
@@ -81,6 +108,30 @@ The prompt/flow decision and Phase 1A/1B instructions below describe existing le
 cohorts during migration only. Do not mix their graph, tool-attachment or test-runner
 contracts with a workflow-owned agent. Detect the server-returned execution_version;
 never write it or silently move an existing agent between execution owners.
+
+### A sequence that checks before it acts
+
+The pattern most accounts want first: look something up, then do different work
+depending on what came back, in one sequence rather than three conversation nodes.
+
+Take availability-then-book. Step `check` calls the availability tool. Step `book`
+carries `"when": {"kind":"compare","source":{"kind":"step","scope":"local","step_id":"check","path":"/slots"},"op":"is_not_empty"}`
+and `"depends_on": ["check"]`, so it runs only when something came back. Step `book`
+also carries `"on_succeeded": "#end"`, which finishes the sequence the moment the
+booking lands. Step `offer_callback` carries the mirror condition — the same source
+with `is_empty` — and takes the other path.
+
+Two rules decide whether it publishes. The sequence's public output is mapped from
+whichever step actually ran, and both of those steps can be skipped, so every required
+output field mapped from them needs a declared `fallback` or must be optional —
+otherwise publication fails with `branch_dependent_source`. And a step that reads
+another step's output must be downstream of it, by `depends_on` or by a route;
+otherwise `input_dependency`. Both are publish-time, so check the draft before you
+promise the customer a call: `POST /agents/:id/workflow/validate` returns the exact
+JSON pointer of the step or condition part to change.
+
+See **Branching inside a sequence** in `yappr-api.md` for the full grammar, the
+operator rules and every issue code.
 
 ### Calling a workflow agent
 

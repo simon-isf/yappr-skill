@@ -262,6 +262,59 @@ expose private children independently or recursively nest sequences. Request sch
 and stored-context schema are distinct; schemas are not runtime values. Missing
 references may use an explicit typed fallback, including false, zero or null.
 
+**Branching inside a sequence.** A sequence step may carry a `when` condition and
+route its outcome with `on_succeeded` / `on_failed`. Conditions are declarative data;
+no expression is evaluated and no customer code is run.
+
+A condition is `{"kind":"compare","source":{…},"op":"…","value":{…}}`, or
+`{"kind":"all_of","conditions":[…]}`, `{"kind":"any_of","conditions":[…]}` (1-16 each)
+or `{"kind":"not","condition":{…}}`. At most four nested levels — three wrappers around
+a comparison — and at most 32 parts in total. Both `source` and `value` are input
+sources limited to the kinds that read already-frozen data: `literal`, `request`,
+`stored`, `sequence`, `step`. Live model arguments and produced call artifacts are not
+readable in a condition.
+
+Operators: `exists`, `not_exists`, `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `contains`,
+`not_contains`, `in`, `not_in`, `is_true`, `is_false`, `is_empty`, `is_not_empty`. The
+six unary ones — `exists`, `not_exists`, `is_true`, `is_false`, `is_empty`,
+`is_not_empty` — take no `value`; every other operator requires one. Nothing is
+coerced: `"1"` is never `1`, while `1` and `1.0` are the same number. Ordering is
+numbers only and a boolean is not a number. `in`/`not_in` need a list on the `value`
+side. `contains` is text inside text, or a list holding that exact value. `is_empty`
+and `is_not_empty` apply to text, lists and objects, so a JSON `null` answers false to
+both — test for it with `eq` against `{"kind":"literal","value":null}`. `exists` is
+presence, and a source that declares a `fallback` always resolves, so it always exists.
+
+`on_succeeded`/`on_failed` name another step of the same sequence or `"#end"`.
+`on_failed` requires `"on_failure": "continue"` on that step. Nothing may route back to
+the sequence's first step, and dependencies and routes together must be acyclic. A
+sequence that declares any condition or route runs endpoint and connected-app steps
+only — keep transfers outside it. A sequence with no condition and no route behaves
+exactly as it did before.
+
+A step whose condition is false is skipped: never dispatched, no attempt, no result.
+So is a step that depends on a skipped one, and a step only a route could have started
+when no route reached it. `"#end"` finishes the sequence and skips whatever is still
+outstanding. The run carries on without the skipped step. Read a value from a step that
+may be skipped only through a source that declares a `fallback`, and map a required
+sequence output from such a step only with a `fallback` — otherwise make it optional.
+
+Publish-time `issues[]` codes, each with the JSON pointer of what to change:
+`sequence_route_target` (route names a step outside this sequence),
+`entry_step_routed` (route points back at the first step),
+`sequence_cycle` (dependencies and routes form a loop),
+`failure_route_conflict` (`on_failed` while `on_failure` is `stop`),
+`condition_depth`, `condition_size`,
+`condition_value_required` / `condition_value_unexpected` (operator does or does not
+compare against a value), `condition_value_type` (`in`/`not_in` need a list),
+`condition_type_mismatch` (declared types disagree, or the operator does not apply to
+the declared type), `branch_dependent_source` (branch value read with no fallback),
+`transfer_in_sequence`, and `input_dependency` (a step reads an output it is neither
+downstream of nor routed from). Branching advisories — an unreachable step, a condition
+that can never be true, a step depending on one that may be skipped, a condition
+reading a step allowed to fail and continue, a condition whose source declares no type
+— arrive as the generic `workflow_warning` and block nothing.
+
 Validation warnings are safe codes: `strict_off_guidance`,
 `during_output_advisory`, or generic `workflow_warning`. Never discard an unknown
 warning or treat advisory ordering as enforced execution. Explain a Strict change
