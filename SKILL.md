@@ -13,9 +13,7 @@ This skill takes a coding agent through building a complete, production-ready vo
 
 This skill is organized into phases. Work through them sequentially. Each phase's output feeds the next.
 
-**Before writing any code or making any API call**, run Phase 0 discovery — query the live account and ask the user the questions. The answers determine everything that follows.
-
-**Then, before the prompt-vs-flow decision, run the [create-vs-edit gate](#decision-new-build-or-change-to-an-existing-system).** If the request is to change something that already exists, you edit it (GET + PATCH) — you do NOT create a new one. This is the single most important rule in the skill: POST is for new resources, PATCH is for changes. See also [Managing Existing Resources](#managing-existing-resources).
+**The create-vs-edit gate comes first.** If the request is to change something that already exists, you edit it (GET + PATCH) — you do NOT create a new one. This is the single most important rule in the skill: POST is for new resources, PATCH is for changes. See also [Managing Existing Resources](#managing-existing-resources).
 
 ### Decision: new build OR change to an existing system
 
@@ -26,6 +24,8 @@ This skill is organized into phases. Work through them sequentially. Each phase'
 - Editing is addressed strictly by id. The id comes from Phase 0 (never ask the user for it). If you don't have it yet, run Phase 0 discovery first, then re-check this gate.
 
 > **POST creates a NEW resource every time** (except an exact idempotency-key replay, which returns the OLD row **unchanged** with HTTP 200 — see the [idempotency note](#idempotency_key-is-not-an-upsert)). POST is **NOT** an upsert. "Update the agent" + POST = a duplicate agent. To change an existing resource, use **PATCH**.
+
+**Before writing any code or making any API call**, run Phase 0 discovery — query the live account and ask the user the questions. The answers determine everything that follows.
 
 ### Decision: prompt agent OR flow agent
 
