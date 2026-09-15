@@ -15,7 +15,65 @@ This skill is organized into phases. Work through them sequentially. Each phase'
 
 **Before writing any code or making any API call**, run Phase 0 discovery — query the live account and ask the user the questions. The answers determine everything that follows.
 
-### Decision: prompt agent OR flow agent
+### Unified draft creation and legacy migration boundary
+
+For an account using the unified workflow cohort, do not ask the user to choose an
+immutable prompt/flow type. Follow discovery, then POST /agents with name and an
+explicit workflow starter as documented in yappr-api.md. Keep an Idempotency-Key
+across identical retries; never retry via legacy creation after an error. Read the
+server-owned draft, edit Before/During/After, and explicitly Save/validate/publish.
+Strict Mode starts off. Creation/publication alone does not establish runtime readiness
+or authorize test calls. Archive is distinct from reversible deactivation.
+
+Use the **Canonical workflow authoring** reference in `yappr-api.md` for the full
+document and safe tool catalog. Preserve exact JSON numbers and explicit false,
+zero, null and missing values. Request/stored schemas describe separate input
+sources; they do not themselves store runtime input. Sequence children are private
+tool DAG steps with explicit dependencies, not grouped conversations or recursively
+nested sequences. Intrinsic End stays outside the tool catalog.
+
+Read, Save, Check and Publish are distinct operations. Carry the original draft
+version through each write; review a conflict instead of silently re-reading and
+overwriting. Explain Strict-mode semantic changes before publication: with Strict
+off, conversational route/order/availability are guidance, but explicit sequence
+dependencies remain enforced. Accepted runs retain their frozen published artifact.
+Read ordinary settings with `GET /agents/:id/settings`; preserve its exact
+`updated_at` as `expected_updated_at` on settings PATCH. Never route voice or
+analysis settings through legacy graph fields, and never treat a successful save
+as proof that a real call or provider connection is ready.
+
+### Unified Tools journey
+
+For workflow-owned agents, use the **Unified versioned Tools** contract in
+`yappr-api.md`: HTTP endpoints, connected-app actions and separately named transfers
+share the same tool registry and builder picker. Intrinsic End is not a tool. Do not
+attach them through legacy `agent_tools`, graph overrides or the legacy direct tester.
+
+Discover apps with `GET /tool-apps`, resolve an explicit dated action version, and read
+its complete input/output schemas and eligibility before creating an app tool. Bind a
+ready, explicitly labeled company account and only supported typed fixed fields. A
+catalog listing does not prove authorization or supported execution semantics. Use
+`GET /tool-apps/connection-options` for authentication-ready choices; send an expiring
+connection handoff only to the intended human, never into voice prompts or call logs.
+
+Create with an Idempotency-Key, then poll the returned tool until materialization
+finishes. Updates create immutable candidates: preserve the old head until all affected
+follow-current workflows validate. Explicit pins and accepted runs stay fixed. Omit
+private URL/headers to retain them; never save a sanitized display URL as an endpoint.
+
+Start standalone tests with mock policy by default, representative typed input and a
+fresh Idempotency-Key. Poll the exact tool/test; retain the key/body after a lost
+response. An allowlisted test requires authorization for that saved binding's real
+effect. Unknown outcomes require reconciliation, not automatic repetition. Transfer
+tests are mock-only and confer no live-call authority. Unavailable services do not
+authorize a legacy fallback or a real call; observe the deployment's readiness gates.
+
+The prompt/flow decision and Phase 1A/1B instructions below describe existing legacy
+cohorts during migration only. Do not mix their graph, tool-attachment or test-runner
+contracts with a workflow-owned agent. Detect the server-returned execution_version;
+never write it or silently move an existing agent between execution owners.
+
+### Legacy decision: prompt agent OR flow agent
 
 Yappr supports **two agent types**. Pick one before Phase 1 — agent type is set at create time and cannot be changed (the API will reject any attempt to flip it).
 
@@ -554,7 +612,9 @@ For escape hatches that should be reachable from any step (transfer-to-human, en
 
 ### Step 1B.3 — Connect Google Calendar (if scheduling is involved)
 
-OAuth-backed integrations are the v1 way to give agents access to scheduling. The OAuth handshake (popup → Google consent → callback) is **dashboard-only** — the human onboarding the company connects each Google account once via the Yappr dashboard's Integrations page. The public API exposes list (`GET /integrations`) and revoke (`DELETE /integrations/:id`) but not connect. Once connected, capture the credential's `id` from `GET /integrations` and plug it into an `integration_call` node's `integration_id`. See [`integrations-guide.md`](integrations-guide.md) for the full lifecycle.
+For deployments with workspace connected accounts enabled, use the **Connected accounts** journey in [`yappr-api.md`](yappr-api.md). Discover configured apps with `GET /tool-apps/connection-options`, create an explicitly labeled account with `POST /tool-connections`, and give the expiring Yappr handoff to an authorized human. An API key cannot provide OAuth consent. Poll the exact returned auth-attempt ID with bounded backoff; `completed` authorization is distinct from `connection.state: ready`. Keep provider IDs, OAuth state and handoff capabilities out of tools, prompts, call history and logs. Replacement is explicit and applies to future bindings; disconnect blocks new actions without pretending to revoke every provider grant.
+
+Native OAuth integrations remain available during their audited migration. Existing `GET /integrations` and `DELETE /integrations/:id` keep their documented scopes and response contract; their IDs do not become new connection IDs without a published mapping. The compatible dashboard URL leads into Tools' existing-connections view. Do not fall back to native dispatch when a new connection fails. See [`integrations-guide.md`](integrations-guide.md) for the legacy flow lifecycle.
 
 ### Step 1B.4 — Create the agent via API
 
@@ -585,6 +645,10 @@ To add a tool to a flow: create the tool via `POST /tools` (same as Phase 2.1), 
 ---
 
 ## PHASE 2: Tooling
+
+This phase's webhook implementation and attachment instructions are the temporary
+legacy cohort path. Workflow-owned agents use the Unified Tools journey above, with
+explicit versioned bindings and publication; never substitute this direct-dispatch path.
 
 > **Flow agents (`agent_type: flow`)**: skip this phase. Your tools live inside `flow_config.nodes[].tool_id` references — see [`flow-composition-guide.md`](flow-composition-guide.md). The `tools` table itself is still the source of truth (one row per tool, reusable), but you never call `POST /tools/attach` for flow agents.
 

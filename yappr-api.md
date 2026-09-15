@@ -152,7 +152,30 @@ Fetch complete config of a single agent.
 
 ### POST /agents
 
-Create a new agent.
+For the unified workflow cohort, create one unpublished draft using
+`{"name":"Reception assistant","language":"en","workflow":{"global_instructions":"Help callers with their questions."}}`
+and an `Idempotency-Key` header (16–128 letters, digits, `_` or `-`). Only name,
+description (optional, up to 2,000 characters), language (`he` default or `en`) and
+workflow.global_instructions (optional, up to 100,000 characters) are accepted in
+this branch. Name is trimmed and limited to 200 characters. IDs, name on the canonical
+workflow, and execution ownership are assigned by Yappr; never send execution_version,
+publication pointers, legacy type/flow_config/system_prompt, or caller-owned IDs.
+
+The response has the standard Agent fields plus read-only execution_version and
+published_workflow_revision_id. Draft creation returns 201; an identical normalized
+request replay returns 200 with the same agent. Retry a lost response with the same
+key and body. Changed details under that key return 409 AGENT_IDEMPOTENCY_CONFLICT;
+archived/missing original returns 410 AGENT_CREATION_GONE and is never recreated.
+A merely disabled original returns 200 without reactivation. Keys are scoped to the
+company and endpoint. Do not fall back to legacy creation after an error.
+
+Read `GET /agents/:id/workflow`, save `PUT /agents/:id/workflow` with expected_version
+and document, then explicitly validate/publish with `POST /agents/:id/workflow/validate`
+or `/publish` and the saved expected_version. Creation starts Strict Mode off with a
+valid closing route and empty Before/After phases; it does not publish or enable calls.
+
+The body below remains **temporary legacy migration compatibility**, not the unified
+New Agent flow. Existing deployed legacy cohorts continue using it until explicit cutover.
 
 **Scopes:** `agents:create`
 
@@ -189,6 +212,23 @@ Create a new agent.
 
 Update any subset of agent fields. Only include fields that should change.
 
+For `execution_version=workflow_v1`, only ordinary voice, technical and analysis
+settings are accepted. Read `GET /agents/:id/settings` (`agents:read`) for the safe
+settings projection and original `updated_at`. Send that exact timestamp as
+`expected_updated_at` on PATCH; stale tokens return 409 without changes. Public
+PATCH keeps optional-token partial-field compatibility, while dashboard/chat
+workflow edits require the original timestamp. Never silently re-read after a
+conflict and overwrite newer settings. Explicit false/zero/permitted null are
+preserved; the body budget is 600000 UTF-8 bytes.
+
+Settings do not accept prompt/graph/bindings/native-webhook configuration or
+publication/routing fields for a workflow owner. Saving uses the existing validated
+settings-snapshot promotion pipeline; accepted calls keep their immutable snapshot.
+Disabled unarchived agents remain editable, but editing does not reactivate them.
+GET Agent and PATCH keep the Agent compatibility shape: legacy prompt, flow graph
+and webhook URL are null; webhook headers/events and legacy tool attachments are
+empty. Read the canonical document, not those legacy slots.
+
 **Scopes:** `agents:update`
 
 **Request body:** Any subset of POST fields above.
@@ -197,9 +237,48 @@ Update any subset of agent fields. Only include fields that should change.
 
 ---
 
+### Canonical workflow authoring
+
+| Endpoint | Scope | Contract |
+|---|---|---|
+| `GET /agents/:id/workflow` | `agents:read` | Canonical draft, original draft version, and separate published pointer. No mutation. |
+| `PUT /agents/:id/workflow` | `agents:update` | `{expected_version, document}`; compare-and-swap Save only. |
+| `POST /agents/:id/workflow/validate` | `agents:update` | `{expected_version}`; check the saved draft without saving or publishing. |
+| `POST /agents/:id/workflow/publish` | `agents:update` | `{expected_version}`; explicit publication after the canonical validator and freshness checks. |
+| `GET /agents/:id/workflow/versions` | `agents:read` | Immutable publication summaries, with optional numeric cursor. |
+| `GET /tools/workflow-catalog` | `tools:read` | Safe versioned builder choices, full typed input/output schemas; limit 1–50, opaque cursor, up to 10 exact revision_ids. |
+| `GET /agents/:id/settings` | `agents:read` | Ordinary settings and original updated_at; no native secret configuration or document. |
+
+The public OpenAPI `WorkflowDocument` schema is the complete canonical v1 document;
+do not invent node or mapping shapes. The JSON request budget is 600000 UTF-8 bytes,
+and stored documents have a 512 KiB budget. Preserve large integers/precise decimals
+with a lossless JSON codec rather than native floating-point parse/stringify.
+The chat builder uses a bounded `document_json` string at the model boundary and
+the same document/API/validator underneath; it is not a separate execution graph.
+
+Before/After dependencies and private sequence children are explicit. A sequence
+contains tool-only children and an explicit public output schema/mapping; never
+expose private children independently or recursively nest sequences. Request schema
+and stored-context schema are distinct; schemas are not runtime values. Missing
+references may use an explicit typed fallback, including false, zero or null.
+
+Validation warnings are safe codes: `strict_off_guidance`,
+`during_output_advisory`, or generic `workflow_warning`. Never discard an unknown
+warning or treat advisory ordering as enforced execution. Explain a Strict change
+before publishing; accepted runs keep their exact published artifacts. A 409 means
+review the saved version/dependency changes, not blindly fetch a fresh token and
+resend. `WORKFLOW_SETTINGS_TOO_LARGE` (413) leaves saved data intact and blocks
+publication until technical settings fit. No authoring endpoint starts a real call.
+
+---
+
 ### DELETE /agents/:id
 
-Deactivate (soft-delete) an agent. Sets `is_active: false`.
+For workflow-owned agents, archive and remove from ordinary lists while retaining
+workflow/run history. New calls are blocked; running calls are not aborted. PATCH
+cannot undo archival. Same-key creation replay returns 410. To pause reversibly,
+PATCH is_active=false; the agent stays visible and can be reactivated. Legacy Delete
+still soft-deactivates during migration.
 
 **Scopes:** `agents:update`
 
@@ -208,6 +287,111 @@ Deactivate (soft-delete) an agent. Sets `is_active: false`.
 ---
 
 ## Tools
+
+### Unified versioned Tools
+
+The explicit `workflow` variant creates reusable HTTP, connected-app and named transfer
+tools in one registry. It is distinct from the temporary legacy `type`/`config` bodies
+below. Send `x-company-id` for the chosen workspace on every dashboard mutation; API
+keys remain company-scoped. IDs, revision numbers and head generations are server-owned.
+
+| Endpoint | Scope | Workflow contract |
+| --- | --- | --- |
+| `GET /tools?workflow=true` | `tools:read` | Safe current/candidate projections, 1–50 records; opaque company/environment/limit-bound `cursor`. |
+| `GET /tools/{id}` | `tools:read` | Exact tool status, current revision and candidate/promotion state. No private HTTP headers or URL query values. |
+| `GET /tools/{id}/schema` | `tools:read` | Current typed input/output schemas; not a raw execution contract. |
+| `POST /tools` | `tools:create` | `{name, description?, workflow}` and mandatory `Idempotency-Key`; `201` materialized, `202` durably pending, `200` replay of a ready identity. |
+| `PATCH /tools/{id}` | `tools:update` | Full accepted definition plus `expected_head_revision_id` and numeric `expected_head_generation`, with an Idempotency-Key. Creates a candidate, never overwrites a frozen revision. |
+| `DELETE /tools/{id}` | `tools:delete` | Archives a workflow tool while retaining revisions/history; legacy deletion remains separate. |
+| `GET /tool-apps` | `tools:read` | Curated discovery page, not account readiness. Toolkit-list versions may be absent. |
+| `GET /tool-apps/{slug}` | `tools:read` | App detail and available dated versions. |
+| `GET /tool-apps/{slug}/actions?version=YYYYMMDD_NN` | `tools:read` | Version-specific action page; pass opaque cursors unchanged. |
+| `GET /tool-apps/{slug}/actions/{action}?version=YYYYMMDD_NN` | `tools:read` | Full authoritative input/output schemas, local metadata ID, scope alternatives and reviewed eligibility/fixed-field policy. `latest` is not a pin. |
+
+HTTP example (no request is dispatched by saving):
+
+```json
+{
+  "name": "Lookup order",
+  "workflow": {
+    "kind": "http",
+    "input_schema": {"type":"object","properties":{"order_id":{"type":"string"}},"required":["order_id"],"additionalProperties":false},
+    "output_schema": {"type":"object"},
+    "configuration": {"url":"https://example.com/orders","method":"POST","headers":{}},
+    "effect": "read",
+    "timeout_ms": 10000
+  }
+}
+```
+
+HTTP schemas are explicit; timeouts are 1–60,000 ms. App definitions use
+`{kind:"app", metadata_id, connection_id, fixed_inputs}`: select the exact ready local
+account and only policy-permitted typed fixed fields. The provider's full raw schema
+is validated after fixed-field composition; model/test arguments cannot override those
+fields or replace account/action/version. `required_scopes.all_of` requires every scope;
+each `any_of` group requires at least one alternative. Unsupported completion/file
+semantics fail visibly; a provider success flag does not prove remote jobs completed.
+Transfer definitions use `{kind:"transfer", destination, announce_transfer?,
+announce_message?}` with a fixed international number. Create a separate tool for each
+named destination; they are during-phone-only. Intrinsic End is not in this catalog.
+
+Keys contain 16–128 letters, digits, `_` or `-`. Preserve the identical accepted body
+and key after a lost response; changed content conflicts with `409`. Poll the returned
+tool identity until materialization is terminal. A pending request is not a duplicate
+creation opportunity. Invalid contracts return `422`; unavailable control returns
+`503`, never permission to switch to legacy tooling. Accepted changes are at most
+256 KiB. Preserve nested schemas, defaults, combinators and exact JSON numbers; use a
+lossless JSON client for values outside JavaScript's safe integer range.
+
+On HTTP updates, omit private `configuration.url`/`headers` to retain their exact saved
+values. Empty headers clear them. `url_display` is non-executable text: never put it
+back into `url`; an explicit URL replaces the entire value including legitimate query
+parameters. Promotion preserves the old head until every affected follow-current
+workflow validates and the complete affected set/freshness is rechecked atomically.
+Explicit pins and accepted runs stay unchanged. Each compile input has a 1 MiB technical
+budget; this is not a fanout cap. Failed/conflicting promotion makes no partial update.
+
+#### Standalone saved-tool tests
+
+| Endpoint | Scope | Contract |
+| --- | --- | --- |
+| `POST /tools/{id}/test` | `tools:update` | Mandatory Idempotency-Key; `202` shared-journal test admission. No agent/call is fabricated. |
+| `GET /tools/{id}/tests/{test_id}` | `tools:read` | `200` exact reauthorized test projection; a run ID grants no call-history access. |
+| `POST /tools/{id}/tests/{test_id}/cancel` | `tools:update` | `200` stops new dispatch, preserves history and already-started effects. |
+
+```json
+{"phase":"before","channel":"phone","inputs":{"order_id":"example-order"},"mock_output":{"found":true},"policy":"mock","allowed_binding_ids":[]}
+```
+
+Phase (`before|during|after`) and channel (`phone|web`) are required validation context,
+not live-call authority. Optional `revision_id` pins an exact revision of this tool;
+otherwise acceptance freezes the current head. Same-key replay retains that revision
+after head changes. Inputs are an object; mock output may be any schema-valid JSON.
+Mock is the default and makes no provider/HTTP request. Explicit `policy:"allowlist"`
+with `allowed_binding_ids:["test_tool"]` permits only this binding's effect through the
+common executor. Empty allowlists grant no effect; `real` is unsupported. Transfers are
+always mock-only and require during/phone context. Obtain authorization before choosing
+an effectful policy. The isolated test service currently supports local/testing only;
+unconfigured or unsupported environments fail with `503`.
+
+Requests are at most 512 KiB; inputs/mock output each at most 256 KiB. At most eight
+active unexpired tests per workspace; admission beyond that returns `429`. Malformed
+contracts return `422`; changed idempotent content `409`; missing/foreign resources or
+same-key replay by a different original author `404`; denied current workspace
+authority `403`. Other authorized workspace members may read/cancel a test with the
+appropriate tools scope. Poll with bounded backoff using the returned deadline.
+States are accepted, prepared, running, succeeded, failed, blocked, pending, unknown or
+cancelled. Treat unknown plus `resolution:manual_reconciliation_required` as no-retry:
+a late receipt can be shown without changing the settled status. Do not repeat an
+uncertain effect automatically. Public output is a bounded/redacted preview, not raw
+vendor evidence or reusable execution input; inspect `redaction`, `receipt_settled_test`
+and `resolution` alongside IDs/status. Fixed account, URL, action and destination remain
+immutable through testing. Tool tests and call tests are separate authorization subjects.
+
+### Temporary legacy Tools boundary
+
+The propagation and webhook contracts below apply only to existing legacy tools and
+agents. They do not override unified publication, revision, test or ownership rules.
 
 **Tool & agent schema propagation timing**
 
@@ -2789,7 +2973,29 @@ v1 of the test simulator uses a deterministic keyword-overlap heuristic for tran
 
 OAuth-backed third-party integrations available to **flow agents only**. v1: Google Calendar, Gmail.
 
-**Connecting credentials is dashboard-only.** The OAuth handshake (popup → Google consent → callback → token persistence) lives in the Yappr dashboard's Integrations page; the public API does not expose a connect endpoint. The customer connects each Google account once via the dashboard, then drives the rest of the lifecycle (listing, revoking, referencing in flows) through this API.
+**Legacy integration credentials are connected through the dashboard.** The `/integrations` API does not expose a connect endpoint. For the new workspace connection API and human authorization handoff, see **Connected accounts** below; these are distinct resources during migration.
+
+## Connected accounts
+
+Connection control is available on deployments that enable the new workspace connection service. An unavailable service is not permission to switch execution back to native integrations.
+
+| Endpoint | Scope | Contract |
+| --- | --- | --- |
+| `GET /tool-apps/connection-options` | `tools:read` | Authentication-configured app slugs/names; discovery is `GET /tool-apps`, neither executes an action. |
+| `GET /tool-connections` | `tool-connections:read` | Safe company metadata, 50 records/page, opaque `next_cursor`. Pass the cursor unchanged; it binds company and environment. |
+| `GET /tool-connections/{id}` | `tool-connections:read` | Exact account status, with server checks coalesced for 15 seconds. |
+| `POST /tool-connections` | `tool-connections:manage` | Body `{ "toolkit": "gmail", "label": "Team mailbox", "locale": "en" }`; returns `201 {connection, attempt, handoff_url}`. Hosted OAuth only; no provider ownership fields or manual secrets accepted here. |
+| `GET /tool-connection-auth-attempts/{id}` | `tool-connections:read` | Exact local attempt plus safe connection state. Never infer success from list differences or browser messages. |
+| `POST /tool-connections/{id}/reconnect` | `tool-connections:manage` | Body `{ "mode": "replace", "locale": "en" }`; returns a fresh one-time human handoff. Same-account reauthorization is not yet exposed. |
+| `DELETE /tool-connections/{id}` | `tool-connections:manage` | Returns `202 {connection}` after immediate local denial; broker removal/manual provider revocation may remain. Repeated requests do not advance the authorization epoch again. |
+
+Give the handoff privately to the intended authorized human, who signs in to Yappr, reviews the target workspace and label, and explicitly claims the browser-bound attempt before receiving the app authorization link. The API key initiator and consenting human are separate identities. Treat the URL fragment as a temporary capability: present it only for this consent step; do not log it, persist it in workflow/call data, or include it in voice-agent prompts. Account records belong to the company, not the human who completed consent. Several labeled accounts per app are supported.
+
+Poll the exact attempt with increasing intervals, bounded by `expires_at`. Stop on `completed`, `failed`, `expired`, `cancelled`, or `reconciliation_required`. An ambiguous/lost callback exchange must never be redeemed again automatically. `completed` refers to authorization processing; `connection.state` must independently be `ready` before actions can use it. Other states are `disconnected`, `connecting`, `verifying`, `reconnect_required`, and `degraded`.
+
+Safe read DTOs expose only local Yappr IDs, toolkit, label, verified provider identity when available, readiness, decimal-string `binding_revision`/`authorization_epoch`, disconnect progress and timestamps. Replacement increments immutable identity and authorization generations for future bindings; pinned work never silently changes accounts. Disconnect blocks new actions immediately, while already sent actions may finish. `manual_revocation_required` means a human should remove access in the provider account settings. Connection deletion is not proof that a grant was revoked.
+
+`400` covers malformed/foreign cursors and invalid fields, `401` invalid or insufficiently scoped API keys, `404` missing/cross-company resources, `409` active/closed/ambiguous authorization state, `429` bounded start limits, and `503` unavailable control/storage. Error messages never echo submitted credentials. Legacy `DELETE /integrations/{id}` retains its separate `204` contract during migration.
 
 ## GET /integrations
 
