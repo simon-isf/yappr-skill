@@ -61,6 +61,15 @@ finishes. Updates create immutable candidates: preserve the old head until all a
 follow-current workflows validate. Explicit pins and accepted runs stay fixed. Omit
 private URL/headers to retain them; never save a sanitized display URL as an endpoint.
 
+A tool that already exists from the earlier `type`/`config` bodies carries no contract.
+Add one with `POST /tools/{id}/workflow-revisions` before a workflow can use it: read
+`GET /tools/{id}/workflow-revisions` first and send the highest `revision` you see as
+`expected_revision` (`null` when there is none). Only endpoint-calling and transfer tools
+can take one. The body carries the contract and nothing else — identity and private
+endpoint configuration stay on the tool, and a transfer is always returned as
+during-phone-only whatever you asked for. Revisions are immutable and additive; a
+workflow that pinned an earlier one keeps it until it is published again.
+
 Start standalone tests with mock policy by default, representative typed input and a
 fresh Idempotency-Key. Poll the exact tool/test; retain the key/body after a lost
 response. An allowlisted test requires authorization for that saved binding's real
@@ -72,6 +81,26 @@ The prompt/flow decision and Phase 1A/1B instructions below describe existing le
 cohorts during migration only. Do not mix their graph, tool-attachment or test-runner
 contracts with a workflow-owned agent. Detect the server-returned execution_version;
 never write it or silently move an existing agent between execution owners.
+
+### Calling a workflow agent
+
+Publish before you call: an unpublished workflow agent returns
+`409 WORKFLOW_UNPUBLISHED`. `POST /calls` then answers `202`, not `201` — the call is
+accepted first and placed afterwards. Treat that `202` as success, not as backpressure.
+
+Always send an `Idempotency-Key`, and keep the identical body and key across retries. A
+`503 WORKFLOW_ADMISSION_UNAVAILABLE` means no call was placed; retry the same request
+rather than composing a new one. Never fall back to a second `POST /calls` to "make
+sure" — that is how a duplicate call happens.
+
+Follow the returned `request_id` with `GET /call-requests/{id}`, not by listing calls: a
+call record does not exist until `call_id` appears on the request. Poll with bounded
+backoff up to `expires_at`, stop on `dispatched`, `failed`, `expired` or `cancelled`,
+and treat `dispatch_unknown` as unresolved rather than failed. Stop a call that has not
+gone out with `POST /call-requests/{id}/cancel`; it is not a hangup, and it stops
+working once placement has been claimed. Pin a batch to one tested published version
+with `workflow_revision_id` when a mid-batch publication would change behaviour. See
+**Call requests** in `yappr-api.md`.
 
 ### Legacy decision: prompt agent OR flow agent
 

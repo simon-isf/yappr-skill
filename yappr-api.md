@@ -302,7 +302,9 @@ keys remain company-scoped. IDs, revision numbers and head generations are serve
 | `GET /tools/{id}/schema` | `tools:read` | Current typed input/output schemas; not a raw execution contract. |
 | `POST /tools` | `tools:create` | `{name, description?, workflow}` and mandatory `Idempotency-Key`; `201` materialized, `202` durably pending, `200` replay of a ready identity. |
 | `PATCH /tools/{id}` | `tools:update` | Full accepted definition plus `expected_head_revision_id` and numeric `expected_head_generation`, with an Idempotency-Key. Creates a candidate, never overwrites a frozen revision. |
-| `DELETE /tools/{id}` | `tools:delete` | Archives a workflow tool while retaining revisions/history; legacy deletion remains separate. |
+| `DELETE /tools/{id}` | `tools:update` | Archives a workflow tool while retaining revisions/history; legacy deletion remains separate. There is no `tools:delete` scope — a key cannot be issued with one. |
+| `GET /tools/{id}/workflow-revisions` | `tools:read` | The 100 newest contract revisions of one saved tool, newest first. Stored endpoint configuration is stripped from every row. |
+| `POST /tools/{id}/workflow-revisions` | `tools:update` | `{expected_revision, contract}` only; `201` with the new revision. Compare-and-swap on `expected_revision` (`null` when the tool has none). |
 | `GET /tool-apps` | `tools:read` | Curated discovery page, not account readiness. Toolkit-list versions may be absent. |
 | `GET /tool-apps/{slug}` | `tools:read` | App detail and available dated versions. |
 | `GET /tool-apps/{slug}/actions?version=YYYYMMDD_NN` | `tools:read` | Version-specific action page; pass opaque cursors unchanged. |
@@ -334,6 +336,21 @@ semantics fail visibly; a provider success flag does not prove remote jobs compl
 Transfer definitions use `{kind:"transfer", destination, announce_transfer?,
 announce_message?}` with a fixed international number. Create a separate tool for each
 named destination; they are during-phone-only. Intrinsic End is not in this catalog.
+
+**Importing an existing saved tool.** A tool created through the earlier `type`/`config`
+bodies has no contract until you add one. `POST /tools/{id}/workflow-revisions` adds an
+immutable revision so a workflow can use it. The body is strictly
+`{expected_revision, contract}` — any other property is `400 WORKFLOW_REQUEST_INVALID`.
+`contract` requires object `input_schema` and `output_schema` and optionally
+`allowed_phases` (default all three), `allowed_channels` (default both), `timeout_ms`
+(default 30000), `effect` (default `write`) and `replay_safe` (default false). Name,
+description and private endpoint configuration are read from the saved tool and cannot
+be supplied here. Transfer tools always come back as during-phone-only, `terminal` and
+not replay-safe, whatever the request asked for. Send the highest `revision` you read
+from the list as `expected_revision`; a stale value is `409 WORKFLOW_CONFLICT` and
+writes nothing. Only tools that call your own endpoint or transfer a call can take a
+revision — anything else is `422 WORKFLOW_TOOL_IMPORT_REQUIRED`. Revisions are additive:
+a workflow that already pinned an earlier revision keeps it until it is published again.
 
 Keys contain 16–128 letters, digits, `_` or `-`. Preserve the identical accepted body
 and key after a lost response; changed content conflicts with `409`. Poll the returned
@@ -1281,6 +1298,31 @@ Initiate an outbound call.
 | `from` | string | yes | Caller phone number — strict E.164, must be an active number owned by the company |
 | `metadata` | object | no | JSONB stored in `call_logs.metadata` — arbitrary key-value pairs, not injected into prompt. **Forwarded in real-time to every tool webhook as `call_metadata`** (see [Tool Webhook Payload](#tool-webhook-payload)) — ideal for carrying internal IDs (appointment_id, contact_id, calendar_id) that tool receivers need without requiring a `GET /calls/:id` round-trip. |
 | `variables` | object | no | `Record<string, string>` — substituted into system prompt using `{{VariableName}}` syntax. Also forwarded to tool webhooks as `call_variables`. |
+| `workflow_revision_id` | uuid \| null | no | Workflow agents only. Pins the call to one exact published version instead of whichever is current at dispatch. Sending it for a non-workflow agent, or naming a version that is not this agent's, is `422 WORKFLOW_PIN_INVALID`. |
+
+**Workflow agents answer `202`, not `201`.** Every outbound call on a workflow agent is
+accepted first and placed afterwards, so `202` is the normal success response there — it
+is not an at-capacity signal. The body is the acceptance acknowledgment:
+
+```json
+{"id":"uuid","request_id":"uuid","run_id":"uuid","call_id":null,
+ "status":"queued","preparation_status":"pending","agent_id":"uuid",
+ "to":"+972...","from":"+972...","queued_at":"ISO8601","expires_at":"ISO8601"}
+```
+
+`status` is `scheduled` (with `scheduled_for`) when the workspace's calling window is not
+open yet, `queued` otherwise. Follow `request_id` through **Call requests** below; never
+poll `GET /calls` for a call that may not exist yet. Two other results also use `202` and
+are also not live calls: an at-capacity queue entry, and a request that was prepared and
+handed back before dialling.
+
+Send an `Idempotency-Key` of 1–200 printable characters. An identical retry returns the
+original acceptance instead of placing a second call; reusing the key with different
+details is `409 WORKFLOW_IDEMPOTENCY_CONFLICT`. Workflow admission rejects any property
+outside `agent_id`, `to`, `from`, `variables`, `metadata` and `workflow_revision_id` with
+`422 WORKFLOW_REQUEST_INVALID`. `409 WORKFLOW_UNPUBLISHED` means publish the agent first.
+`503 WORKFLOW_ADMISSION_UNAVAILABLE` means **no call was placed** — retry the same body
+with the same key.
 
 **`from` is a per-call override, not a fixed binding.** Any active number in the company can be paired with any agent on any outbound call. The `outbound_agent_id` configured on a phone number (via `POST /phone-numbers/configure`) only sets the dashboard's default and does not constrain the API — callers choose `agent_id` + `from` independently per request. This means one number can serve many agents; purchasing a separate number per agent is unnecessary for outbound.
 
@@ -1321,6 +1363,43 @@ Every key in that array must be present in your `metadata` body. The five **buil
   "metadata": {}
 }
 ```
+
+---
+
+### Call requests
+
+Only workflow agents produce these. `POST /calls` returns `request_id`; this is how you
+follow it until a call exists, and how you stop one that has not gone out.
+
+| Endpoint | Scope | Contract |
+| --- | --- | --- |
+| `GET /call-requests/{id}` | `calls:read` | Current state of one accepted request. |
+| `POST /call-requests/{id}/cancel` | `calls:create` | Stops a request that has not been placed. Idempotent; returns the same object. |
+
+```json
+{"id":"uuid","run_id":"uuid","status":"preparing","preparation_status":"running",
+ "workflow_revision_id":"uuid","call_id":null,"expires_at":"ISO8601","error_code":null}
+```
+
+`status` is one of `scheduled`, `preparing`, `ready`, `dispatching`, `dispatched`,
+`dispatch_unknown`, `failed`, `expired`, `cancelled`. The last three are final.
+`dispatch_unknown` means placement is unconfirmed either way — poll until it settles;
+never place the call again to find out. `call_id` is `null` until a call record exists;
+once set, read the call itself with `GET /calls/:id`. `workflow_revision_id` is the
+published version frozen for this request, so a later publication never changes a call
+already accepted.
+
+`preparation_status` (`pending`, `running`, `ready`, `failed`, `expired`, `cancelled`)
+tracks the pre-call step alone. A failed preparation does not always fail the request:
+an agent configured to continue with whatever is available still calls. `error_code` is
+set only when `status` is `failed` or `expired`.
+
+Cancel deliberately requires `calls:create`, the same permission that created the
+request: a read-only key must not be able to stop a call, and the key that may start one
+may stop the one it started. **Cancel is not a hangup.** Once placement has been claimed
+it returns `409 WORKFLOW_DISPATCH_ALREADY_CLAIMED`; at that point the call, not the
+request, is the thing to look at. A missing or non-UUID id is `404
+WORKFLOW_REQUEST_NOT_FOUND`; `503 WORKFLOW_ADMISSION_UNAVAILABLE` is temporary.
 
 ---
 
@@ -2421,6 +2500,8 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 | POST /tools (create) | `tools:create` |
 | PATCH /tools/:id | `tools:update` |
 | DELETE /tools/:id | `tools:update` |
+| GET /tools/:id/workflow-revisions | `tools:read` |
+| POST /tools/:id/workflow-revisions | `tools:update` |
 | POST /tools/attach | `tools:update` |
 | POST /tools/detach | `tools:update` |
 | POST /tools/:id/test | `tools:update` |
@@ -2433,6 +2514,8 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 | POST /billing/topup | `billing:manage` |
 | GET /calls (list/get) | `calls:read` |
 | POST /calls | `calls:create` |
+| GET /call-requests/:id | `calls:read` |
+| POST /call-requests/:id/cancel | `calls:create` |
 | GET /dispositions (list/get) | `dispositions:read` |
 | POST /dispositions | `dispositions:manage` |
 | PATCH /dispositions/:id | `dispositions:manage` |
@@ -2453,6 +2536,10 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 | POST /agents/:id/flow/restore | `agents:update` |
 | GET /integrations | `integrations:read` |
 | DELETE /integrations/:id | `integrations:manage` |
+| GET /tool-apps, /tool-apps/connection-options | `tools:read` |
+| GET /tool-connections, /tool-connection-auth-attempts/:id | `tool-connections:read` |
+| POST /tool-connections, /tool-connections/:id/reconnect | `tool-connections:manage` |
+| DELETE /tool-connections/:id | `tool-connections:manage` |
 | GET /do-not-call (list/get) | `do_not_call:read` |
 | POST /do-not-call | `do_not_call:manage` |
 | PATCH /do-not-call/:id | `do_not_call:manage` |
@@ -2987,7 +3074,7 @@ Connection control is available on deployments that enable the new workspace con
 | `POST /tool-connections` | `tool-connections:manage` | Body `{ "toolkit": "gmail", "label": "Team mailbox", "locale": "en" }`; returns `201 {connection, attempt, handoff_url}`. Hosted OAuth only; no provider ownership fields or manual secrets accepted here. |
 | `GET /tool-connection-auth-attempts/{id}` | `tool-connections:read` | Exact local attempt plus safe connection state. Never infer success from list differences or browser messages. |
 | `POST /tool-connections/{id}/reconnect` | `tool-connections:manage` | Body `{ "mode": "replace", "locale": "en" }`; returns a fresh one-time human handoff. Same-account reauthorization is not yet exposed. |
-| `DELETE /tool-connections/{id}` | `tool-connections:manage` | Returns `202 {connection}` after immediate local denial; broker removal/manual provider revocation may remain. Repeated requests do not advance the authorization epoch again. |
+| `DELETE /tool-connections/{id}` | `tool-connections:manage` | Returns `202 {connection}` after immediate local denial; removal at the connected-app service and manual revocation in the provider account may still be outstanding. Repeated requests do not advance the authorization epoch again. |
 
 Give the handoff privately to the intended authorized human, who signs in to Yappr, reviews the target workspace and label, and explicitly claims the browser-bound attempt before receiving the app authorization link. The API key initiator and consenting human are separate identities. Treat the URL fragment as a temporary capability: present it only for this consent step; do not log it, persist it in workflow/call data, or include it in voice-agent prompts. Account records belong to the company, not the human who completed consent. Several labeled accounts per app are supported.
 
