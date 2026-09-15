@@ -14,11 +14,11 @@ Run these in a fresh Claude Code session in any directory (the skill is loaded f
 2. Phase 0 discovery — runs the live API queries against `goyappr.com/agents`, `/dispositions`, `/billing`, `/phone-numbers`. Asks the discovery questions.
 3. Sets `agent_type: flow` in DISCOVERY CONFIG.
 4. **Phase 1B (Flow Agent Creation)** — opens `flow-composition-guide.md` for guidance.
-5. Notices the GCal requirement → opens `integrations-guide.md`.
-6. Tells the human "before I can build this, you need to connect Google Calendar from the Yappr dashboard's Integrations page (the OAuth handshake is dashboard-only)." Pauses until the human confirms it's connected.
-7. Calls `GET /integrations?provider=google_calendar` and captures the `id` of the active row.
-8. Loads the `templates/flows/booking-google-calendar.json` template OR builds from scratch using `templates/flows/rsvp.json` as a starting point.
-9. Substitutes the `<INTEGRATION_ID>` placeholders in the chosen template with the captured id (integration_call nodes hold `integration_id` directly — no separate tool rows needed for OAuth-backed providers).
+5. Notices the calendar requirement → opens the **Connected accounts** section of `yappr-api.md`.
+6. Tells the human "before I can build this, you need to connect the calendar", creates the account with `POST /tool-connections`, and gives them the handoff URL. Pauses until the attempt reports `completed` AND the connection reports `ready`.
+7. Creates a tool bound to that connection, and captures its `tool_id`.
+8. Builds the flow from `templates/flows/rsvp.json` as a starting point.
+9. Wires each dispatch step as a `tool_call` node referencing that `tool_id`.
 10. Creates the agent via `POST /agents` with `type: "flow"`, `flow_config: {...}`, the global `system_prompt`, `language: "he"`.
 11. Validates the response (200, agent.id present, agent.type="flow").
 12. Reports back to the user with a summary + how to place a test call.
@@ -87,7 +87,7 @@ for f in *.json; do
 done
 ```
 
-All three (booking-google-calendar.json, lead-qualification.json, rsvp.json) must parse as valid JSON.
+Both (lead-qualification.json, rsvp.json) must parse as valid JSON.
 
 For server-side schema validation, use the api-v1 endpoint:
 
@@ -95,7 +95,7 @@ For server-side schema validation, use the api-v1 endpoint:
 curl -X POST "https://api.goyappr.com/agents/<existing-flow-agent>/flow/test" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "$(jq '{ flow_config: . , transcript: [], mock_tool_results: {} }' booking-google-calendar.json)"
+  -d "$(jq '{ flow_config: . , transcript: [], mock_tool_results: {} }' rsvp.json)"
 ```
 
 Returns `200` with a step trace if the schema is valid, `400` otherwise.

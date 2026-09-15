@@ -208,8 +208,9 @@ permanent. Start from the shape the caller needs and change it later.
 
 For the how-to on building that graph, open
 [`flow-composition-guide.md`](flow-composition-guide.md) for the conversational patterns
-and the canonical workflow document in `yappr-api.md` for its shapes. For OAuth-backed
-integrations, open [`integrations-guide.md`](integrations-guide.md).
+and the canonical workflow document in `yappr-api.md` for its shapes. For calendars,
+mailboxes and every other third-party account an agent acts on, open the **Connected
+accounts** section of [`yappr-api.md`](yappr-api.md).
 
 
 ### Core files in this skill directory
@@ -220,6 +221,7 @@ integrations, open [`integrations-guide.md`](integrations-guide.md).
 | `HUMANIZE_PLAYBOOK.md` | When writing or reviewing any agent system prompt — research-backed principles for voice AI dialogue |
 | `flow-composition-guide.md` | Designing flow agents — node catalog, transition heuristics, common topologies |
 | `agent-eval-guide.md` | **Programmatic regression testing** — how to design personas, build cases + suites, wire suites into CI, debug failing assertions. Open whenever the user wants to test agents without making real calls. |
+| `yappr-api.md` → *Connected accounts* | Connecting a calendar, mailbox or any third-party account an agent acts on, and the human authorization handoff |
 | `SKILL.md` (this file) | The journey guide — what to build, in what order, and why |
 | `integrations/_overview.md` | Decide which integration to use for a given task — maps use cases to file names |
 | `integrations/{name}.md` | Auth, base URL, all key endpoints, gotchas, and rate limits for a specific platform |
@@ -727,11 +729,11 @@ When `auto_advance: true` (default, legacy behavior): greeting + the first conve
 
 For escape hatches that should be reachable from any step (transfer-to-human, end-on-DNC, wrong-number, "user reveals they're actually X" misclassification recovery), use **global nodes** instead of wiring an explicit transition into every source node. See [`flow-composition-guide.md`](flow-composition-guide.md) section on globals for the full how-to.
 
-### Step 1B.3 — Connect Google Calendar (if scheduling is involved)
+### Step 1B.3 — Connect a calendar or mailbox (if scheduling or email is involved)
 
 For deployments with workspace connected accounts enabled, use the **Connected accounts** journey in [`yappr-api.md`](yappr-api.md). Discover configured apps with `GET /tool-apps/connection-options`, create an explicitly labeled account with `POST /tool-connections`, and give the expiring Yappr handoff to an authorized human. An API key cannot provide OAuth consent. Poll the exact returned auth-attempt ID with bounded backoff; `completed` authorization is distinct from `connection.state: ready`. Keep provider IDs, OAuth state and handoff capabilities out of tools, prompts, call history and logs. Replacement is explicit and applies to future bindings; disconnect blocks new actions without pretending to revoke every provider grant.
 
-Native OAuth integrations remain available during their audited migration. Existing `GET /integrations` and `DELETE /integrations/:id` keep their documented scopes and response contract; their IDs do not become new connection IDs without a published mapping. The compatible dashboard URL leads into Tools' existing-connections view. Do not fall back to native dispatch when a new connection fails. See [`integrations-guide.md`](integrations-guide.md) for the legacy flow lifecycle.
+**The native OAuth integrations are retired.** `GET /integrations` and `DELETE /integrations/{id}` answer `410` with `code: endpoint_retired`, and the `integration_call` flow node no longer exists: saving one is rejected, and an agent whose stored flow still contains one cannot take calls. There is nothing to fall back to when a connection fails — retry the connection, never reach for the old path. If you meet an agent in that state, delete the retired node and rebuild the step as a `tool_call` bound to a connected account.
 
 ### Step 1B.4 — Create the agent via API
 
