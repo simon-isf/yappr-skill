@@ -1301,7 +1301,7 @@ Initiate an outbound call.
 | `from` | string | yes | Caller phone number — strict E.164, must be an active number owned by the company |
 | `metadata` | object | no | JSONB stored in `call_logs.metadata` — arbitrary key-value pairs, not injected into prompt. **Forwarded in real-time to every tool webhook as `call_metadata`** (see [Tool Webhook Payload](#tool-webhook-payload)) — ideal for carrying internal IDs (appointment_id, contact_id, calendar_id) that tool receivers need without requiring a `GET /calls/:id` round-trip. |
 | `variables` | object | no | `Record<string, string>` — substituted into system prompt using `{{VariableName}}` syntax. Also forwarded to tool webhooks as `call_variables`. |
-| `workflow_revision_id` | uuid \| null | no | Workflow agents only. Pins the call to one exact published version instead of whichever is current at dispatch. Sending it for a non-workflow agent, or naming a version that is not this agent's, is `422 WORKFLOW_PIN_INVALID`. |
+| `workflow_revision_id` | uuid \| null | no | Workflow agents only. Pins the call to one exact published version instead of whichever is current at dispatch. Take the id from `GET /agents/{id}/workflow/versions` (`data[].id`). Sending it for a non-workflow agent is `422 WORKFLOW_PIN_INVALID`; a version that is not this agent's own is rejected later as `404 WORKFLOW_AGENT_UNAVAILABLE`, the same answer as an unreachable agent. |
 
 **Workflow agents answer `202`, not `201`.** Every outbound call on a workflow agent is
 accepted first and placed afterwards, so `202` is the normal success response there — it
