@@ -52,9 +52,21 @@ runs after the call arrives and before it is answered, inside a short platform w
 30 seconds at most today — and the caller hears ringing until it finishes. On an
 outbound call it runs before the dial, inside five minutes. `before.on_failure`
 decides what an over-run or a failure means: `continue_with_available` answers or dials
-with whatever Before produced, `stop_admission` declines the inbound caller outright.
+with whatever Before produced — including when the window ran out, not only when a step
+failed — and `stop_admission` declines the inbound caller outright.
 Keep Before to what the agent must know in order to open its mouth; chaining several
-tools that may each take the full tool timeout will not fit an inbound window.
+tools that may each take the full tool timeout will not fit an inbound window. Publication
+refuses a chain that fits neither window, and a document with before-call steps cannot
+offer the web channel at all — a one-shot browser connection has nowhere to run them.
+
+A before-call step can also **refuse the call itself**: route `on_succeeded` or
+`on_failed` to `"#decline"` (on failure the step must also continue on failure). An
+inbound caller is then never answered, and an outbound call is never dialled — the
+request ends `failed` with `preparation_status: "declined"` and
+`error_code: "before_declined"`, and no call record is created. That is the place to put
+a blocklist check or an "already a customer, do not cold-call" rule: it costs nothing and
+leaves no call to explain. `"#decline"` is the only route a before-call step may take,
+and no lifecycle step takes a condition — a sequence is where conditions belong.
 
 **During** is the conversation, and it ends on *any* ending, a caller hangup included.
 When the caller hangs up the conversation stops immediately, actions already in flight
@@ -62,12 +74,14 @@ finish and record their result, nothing new is dispatched, and the phase is over
 design a During step that assumes the caller is still there when it returns.
 
 **After** runs for the ending that actually happened. A trigger matches its event
-exactly, so a follow-up on `call.ended` does not run for `call.no_answer`. A
-`<artifact>.ready` event — transcript, recording, analysis, lead, billing — fires when
-that producer settles, whatever its status, so a call nobody answered still opens its
-After phase; a step that `requires` an artifact that settled without being produced is
-blocked, and stops the phase if its failure policy says stop. Prefer one trigger per
-ending you actually handle over one trigger that assumes the happy path.
+exactly, so a follow-up on `call.ended` does not run for `call.no_answer` — on an outbound
+list that is most of the calls. Use `any_end` when one follow-up should cover every
+ending: it stands for `call.ended`, `call.failed` and `call.no_answer` together. Use
+`request.failed` for a request that died before anything was dialled; no call exists, so
+it is the only trigger that runs for it. A `<artifact>.ready` event — transcript,
+recording, analysis, lead, billing — starts its follow-up only for a result that was
+actually produced, so a call nobody answered runs the endings it matches and none of the
+readiness triggers. Name the endings you handle; do not assume the happy path.
 
 ### Unified Tools journey
 
@@ -133,6 +147,23 @@ JSON pointer of the step or condition part to change.
 See **Branching inside a sequence** in `yappr-api.md` for the full grammar, the
 operator rules and every issue code.
 
+### Saying a before-call result out loud
+
+A before-call result reaches the agent as context already, but the agent picks its own
+words for it. When a specific value has to land in a specific sentence, quote it: write
+`{{before.<step_id>.<field>}}` inside a conversation node's `instructions`, or inside
+`global_instructions`, and the value is substituted when the call starts. Dots go deeper
+(`{{before.availability.slots.0.time}}`), and `|` gives the words to use when there is no
+value (`{{before.availability.summary|I don't have times in front of me}}`) — without one
+the reference simply disappears rather than being read out as braces.
+
+Two rules decide whether it publishes, and both are worth stating to the customer before
+you promise the wording. The step id must be a before-call step and the field must be one
+the tool behind it declares, or publication rejects the sentence rather than the call
+rejecting it later. And a reference belongs in instructions only — a step label, a route
+condition or a tool's own description is refused, because nothing substitutes those.
+Write it exactly as shown: lowercase, no spaces inside the braces.
+
 ### Calling a workflow agent
 
 Publish before you call: an unpublished workflow agent returns
@@ -147,7 +178,9 @@ sure" — that is how a duplicate call happens.
 Follow the returned `request_id` with `GET /call-requests/{id}`, not by listing calls: a
 call record does not exist until `call_id` appears on the request. Poll with bounded
 backoff up to `expires_at`, stop on `dispatched`, `failed`, `expired` or `cancelled`,
-and treat `dispatch_unknown` as unresolved rather than failed. Stop a call that has not
+and treat `dispatch_unknown` as unresolved rather than failed. A `failed` carrying
+`error_code: "before_declined"` is the agent refusing the call, not a fault — never retry
+that one; change the rule, or the number. Stop a call that has not
 gone out with `POST /call-requests/{id}/cancel`; it is not a hangup, and it stops
 working once placement has been claimed. Pin a batch to one tested published version
 with `workflow_revision_id` when a mid-batch publication would change behaviour. See
@@ -998,6 +1031,8 @@ When the user wants voice **on their own website** (not a phone call), use the b
 2. **Browser connects** — `npm install @goyappr/client`, then `YapprConversation.startSession({ token, connection })`. The developer owns the UI; the SDK handles mic + WebRTC. Controls: `setMicMuted`, `setVolume`, `getInputVolume`/`getOutputVolume`, `endSession`; callbacks `onStatusChange`, `onModeChange`, `onConnect`, `onDisconnect`, `onError`.
 
 Billing, voice, and language come from the agent config — same as any call. Audio-only in preview (no live transcript yet).
+
+A workflow agent whose published workflow runs before-call steps cannot serve a browser call: the mint succeeds, and the browser's connect is refused with `409 workflow_preparation_required` before the token is spent. Do not retry it — republish that workflow without the web channel, or without its before-call steps.
 
 ## PHASE 4: Post-Call Automation
 

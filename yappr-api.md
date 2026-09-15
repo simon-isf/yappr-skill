@@ -310,13 +310,65 @@ compare against a value), `condition_value_type` (`in`/`not_in` need a list),
 `condition_type_mismatch` (declared types disagree, or the operator does not apply to
 the declared type), `branch_dependent_source` (branch value read with no fallback),
 `transfer_in_sequence`, and `input_dependency` (a step reads an output it is neither
-downstream of nor routed from). Branching advisories — an unreachable step, a condition
+downstream of nor routed from). All five branching advisories — an unreachable step, a condition
 that can never be true, a step depending on one that may be skipped, a condition
 reading a step allowed to fail and continue, a condition whose source declares no type
-— arrive as the generic `workflow_warning` and block nothing.
+— arrive as the single code `sequence_branch_advisory` and block nothing.
 
-Validation warnings are safe codes: `strict_off_guidance`,
-`during_output_advisory`, or generic `workflow_warning`. Never discard an unknown
+**The phase contract.** A follow-up trigger's `event` may be `any_end`, which stands for
+`call.ended`, `call.failed` and `call.no_answer` together, or `request.failed`, the request
+dying before anything was dialled — no call exists and no call event is published, so this
+is the only trigger that runs for it. Every other event matches exactly. A
+`<artifact>.ready` trigger (`transcript`, `analysis`, `recording`, `lead`, `billing`)
+starts its follow-up only for a result that was actually produced; a call nobody answered
+settles those producers without producing anything and runs none of them.
+
+A **before-call step may refuse the call** by routing an outcome to `"#decline"`:
+`{"id":"screen","label":"Screen","binding_id":"blocklist","on_succeeded":"#decline"}`.
+Refusing on failure needs `"on_failure":"continue"` on the same step. An inbound caller is
+then never answered — the call is refused at the carrier — and an outbound call is never
+dialled: the request ends `failed` with `preparation_status:"declined"` and
+`error_code:"before_declined"`, and no call record is created. `"#decline"` is the only
+route target a before-call step may name.
+
+A document with before-call steps **cannot also list `"web"` in `channels`**, and the
+preparation window belongs to the platform with no field to set: an inbound call prepares
+after it arrives and before it is answered within 30 s, an outbound one before the dial
+within five minutes. Publication follows the longest `depends_on` chain, charging each step
+its resolved tool's `timeout_ms`, and refuses a chain that fits neither window. Independent
+steps run together, so only the longest counts.
+
+Phase `issues[]` codes: `before_unsupported_on_web` (before-call steps plus the web
+channel), `before_budget_exceeded` (the chain fits neither window),
+`guard_phase` (a `when` on a before-call or follow-up step — conditions belong to a
+sequence), `route_phase` (a route on a follow-up step), `before_route_target` (a before-call
+step routing anywhere but `"#decline"`), `decline_phase` (`"#decline"` inside a sequence,
+where the call is already connected).
+
+**Quoting a before-call result in step text.** `global_instructions` and a conversation
+node's `instructions` — and nowhere else — may carry `{{before.<step_id>}}`,
+`{{before.<step_id>.<dotted.path>}}` or `{{before.<step_id>.<dotted.path>|fallback text}}`.
+Dots become JSON Pointer segments and a numeric segment is a list position. The fallback is
+taken verbatim when the value is missing; `|` with nothing after it is a declared empty
+string, and no `|` at all makes the reference disappear rather than leaving braces the agent
+reads aloud. Publication resolves the step id against the before-call phase and the path
+against the producing tool's `output_schema`, so prose can never read what a tool input
+could not. Write it exactly — lowercase, no spaces inside the braces. At most 256 references
+per document, 512 characters per reference and 1000 per fallback.
+
+Reference `issues[]` codes: `placeholder_syntax` (not the exact shape, including the near
+misses `{{Before.`, `{{ before.`, `{{before .`), `placeholder_unknown_step`,
+`placeholder_phase` (the id names a conversation, follow-up or sequence step),
+`placeholder_unknown_path` (not declared by the tool's `output_schema`),
+`placeholder_unsupported_field` (written in a label, a route condition, or a tool's or
+sequence's own description — none of those is ever substituted),
+`placeholder_reserved_variable` (a call variable named `before` declared alongside a
+reference), `placeholder_limit`, `placeholder_too_long`. Where the producing step may
+legitimately not run — `before.on_failure: "continue_with_available"`, or the step itself
+continuing on failure — a reference with no fallback is an advisory, not a refusal.
+
+Validation warnings are safe codes: `strict_off_guidance`, `during_output_advisory`,
+`sequence_branch_advisory`, or generic `workflow_warning`. Never discard an unknown
 warning or treat advisory ordering as enforced execution. Explain a Strict change
 before publishing; accepted runs keep their exact published artifacts. A 409 means
 review the saved version/dependency changes, not blindly fetch a fresh token and
@@ -1206,17 +1258,30 @@ Get full details of a single call, including resolved lead and disposition objec
 
 | Value | Meaning |
 |-------|---------|
-| `"caller"` | The human on the line hung up. |
-| `"agent"` | The bot ended the call (e.g. it timed out, finished its goal, or invoked the end-call action). |
-| `"system"` | The platform ended the call (e.g. voicemail detection, max duration cap, hard error). |
-| `"unknown"` | Hangup cause could not be determined. |
-| `null` | Call has not yet ended, or ended too early to attribute. |
+| `"caller"` | The far end went away first — the human on the line hung up, or the browser closed the connection. |
+| `"agent"` | The agent chose to end the call: its end-call tool, the End step of its flow, or its closing line followed by a hangup. |
+| `"system"` | Yappr ended it — the silence timeout, the maximum-duration cap, an answering machine, or a fault that took the call down. |
+| `"unknown"` | The carrier reported the ending but did not say which side dropped the call. |
+| `null` | Call has not yet ended, or nothing could attribute it. |
+
+**A transfer records nothing at the handover.** Once the caller is bridged to a person the
+leg is still up, so whoever hangs up after that is the answer and the carrier supplies it.
+The value you read is already resolved for the call's direction — on an inbound call the
+carrier's "called side hung up" is the agent, on an outbound call it is the person dialled.
 
 **First-write-wins**: once `ended_by` is set, it isn't overwritten by later updates. So a specific attribution (e.g. `"system"` from voicemail detection) is preserved even when a generic hangup event lands afterward.
 
 Useful for retry / analytics decisions — e.g. don't auto-retry a call that the caller intentionally ended (`ended_by === "caller"`) but do retry when the platform aborted it (`ended_by === "system"`).
 
-**`disconnect_reason`** — Optional human-readable termination reason (e.g. `"Voicemail detected"`, `"Completed"`). Also first-write-wins. May be `null` for short or atypical hangups.
+**`disconnect_reason`** — Short human-readable label for why, meant for display. Branch on
+`status` and `ended_by`; treat this as text, because wording changes and labels are added.
+In practice: `Completed`, `No answer`, `Busy`, `Call rejected`, `Cancelled`,
+`Caller inactive`, `Max duration reached`, `Voicemail detected`,
+`Answering machine detected`, `Failed`, and — when a handoff never connected —
+`Transfer not answered`, `Transfer destination busy`, `Transfer rejected`,
+`Transfer destination unreachable`, `Transfer never connected`, `Transfer failed`. A
+handoff that did connect leaves the reason to the call's own ending. Also first-write-wins,
+and `null` for short or atypical hangups.
 
 **`tool_calls`** — One row per tool / integration invocation that fired during the call, in firing order. The `kind` field is the discriminator:
 
@@ -1464,10 +1529,22 @@ once set, read the call itself with `GET /calls/:id`. `workflow_revision_id` is 
 published version frozen for this request, so a later publication never changes a call
 already accepted.
 
-`preparation_status` (`pending`, `running`, `ready`, `failed`, `expired`, `cancelled`)
-tracks the pre-call step alone. A failed preparation does not always fail the request:
-an agent configured to continue with whatever is available still calls. `error_code` is
-set only when `status` is `failed` or `expired`.
+`preparation_status` (`pending`, `running`, `ready`, `failed`, `expired`, `cancelled`,
+`declined`) tracks the pre-call step alone. A preparation that fails **or runs out of
+time** does not always fail the request: an agent configured to continue with whatever is
+available still calls, with whatever the preparation did produce.
+
+`declined` is a decision, not a failure — a before-call step refused the call itself, so
+nothing is dialled, no call record is created, and the failure policy does not apply. The
+request ends `failed` with `error_code: "before_declined"`.
+
+`error_code` is set only when `status` is `failed` or `expired`: `before_declined` for a
+refusal, `request_expired` for a request that outlived its window, the preparation's own
+code when it recorded one, and `request_failed` when it did not.
+
+A request that dies before anything is dialled publishes no call event, because there is no
+call. It publishes the lifecycle event `request.failed` instead, which an After trigger can
+run on — the only way to follow up on a request that never became a call.
 
 Cancel deliberately requires `calls:create`, the same permission that created the
 request: a read-only key must not be able to stop a call, and the key that may start one
@@ -1509,6 +1586,14 @@ Mint a short-lived, single-use token for an **in-browser** voice call via the [`
   }
 }
 ```
+
+**A workflow that prepares before it answers cannot serve a browser call.** Minting always
+succeeds for a reachable active agent, and the browser's connect is then refused with
+`409 workflow_preparation_required` — before the token is claimed, so nothing is spent and
+no call slot is taken. There is nothing to retry: republish that agent's workflow without
+the web channel, or without its before-call steps. Publishing that combination is itself
+refused (`before_unsupported_on_web`), so a `409` here means a version published before
+that rule is still current.
 
 **Two-plane model.** Your server holds the secret API key and calls this endpoint to mint the token (control plane). The browser receives only `token` + `connection` and runs the WebRTC call (data plane) — your secret key never reaches the client. Every web call is metered and billed to the key's company exactly like any other call.
 
