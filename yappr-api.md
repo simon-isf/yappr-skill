@@ -302,13 +302,18 @@ keys remain company-scoped. IDs, revision numbers and head generations are serve
 | `GET /tools/{id}/schema` | `tools:read` | Current typed input/output schemas; not a raw execution contract. |
 | `POST /tools` | `tools:create` | `{name, description?, workflow}` and mandatory `Idempotency-Key`; `201` materialized, `202` durably pending, `200` replay of a ready identity. |
 | `PATCH /tools/{id}` | `tools:update` | Full accepted definition plus `expected_head_revision_id` and numeric `expected_head_generation`, with an Idempotency-Key. Creates a candidate, never overwrites a frozen revision. |
-| `DELETE /tools/{id}` | `tools:update` | Archives a workflow tool while retaining revisions/history; legacy deletion remains separate. There is no `tools:delete` scope — a key cannot be issued with one. |
+| `DELETE /tools/{id}` | `tools:update` | Archives a workflow tool while retaining revisions/history; legacy deletion remains separate. Idempotent: an already-archived tool answers `200` again and keeps its first archive time, so only a tool outside the workspace is `404`. There is no `tools:delete` scope — a key cannot be issued with one. |
 | `GET /tools/{id}/workflow-revisions` | `tools:read` | The 100 newest contract revisions of one saved tool, newest first. Stored endpoint configuration is stripped from every row. |
 | `POST /tools/{id}/workflow-revisions` | `tools:update` | `{expected_revision, contract}` only; `201` with the new revision. Compare-and-swap on `expected_revision` (`null` when the tool has none). |
 | `GET /tool-apps` | `tools:read` | Curated discovery page, not account readiness. Toolkit-list versions may be absent. |
 | `GET /tool-apps/{slug}` | `tools:read` | App detail and available dated versions. |
 | `GET /tool-apps/{slug}/actions?version=YYYYMMDD_NN` | `tools:read` | Version-specific action page; pass opaque cursors unchanged. |
 | `GET /tool-apps/{slug}/actions/{action}?version=YYYYMMDD_NN` | `tools:read` | Full authoritative input/output schemas, local metadata ID, scope alternatives and reviewed eligibility/fixed-field policy. `latest` is not a pin. |
+
+The `/tool-apps` reads forward the catalog service's own failures: a `WORKFLOW_*` code you
+will not find documented, always carried as `422` or `503`. Branch on the status, not the
+code — retry a `503` unchanged; a `422` means the catalog rejected the request itself, so
+re-read the app or action and correct the query.
 
 HTTP example (no request is dispatched by saving):
 
@@ -356,7 +361,8 @@ Keys contain 16–128 letters, digits, `_` or `-`. Preserve the identical accept
 and key after a lost response; reusing a key with changed content is
 `409 WORKFLOW_TOOL_IDEMPOTENCY_CONFLICT`. A stale `expected_head_revision_id` /
 `expected_head_generation` pair on `PATCH /tools/{id}` is `409 WORKFLOW_TOOL_CONFLICT`
-and saves nothing — re-read `GET /tools/{id}` and send its current pair. Poll the returned
+and saves nothing — re-read `GET /tools/{id}` and send back its `workflow.head_revision_id`
+and `workflow.head_generation` under those two request names. Poll the returned
 tool identity until materialization is terminal. A pending request is not a duplicate
 creation opportunity. Invalid contracts return `422`; unavailable control returns
 `503`, never permission to switch to legacy tooling. Accepted changes are at most
@@ -398,8 +404,10 @@ Requests are at most 512 KiB; inputs/mock output each at most 256 KiB. At most e
 active unexpired tests per workspace; admission beyond that returns `429`. Malformed
 contracts return `422`; changed idempotent content `409`; missing/foreign resources or
 same-key replay by a different original author `404`; denied current workspace
-authority `403`. Other authorized workspace members may read/cancel a test with the
-appropriate tools scope. Poll with bounded backoff using the returned deadline.
+authority `403`. Reading and cancelling carry none of that: they take no body and no
+key, so they answer only `403`, `404`, `503` and the account-wide `401` — the `409`, `422`
+and `429` above belong to starting a test. Other authorized workspace members may
+read/cancel a test with the appropriate tools scope. Poll with bounded backoff using the returned deadline.
 States are accepted, prepared, running, succeeded, failed, blocked, pending, unknown or
 cancelled. Treat unknown plus `resolution:manual_reconciliation_required` as no-retry:
 a late receipt can be shown without changing the settled status. Do not repeat an
@@ -1315,13 +1323,21 @@ is not an at-capacity signal. The body is the acceptance acknowledgment:
 
 `status` is `scheduled` (with `scheduled_for`) when the workspace's calling window is not
 open yet, `queued` otherwise. Follow `request_id` through **Call requests** below; never
-poll `GET /calls` for a call that may not exist yet. Two other results also use `202` and
-are also not live calls: an at-capacity queue entry, and a request that was prepared and
-handed back before dialling.
+poll `GET /calls` for a call that may not exist yet.
 
-Send an `Idempotency-Key` of 1–200 printable characters. An identical retry returns the
-original acceptance instead of placing a second call; reusing the key with different
-details is `409 WORKFLOW_IDEMPOTENCY_CONFLICT`. Workflow admission rejects any property
+`202` carries four different bodies in all, and none of the other three is a live call.
+Tell them apart by the fields, not by `status`:
+
+| Shape | How you recognise it | What it means |
+| --- | --- | --- |
+| Workflow acceptance | `request_id` | The body above. The normal success answer on a workflow agent; an identical retry with the same key returns it again. |
+| Queued at capacity | `queue_position` | Every line was busy; it is placed when one frees up. |
+| Deferred to the calling window | `scheduled_for`, no `request_id` | Outside the workspace's outbound hours; `status` is `scheduled` and it goes out when the window opens. |
+| Returned to the queue | no `id` at all — `status`, `message` and a short `reason` only | Prepared and handed back before dialling; it is retried automatically. Never resend it yourself. |
+
+Send an `Idempotency-Key` of 1–200 visible ASCII characters (`!` through `~`; a space is
+rejected). An identical retry returns the original acceptance instead of placing a second
+call; reusing the key with different details is `409 WORKFLOW_IDEMPOTENCY_CONFLICT`. Workflow admission rejects any property
 outside `agent_id`, `to`, `from`, `variables`, `metadata`, `workflow_revision_id` and
 `type` with `422 WORKFLOW_REQUEST_INVALID`; `type` is optional and its only accepted
 value is `"phone"`. `409 WORKFLOW_UNPUBLISHED` means publish the agent first.
@@ -1336,6 +1352,7 @@ with the same key.
 - Both numbers must match `^\+[1-9][0-9]{7,14}$` — leading `+`, 8–15 digits, no spaces or dashes.
 - Israeli numbers (`+972…`) must be exactly 12 or 13 characters total (`+972` followed by an 8-digit landline or 9-digit mobile). Anything longer or shorter is rejected.
 - Malformed `to` → `400 INVALID_TO_NUMBER`. Malformed `from` → `400 INVALID_FROM_NUMBER`. Bad numbers never reach the carrier and never create a `call_log` row.
+- On a workflow agent, a well-formed `to` that still cannot be reached is `400 invalid_destination`, checked before the request is accepted: an Israeli number with a leading `0` after the country code, an Israeli mobile, non-geographic or landline number with the wrong number of digits, a mobile prefix no longer in service, or a service number such as 1-800 that cannot be dialled at all. Nothing is placed or charged, and the same number fails identically on every retry.
 
 **`variables` vs `metadata` distinction:**
 - `variables` → injected into the system prompt before the call starts (use for per-call context the agent should know)
@@ -3086,7 +3103,7 @@ Poll the exact attempt with increasing intervals, bounded by `expires_at`. Stop 
 
 Safe read DTOs expose only local Yappr IDs, toolkit, label, verified provider identity when available, readiness, decimal-string `binding_revision`/`authorization_epoch`, disconnect progress and timestamps. Replacement increments immutable identity and authorization generations for future bindings; pinned work never silently changes accounts. Disconnect blocks new actions immediately, while already sent actions may finish. `manual_revocation_required` means a human should remove access in the provider account settings. Connection deletion is not proof that a grant was revoked.
 
-`400` covers malformed/foreign cursors and invalid fields, `401` invalid or insufficiently scoped API keys, `404` missing/cross-company resources, `409` active/closed/ambiguous authorization state, `429` bounded start limits, and `503` unavailable control/storage. Error messages never echo submitted credentials. Legacy `DELETE /integrations/{id}` retains its separate `204` contract during migration.
+`400` covers malformed/foreign cursors and invalid fields, `401` invalid or insufficiently scoped API keys, `404` missing/cross-company resources, `409` active/closed/ambiguous authorization state, `429` bounded start limits, and `503` unavailable control/storage. These routes pass the connection service's body and status through unchanged, so besides the `CONNECTION_*` codes a code prefixed `BROKER_` can arrive, always with `503`: retry the same request, and if it persists start a fresh connection rather than looping. Treat any unfamiliar code by its status; the forwarded names are not a contract. Error messages never echo submitted credentials. Legacy `DELETE /integrations/{id}` retains its separate `204` contract during migration.
 
 ## GET /integrations
 
