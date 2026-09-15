@@ -39,7 +39,7 @@ Every node has `id`, `type`, `name?`. Type determines the rest.
 | `conversation` | yes | Bot talks; on each user turn the model decides whether to call `pick_transition` (advance) or stay | N user-defined transitions, each with `id`, `label`, `next_step_id`, and a required non-empty `description` (the natural-language trigger the model uses to pick this path) |
 | `tool_call` | no | Deterministic tool execution against a row in the `tools` table; routes on result | fixed `success`/`error` + optional `custom[]` (JSONPath-equality matching) |
 | `integration_call` | no | Deterministic call to an OAuth-backed integration (Google Calendar, Gmail) — config lives on the node, not in `tools`; routes on result | fixed `success`/`error` + optional `custom[]` (same shape as `tool_call`) |
-| `transfer` | no | SIP transfer to another phone | terminal |
+| `transfer` | no | Transfer to another phone number | terminal |
 | `end` | no | Speak farewell, hang up | terminal |
 
 **Terminal rule.** Only `end` and `transfer` nodes are allowed to be terminal. `conversation`, `tool_call`, and `integration_call` nodes must each have at least one outgoing edge — for `conversation`, any transition; for the deterministic dispatch nodes, the `success` branch must be wired (and you should design an `error` branch too). The save validator rejects flows that violate this — see "Save validation" near the end of this guide.
@@ -948,4 +948,4 @@ Every PATCH to `flow_config` auto-creates a row in `flow_versions` (deduped by S
 - Per-node tool gating for prompt agents
 - MCP server attachment (deferred to v1.1)
 - Multi-agent / agent handoff
-- The `transfer` node currently uses the same SIP transfer mechanism prompt agents use; for cross-flow handoff use a webhook tool that triggers the next flow externally.
+- The `transfer` node currently uses the same transfer implementation prompt agents use; for cross-flow handoff use a webhook tool that triggers the next flow externally.

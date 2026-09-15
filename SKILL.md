@@ -461,7 +461,7 @@ See Appendix A for the full voice selection guide.
 
 Recommended pick: `Michal` when use case is unclear. **Always pass `voice` explicitly** — if you omit it, the server falls back to `Rachel`, not Michal.
 
-Some workspaces also have an **expressive family** of eight voices (Keren, Eitan, Hila, Ido, Boaz, Tali, Erez, Efrat). Do not reach for one unless the user asks for a more natural or expressive voice, and never promise one before a create or patch has actually accepted it — the family is opt-in per workspace and a `400` listing the workspace's voices is how you find out it is not on. An agent on one of them takes no `temperature` and no `vad_*` settings, and cannot be a flow agent, so skip Step 1.6 for it.
+There is also an **expressive family** of eight voices (Keren, Eitan, Hila, Ido, Boaz, Tali, Erez, Efrat), available on every workspace. Do not reach for one unless the user asks for a more natural or expressive voice. An agent on one of them takes no `temperature` and no `vad_*` settings, and cannot be a flow agent, so skip Step 1.6 for it.
 
 ### Step 1.6 — VAD Presets
 
@@ -1987,9 +1987,9 @@ Adapt language for non-technical users:
 - Female (14): Michal, Rachel, Noa, Maya, Shira, Avigail, Liat, Tamar, Yael, Dvora, Shir, Anat, Dana, Ruth
 - Male (16): Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi, Shlomo, Alon, Yuval
 
-**Expressive family (8 voices, opt-in per workspace):** Keren (f, precise), Eitan (m, composed), Hila (f, sunny), Ido (m, agile), Boaz (m, calm), Tali (f, soothing), Erez (m, solid), Efrat (f, steady).
+**Expressive family (8 voices, on every workspace):** Keren (f, precise), Eitan (m, composed), Hila (f, sunny), Ido (m, agile), Boaz (m, calm), Tali (f, soothing), Erez (m, solid), Efrat (f, steady).
 
-Wider emotional range and more natural interruption handling. The voice name is the only selector — there is no engine field, and naming one of these on `PATCH /agents/:id` moves the agent onto that family (losslessly; patching a standard voice back restores the original). They reject `temperature` and the three `vad_*` settings, and are not available on flow agents. Where the family is not switched on for the workspace, the name is rejected with a `400` listing the voices that workspace may use — treat that as the answer, not as an error to retry. Full reference: `yappr-api.md` → Voice Catalog.
+Wider emotional range and more natural interruption handling. The voice name is the only selector — there is no engine field, and naming one of these on `PATCH /agents/:id` moves the agent onto that family (losslessly; patching a standard voice back restores the original). They reject `temperature` and the three `vad_*` settings, and are not available on flow agents. Full reference: `yappr-api.md` → Voice Catalog.
 
 **Recommended pick:** `Michal` when use case is unclear. Match gender to the agent's persona in the system prompt. Always set `voice` explicitly in the create payload — the server-side fallback for an omitted voice is `Rachel`, not Michal.
 

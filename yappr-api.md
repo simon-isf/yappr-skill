@@ -3008,7 +3008,7 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 
 ### Expressive family (8 voices)
 
-Wider emotional range, more natural interruption handling, and their own turn-taking. **Opt-in per workspace** — where the family is not switched on, these names are rejected and the `400` lists only the voices that workspace may use. Never promise one to a customer before a create or patch has actually accepted it.
+Wider emotional range, more natural interruption handling, and their own turn-taking. Available on every workspace — there is nothing to switch on.
 
 | Voice | Gender | Character | English accent |
 |-------|--------|-----------|----------------|
