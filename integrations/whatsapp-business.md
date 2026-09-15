@@ -11,7 +11,7 @@
 ## Base URL
 
 ```
-https://graph.facebook.com/v19.0
+https://graph.facebook.com/v21.0
 ```
 
 **Phone Number ID**: Each WhatsApp business number has a unique ID (not the number itself). Get from: WhatsApp Manager → Phone Numbers.
@@ -228,7 +228,7 @@ const token = Deno.env.get("WHATSAPP_TOKEN");
 // Format: no +, no spaces
 const to = callerPhone.replace(/\D/g, "").replace(/^0/, "972");
 
-await fetch(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
+await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
   method: "POST",
   headers: {
     Authorization: `Bearer ${token}`,

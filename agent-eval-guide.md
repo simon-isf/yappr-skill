@@ -273,8 +273,11 @@ PASS_RATE=$(echo "$AGG" | jq '.pass_rate')
 SCORE_AVG=$(echo "$AGG" | jq '.score_avg')
 echo "Suite result: $PASSED/$TOTAL passed (rate=$PASS_RATE, avg score=$SCORE_AVG)"
 
-# 4. Print failing case names so the developer can investigate
-echo "$AGG" | jq -r '.runs[] | select(.pass_fail==false) | "FAIL: \(.case.name) (run \(.id), score \(.score))"'
+# 4. Print failing runs so the developer can investigate.
+# Suite-aggregate runs[] carry only flat columns (case_id, not an expanded
+# case object), so identify failures by case_id + run id. Resolve case_id to
+# a human name via GET /agent-eval/cases/<case_id> if you need it.
+echo "$AGG" | jq -r '.runs[] | select(.pass_fail==false) | "FAIL: case=\(.case_id) (run \(.id), score \(.score))"'
 
 # 5. Gate the build
 if [ "$(echo "$PASS_RATE >= $THRESHOLD_PASS_RATE" | jq)" != "true" ]; then
@@ -378,7 +381,9 @@ curl -s "https://api.goyappr.com/agent-eval/runs/$RUN_ID/evaluation" \
 | Persona too rigid | The persona never reaches the topic the agent needs | Trim `identity_prompt`, broaden `behavior_traits.cooperation` |
 | Persona too cooperative | Refusal-path case never refuses | Add explicit refusal stance to the persona's `goal` for that case (use a per-case override or a separate persona) |
 | Agent missing a tool call | `must_call_tool` fails | Inspect agent.system_prompt / flow_config for missing tool guidance; re-run after fix |
-| Flow agent skips a node | `must_reach_node` fails | Pull `flow_event` rows from `/turns` — find the conversation node where the wrong transition fired, inspect `flow_eval_decision.reasoning` |
+| Flow agent skips a node | `must_reach_node` fails | The failure reason lists the nodes the flow *did* reach. If your target isn't among them, pull the `flow_event` rows from `/turns` and find the `eval_decision` with `valid: false` — that's the transition the model tried and the router rejected |
+| Every assertion fails identically | Reasons all read `assertion is missing a ...` | The case is malformed, not the agent. Each assertion needs a `type` (or `kind`), and `must_say`/`must_not_say` need a `phrase` or `pattern` |
+| Judge fails with `judge unavailable` | `custom_llm_judge` reason names a transport error | The grader was unreachable — this is reported as a failure rather than a silent pass. Re-run; if it persists it's an outage, not an agent regression |
 | `termination_reason: max_turns` | Conversation ran out | Either raise the case's `max_turns`, simplify the persona's goal, or shorten the agent's per-step instructions |
 | `status: failed` | Worker hit an unrecoverable error | Check `error` field — usually a malformed `flow_config`, missing tool, or insufficient balance |
 
@@ -412,9 +417,16 @@ The override is recorded on the run row, so you can always trace back which conf
 
 ## Common gotchas
 
-- **`tool_policy: "mock"` is the right default for CI.** All tools return synthetic success — free, deterministic, no third-party calls. Only switch to `real` for occasional pre-prod sanity checks.
-- **Mixed-policy via `allowlist`.** Useful when you've added one new tool that you want to validate end-to-end while everything else stays mocked.
-- **`must_reach_node` only works for flow agents.** Using it on a prompt-mode agent fails the assertion every time.
+- **`tool_policy: "mock"` is the right default for CI.** Webhook tool steps make no request and return the fixed result `{"success": true, "status_code": 200}` — free, deterministic. Only switch to `real` for occasional pre-prod sanity checks.
+- **Know what `mock` proves.** It proves the flow assembles the request, resolves the right arguments and routes on the outcome. It does NOT prove your endpoint is reachable or accepts the request — target validation only happens on a real dispatch. And because the synthetic body is fixed, a step whose transitions branch on the response *content* always takes its success edge under `mock`; use `real`/`allowlist` to exercise those branches.
+- **`allowlist` does not hold back connected apps.** It differentiates webhook tools only. Steps that call a connected app (Google Calendar, Gmail) dispatch for real under `allowlist` exactly as under `real` — so a 30-case suite over a flow with a calendar step creates 30 real calendar entries. Use `mock` if you need those held back too.
+- **Allowlist entries should be tool ids.** They match a tool's `id` or its `name`, exactly and case-sensitively, but names are not unique within a company — one production workspace has 16 active tools sharing a name across two different endpoints, so allowlisting the name arms all 16. An entry matching nothing is mocked (fails safe) and shows in the trace as `dispatched: false`.
+- **`tool_policy` governs both agent types.** A flow agent's tool steps and connected-app steps, and the tools attached to a single-prompt agent, all follow the same policy — a prompt agent's webhook tool sends the identical request a live call sends under `real`, and returns the same fixed synthetic success under `mock`. `must_call_tool` works for both. Two tool kinds are policy-independent because they make no request: a hang-up tool ends the run, and a transfer tool ends it without dialling the destination.
+- **`must_call_tool` matches the tool's own name.** Not the flow step's name, and not the camelCase form the model calls it by — use the name exactly as it appears in the tools list. This matters most on prompt agents, where a tool named "Book Appointment" is invoked as `bookAppointment` but recorded as "Book Appointment".
+- **Mixed-policy via `allowlist`.** Useful when you've added one new webhook tool that you want to validate end-to-end while the other webhook tools stay mocked.
+- **`must_reach_node` only works for flow agents.** Using it on a prompt-mode agent fails the assertion every time (with a reason saying no flow nodes were entered).
+- **`kind`/`phrase` and `type`/`pattern` are the same fields.** The discriminator is `type` with `kind` as an alias; the matcher is `pattern` (regex) with `phrase` as the substring alias. Mixing spellings across a suite is fine. `phrase` needs no regex escaping — prefer it for literal text.
+- **Rubrics don't see routing calls.** `custom_llm_judge` is shown the business tool calls only; `pick_transition` and argument submitters are filtered out, so "the agent must not call any tool" rubrics work on flow agents.
 - **Personas drift over time.** When the agent under test grows new capabilities, revisit your personas — an old "frustrated tenant" persona might no longer trigger the new path you care about.
 - **Don't share personas across very different agents.** A persona tuned to a booking agent will give garbage results against an unrelated support agent.
 - **No webhooks for eval runs.** Eval runs do not emit webhooks — poll `GET /agent-eval/runs/:id` (or `GET /agent-eval/suites/:id/runs/:exec_id` for suites) instead. Single `POST /agent-eval/cases/:id/run` already blocks up to 60s and returns the result inline if it finishes in time.
@@ -428,8 +440,8 @@ User-facing rate card (what gets charged to your credit balance):
 
 | Role | Input | Output |
 |---|---|---|
-| Agent | $2 / 1M tokens | $10 / 1M tokens |
-| Persona | $1 / 1M tokens | $4 / 1M tokens |
+| Agent | $1 / 1M tokens | $6 / 1M tokens |
+| Persona | $1 / 1M tokens | $6 / 1M tokens |
 
 A typical 10-turn case runs $0.005-$0.05. A 50-case regression suite under $1.
 

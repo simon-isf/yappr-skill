@@ -190,7 +190,7 @@ const query = await fetch(
   { headers: { Authorization: `Bearer ${token}` } }
 ).then(r => r.json());
 
-const leadId = query.records?.[0]?.Id;
+let leadId = query.records?.[0]?.Id;
 
 if (leadId) {
   // Update

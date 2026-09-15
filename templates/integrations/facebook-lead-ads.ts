@@ -181,7 +181,7 @@ export function parseFacebookLeadPayload(body: unknown): Array<{
 // ---------------------------------------------------------------------------
 
 export class FacebookLeadApiClient {
-  static readonly baseUrl = "https://graph.facebook.com/v19.0";
+  static readonly baseUrl = "https://graph.facebook.com/v21.0";
 
   constructor(
     private readonly accessToken: string,

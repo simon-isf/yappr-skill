@@ -226,7 +226,7 @@ const search = await fetch("https://api.hubapi.com/crm/v3/objects/contacts/searc
   }),
 }).then(r => r.json());
 
-const contactId = search.results?.[0]?.id;
+let contactId = search.results?.[0]?.id;
 
 if (contactId) {
   // 2a. Update existing

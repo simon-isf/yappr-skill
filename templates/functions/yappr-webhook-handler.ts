@@ -1,4 +1,7 @@
 // yappr-webhook-handler.ts
+// YOUR OWN glue — you host & run this on your infrastructure (e.g. your Supabase project).
+// It is your receiver for Yappr's outbound webhooks, not a Yappr-supplied feature: you create a
+// Yappr webhook pointed at this URL, and reconcile events against the call queue table you own.
 // Receives Yappr webhook events (call.analyzed, call.no_answer, call.failed).
 // Routes by disposition, schedules retries, triggers downstream actions.
 //
@@ -52,7 +55,7 @@ async function fetchYapprCall(callId: string): Promise<Record<string, unknown> |
 
 // ── DISPOSITION HANDLERS ─────────────────────────────────────────────────────
 // Customize these based on your use case.
-// callData = full call object from GET /api-v1/calls/:id (has lead, disposition, transcript, summary)
+// callData = full call object from GET /calls/:id (has lead, disposition, transcript, summary)
 // webhookData = raw webhook payload (minimal: direction, status, phone numbers, disposition label)
 
 async function handleAppointmentSet(callData: Record<string, unknown>, supabase: ReturnType<typeof createClient>) {

@@ -1,4 +1,7 @@
 // receive-lead.ts
+// YOUR OWN glue — you host & run this on your infrastructure (e.g. your Supabase project).
+// It is your lead-intake endpoint, not a Yappr-supplied feature: it writes into a call queue
+// table you own, which dispatch-calls.ts later drains to Yappr's public POST /calls endpoint.
 // Receives a lead from any external platform and queues it for calling.
 //
 // Required env vars:
