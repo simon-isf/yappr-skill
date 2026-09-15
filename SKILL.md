@@ -53,7 +53,8 @@ runs after the call arrives and before it is answered, inside a short platform w
 outbound call it runs before the dial, inside five minutes. `before.on_failure`
 decides what an over-run or a failure means: `continue_with_available` answers or dials
 with whatever Before produced — including when the window ran out, not only when a step
-failed — and `stop_admission` declines the inbound caller outright.
+failed — and `stop_admission`, the default, refuses the call outright: the inbound caller is
+never answered, and an outbound request ends `failed` without dialling.
 Keep Before to what the agent must know in order to open its mouth; chaining several
 tools that may each take the full tool timeout will not fit an inbound window. Publication
 refuses a chain that fits neither window, and a document with before-call steps cannot

@@ -1538,9 +1538,10 @@ available still calls, with whatever the preparation did produce.
 nothing is dialled, no call record is created, and the failure policy does not apply. The
 request ends `failed` with `error_code: "before_declined"`.
 
-`error_code` is set only when `status` is `failed` or `expired`: `before_declined` for a
-refusal, `request_expired` for a request that outlived its window, the preparation's own
-code when it recorded one, and `request_failed` when it did not.
+`error_code` is set only when `status` is `failed` or `expired`. An `expired` request is
+always `request_expired`. On a `failed` one the preparation's own code wins wherever it
+recorded one — a refusal records `before_declined` — and where it recorded nothing the value
+is `before_declined` for a refusal and `request_failed` for anything else.
 
 A request that dies before anything is dialled publishes no call event, because there is no
 call. It publishes the lifecycle event `request.failed` instead, which an After trigger can
