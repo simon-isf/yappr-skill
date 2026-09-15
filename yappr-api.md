@@ -365,15 +365,20 @@ sequence's own description — none of those is ever substituted),
 `placeholder_reserved_variable` (a call variable named `before` declared alongside a
 reference), `placeholder_limit`, `placeholder_too_long`. Where the producing step may
 legitimately not run — `before.on_failure: "continue_with_available"`, or the step itself
-continuing on failure — a reference with no fallback is an advisory, not a refusal.
+continuing on failure — a reference with no fallback is an advisory, not a refusal: the
+warning code `before_reference_missing_fallback`. Tell the customer what it costs — if the
+value is missing when the call starts the reference is removed and the sentence is spoken
+without it — and offer the fix: fallback text after the `|`, or `|` with nothing after it
+to declare the empty string deliberately.
 
 Validation warnings are safe codes: `strict_off_guidance`, `during_output_advisory`,
-`sequence_branch_advisory`, or generic `workflow_warning`. Never discard an unknown
-warning or treat advisory ordering as enforced execution. Explain a Strict change
-before publishing; accepted runs keep their exact published artifacts. A 409 means
-review the saved version/dependency changes, not blindly fetch a fresh token and
-resend. `WORKFLOW_SETTINGS_TOO_LARGE` (413) leaves saved data intact and blocks
-publication until technical settings fit. No authoring endpoint starts a real call.
+`sequence_branch_advisory`, `before_reference_missing_fallback`, or the generic
+`workflow_warning`. Never discard an unknown warning or treat advisory ordering as
+enforced execution. Explain a Strict change before publishing; accepted runs keep
+their exact published artifacts. A 409 means review the saved version/dependency
+changes, not blindly fetch a fresh token and resend. `WORKFLOW_SETTINGS_TOO_LARGE`
+(413) leaves saved data intact and blocks publication until technical settings fit.
+No authoring endpoint starts a real call.
 
 ---
 
