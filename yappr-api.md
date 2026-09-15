@@ -1583,9 +1583,11 @@ Mint a short-lived, single-use token for an **in-browser** voice call via the [`
   "expires_at": "ISO8601",
   "agent_id": "…",
   "agent_name": "…",
+  "protocol": "offer",
   "connection": {
     "base_url": "…",
     "web_call_url": "…",
+    "call_requests_url": "…",
     "turn_credentials_url": "…",
     "api_key": "…"
   }
@@ -1599,6 +1601,13 @@ no call slot is taken. There is nothing to retry: republish that agent's workflo
 the web channel, or without its before-call steps. Publishing that combination is itself
 refused (`before_unsupported_on_web`), so a `409` here means a version published before
 that rule is still current.
+
+**`protocol` says which exchange this agent needs.** `"offer"` is the one-shot
+connect every version of the SDK speaks. `"call_request"` means the agent's
+published workflow runs steps before it answers, so the browser must create the
+call, poll it and start it — see **Web calls on an agent that prepares** below.
+A `call_request` token also lives 15 minutes rather than 5, because it has to
+outlast the steps it waits for.
 
 **Two-plane model.** Your server holds the secret API key and calls this endpoint to mint the token (control plane). The browser receives only `token` + `connection` and runs the WebRTC call (data plane) — your secret key never reaches the client. Every web call is metered and billed to the key's company exactly like any other call.
 
@@ -1615,8 +1624,10 @@ import { YapprConversation } from "@goyappr/client";
 const call = await YapprConversation.startSession({
   token: session.token,
   connection: session.connection,       // carries the endpoint URLs + public key
-  onStatusChange: ({ status }) => {},   // connecting | connected | disconnected | failed
+  protocol: session.protocol,           // pass it through; the SDK picks the exchange
+  onStatusChange: ({ status }) => {},   // preparing | connecting | connected | disconnected | failed
   onModeChange:   ({ mode }) => {},     // "speaking" | "listening"
+  onPreparation:  ({ steps }) => {},    // only for an agent that prepares
   onError:        (msg) => {},
 });
 
@@ -1626,6 +1637,68 @@ await call.endSession();
 ```
 
 **Post-call data (same as phone).** When a web call ends it runs the full post-call pipeline keyed to the call id: **transcript, summary, recording, and disposition** land on the call record (`GET /calls/:id`), and the agent's configured **post-call webhook fires** with the same payload as a phone call (transcript, summary, `call_metadata`, `call_variables`). There is no live in-browser transcript yet (`onMessage` reserved), but the server-side transcript is available shortly after the call ends (it is generated post-call from the recording — allow a few seconds before fetching `GET /calls/:id`).
+
+### Web calls on an agent that prepares
+
+An agent whose published workflow declares before-call steps cannot be started
+in one shot — a single SDP exchange has nowhere for that work to run. Such an
+agent's mint answers `protocol: "call_request"`, and the browser takes a
+three-step exchange instead. `@goyappr/client` does all of it when you pass
+`session.protocol` through; the endpoints are here for anyone writing their own
+client.
+
+**1. Create it.** `POST /call-requests` (scope `calls:create`) on the secret-key
+API, or `POST {connection.call_requests_url}` from the browser with the session
+token. Nothing is dialled, no call record is created, no line is held.
+
+```json
+{ "type": "web", "agent_id": "…", "variables": { "LeadName": "David" } }
+```
+
+**202**
+
+```json
+{
+  "request_id": "…", "run_id": "…", "channel": "web",
+  "status": "preparing", "preparation_status": "pending", "call_id": null,
+  "expires_at": "ISO8601",
+  "start_capability": "…",
+  "status_url": "…", "cancel_url": "…", "start_url": "…"
+}
+```
+
+`start_capability` is returned **once** and stored only as a hash. It authorises
+this one request's read, cancel and start and nothing else, so it is safe in a
+browser. Send it as the `x-yappr-call-request-key` header.
+
+**2. Poll `status_url`** until `status` is `ready`. On the browser data plane the
+read also carries `preparation_steps` — one entry per authored step, in document
+order, each with the author's own `label` — so a waiting caller can be told what
+is running. Step *results* are never included.
+
+```json
+{ "status": "preparing", "preparation_status": "running",
+  "preparation_steps": [{ "id": "lookup_caller", "label": "Look up the caller", "status": "running" }] }
+```
+
+**3. Start it.** `POST {start_url}` with a **fresh** SDP offer — build the peer
+now, not before the steps ran — and the capability header. **201** returns
+`sdp`, `type`, `pc_id`, `ice_candidate_url` and `call_id`, exactly what the
+one-shot connect returns.
+
+A start is one offer: the same offer again returns the same peer
+(`replayed: true`), a different one is `409 WORKFLOW_START_ALREADY_CLAIMED`.
+`409 WORKFLOW_START_NOT_READY` means poll longer; `410 WORKFLOW_START_EXPIRED`
+means create a new request; `503 AT_CAPACITY` claimed nothing, so the request is
+still good — wait and start again. `POST {cancel_url}` stops a request nobody is
+going to start.
+
+**The old one-shot connect still works**, unchanged, for every agent whose mint
+says `protocol: "offer"` — which is every agent with no before-call steps. An
+older client that sends a one-shot offer to an agent that prepares gets
+`409 workflow_preparation_required`, and that refusal costs nothing: the token
+is not spent and no line is taken, so the same token can create a request
+instead.
 
 The browser presents the token as the `x-yappr-web-token` header to the endpoints in `connection` — the SDK does this for you; you never set it. Pass a `variables` object at mint (`POST /calls {type:"web", agent_id, variables}`) and it is injected into the agent's system prompt as `{{Variable}}` tokens, exactly like a phone call. **Preview limitations:** no live in-browser transcript yet (`onMessage` reserved — server-side transcript above is unaffected); very restrictive networks that block UDP may fail to connect, surfaced via `onError`.
 
