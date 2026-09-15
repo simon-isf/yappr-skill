@@ -1,6 +1,6 @@
 ---
 name: yappr-agent-builder
-description: Build, configure, and launch complete Yappr AI voice agent systems end-to-end — both single-prompt agents and flow agents (graph state machines for procedural conversations like booking, intake, qualification). Use when users want to create a voice agent, design a conversation flow with branching, connect Google Calendar / scheduling, set up outbound call dispatch, configure post-call automation, manage leads, or go live with a phone number. Discovery-driven — queries the live account before asking the user anything.
+description: Build, configure, and launch complete Yappr AI voice agent systems end-to-end — one agent with one editor for what happens before, during and after the call, plus the two older kinds that are still live and still edited. Use when users want to create a voice agent, design a conversation flow with branching, connect Google Calendar / scheduling, set up outbound call dispatch, configure post-call automation, manage leads, or go live with a phone number. Discovery-driven — queries the live account before asking the user anything.
 ---
 
 # Yappr Super Voice AI Agent Builder
@@ -187,32 +187,30 @@ working once placement has been claimed. Pin a batch to one tested published ver
 with `workflow_revision_id` when a mid-batch publication would change behaviour. See
 **Call requests** in `yappr-api.md`.
 
-### Legacy decision: prompt agent OR flow agent
+### There is one kind of agent
 
-Yappr supports **two agent types**. Pick one before Phase 1 — agent type is set at create time and cannot be changed (the API will reject any attempt to flip it).
+**A new agent is a workflow agent, and nothing else can be created.** `POST /agents` takes
+`name` plus `workflow.global_instructions`; a body carrying `system_prompt`, `type` or
+`flow_config` answers `410 AGENT_LEGACY_CREATION_GONE`. Never ask the user to choose
+between a prompt agent and a flow agent, and never fall back to the old body after a
+failed create — there is no field to fix and no retry that succeeds.
 
-| Pick **prompt agent** when… | Pick **flow agent** when… |
-|---|---|
-| Conversation is open-ended / consultative | Conversation has required steps that must run in order |
-| The agent's job is fluent dialogue, not procedure | The agent's job is to collect specific slots / fire specific tools at specific points |
-| You want one big system prompt to shape behavior | You want **measurable funnel drop-off** at each step |
-| Examples: customer support, FAQ, sales discovery, free-form interview | Examples: appointment booking, lead qualification, RSVP, intake forms, pre-screening |
+Both old kinds are described in this skill because agents of both kinds are still live:
+they take calls, keep their tools, lifecycle webhooks and phone numbers, and are read,
+updated and archived exactly as before. Read those sections when you are working on an
+agent that already exists; never as a way to build a new one.
 
-**Heuristic queries that map to flow agents:**
-- *"Build me a wedding RSVP voice agent that books in my Google Calendar"*
-- *"I need an agent that always asks for date and party size in order"*
-- *"Build me a procedural agent that branches based on the answer"*
+What the old choice used to decide is now one document. An open-ended conversation is one
+conversation step with Strict Mode off. A procedure with required steps in order is a
+graph of steps with Strict Mode on — and it is the same agent, the same editor and the
+same endpoints either way, so the decision is no longer made at create time and no longer
+permanent. Start from the shape the caller needs and change it later.
 
-**Heuristic queries that map to prompt agents:**
-- *"Build me a sales agent for cold-calling leads"*
-- *"I want a customer support agent that answers FAQs"*
-- *"Build me a Hebrew assistant that talks naturally with callers"*
+For the how-to on building that graph, open
+[`flow-composition-guide.md`](flow-composition-guide.md) for the conversational patterns
+and the canonical workflow document in `yappr-api.md` for its shapes. For OAuth-backed
+integrations, open [`integrations-guide.md`](integrations-guide.md).
 
-If unsure, ask the user one clarifying question: *"Does this agent need to follow a fixed sequence of steps with specific information collected at each step, or is it a free-form conversation?"*
-
-**Once you've decided**, set `agent_type` in the discovery config (Phase 0) and follow the corresponding fork in Phase 1.
-
-For the deeper how-to on flow agents, open [`flow-composition-guide.md`](flow-composition-guide.md). For OAuth-backed integrations (Google Calendar — only available to flow agents in v1), open [`integrations-guide.md`](integrations-guide.md).
 
 ### Core files in this skill directory
 
@@ -442,6 +440,11 @@ Dispositions to create: [any gaps between current dispositions and what's needed
 ## PHASE 1: Agent Creation
 
 For each agent identified in discovery, run this phase. If multiple agents are needed, complete one at a time.
+
+> **Building a new agent?** Neither fork below creates one any more — `POST /agents` takes
+> `name` plus `workflow.global_instructions` and refuses both old bodies. Create the draft
+> that way, then build what these two forks describe inside its workflow document. The
+> forks stay because they are how you work on an agent that already exists.
 
 **Phase 1 forks based on agent type** (set in DISCOVERY CONFIG):
 - `agent_type: prompt` → continue with **Phase 1A** below (single-prompt agent — the original journey).

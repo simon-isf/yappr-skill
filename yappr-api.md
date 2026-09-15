@@ -174,37 +174,36 @@ and document, then explicitly validate/publish with `POST /agents/:id/workflow/v
 or `/publish` and the saved expected_version. Creation starts Strict Mode off with a
 valid closing route and empty Before/After phases; it does not publish or enable calls.
 
-The body below remains **temporary legacy migration compatibility**, not the unified
-New Agent flow. Existing deployed legacy cohorts continue using it until explicit cutover.
+There is one kind of agent. A body **without** `workflow` — one carrying
+`system_prompt`, `type` or `flow_config` — asks for the retired prompt or flow agent and
+returns `410 AGENT_LEGACY_CREATION_GONE` with the shape to send instead. It is `410` and
+not `400` because the request is well formed and the kind of agent it asks for no longer
+exists: there is no field to fix and no retry that succeeds. Never fall back to it after a
+failed workflow create.
+
+Agents that already exist are unaffected: they keep taking calls, keep their tools,
+lifecycle webhooks and phone numbers, and are still read with `GET /agents/:id`, updated
+with `PATCH /agents/:id` and archived with `DELETE /agents/:id`.
+
+Moving an integration off the old body:
+
+| Old field | Where it goes now |
+|---|---|
+| `system_prompt` | `workflow.global_instructions` on create |
+| `type`, `flow_config` | the conversation graph in `PUT /agents/:id/workflow` |
+| voice, VAD, timeouts, background sound, lead memory | `PATCH /agents/:id` after creation |
+| `webhook_url`, `webhook_events`, `webhook_headers` | unchanged, on `PATCH /agents/:id` |
+| `extraction_parameters` | unchanged, on `PATCH /agents/:id` |
+| tool attachments | `POST /tools` plus the workflow's own bindings |
 
 **Scopes:** `agents:create`
 
-**Request body:**
+**Request body:** `name`, optional `description` and `language`, and
+`workflow.global_instructions`. Nothing else is accepted.
 
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `name` | string | yes | Non-empty |
-| `system_prompt` | string | yes | Non-empty |
-| `voice` | string | yes | Must be a valid voice name from Voice Catalog |
-| `language` | string | yes | `"he"` or `"en"` |
-| `temperature` | float | no | 0.0–2.0, default 0.5 |
-| `agent_speaks_first` | boolean | no | default `true` |
-| `greeting_message` | string | no | Required if `agent_speaks_first: true` |
-| `webhook_url` | string | no | Valid HTTPS URL |
-| `webhook_events` | string[] | no | Array of valid event names |
-| `extraction_parameters` | array | no | Each item: `{ "name": "camelCase", "description": "what to extract" }`. Values extracted from call transcript and included in `call.analyzed` webhook + stored on call log. |
-| `vad_stop_secs` | float | no | 0.05–5.0, default 0.5 |
-| `vad_start_secs` | float | no | 0.05–2.0, default 0.2 |
-| `vad_confidence` | float | no | 0.0–1.0, default 0.7 |
-| `silence_timeout_secs` | int | no | 10–900, default 60 |
-| `max_continuous_speech_secs` | int | no | 0–300, default 120 (0 = disabled) |
-| `max_call_duration_secs` | int | no | 0–3600, default 600 (0 = disabled) |
-| `lead_memory_enabled` | boolean | no | default `true` |
-| `background_sound` | string \| null | no | One of: `call_center`, `open_office`, `cafe`, `outdoor`. Plays under the agent voice during calls. Null = silent. |
-| `background_sound_volume` | number | no | 0.0–0.6 (default 0.3). Capped to protect turn-taking. |
-| `idempotency_key` | string | no | UUID for safe retries |
+**Response:** `201` — the agent object, as an unpublished draft. `200` on an idempotent
+replay.
 
-**Response:** `201` — full agent object (same shape as GET /agents/:id, minus `tools[]`)
 
 ---
 
@@ -2725,27 +2724,12 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 
 A flow agent (`type: "flow"`) is driven by `flow_config` — a graph of nodes — instead of a single `system_prompt`. Both fields are still required for flow agents (the `system_prompt` is the global persona; node `instructions` are per-step). See [`flow-composition-guide.md`](flow-composition-guide.md) for the conceptual guide.
 
-## POST /agents (additive)
-
-Existing endpoint, additive fields:
-
-```jsonc
-{
-  "type": "flow",                       // 'prompt' (default) or 'flow'; immutable post-create
-  "system_prompt": "Required (global persona for the flow)",
-  "flow_config": {                      // required when type='flow'; rejected when type='prompt'
-    "flow_config_version": "1",
-    "nodes": [ /* see schema below */ ]
-  },
-  "name": "...", "language": "...", "voice": "...",
-  /* all existing fields */
-}
-```
-
-**Validation errors (400):**
-- `type='flow'` with null/missing `flow_config` → `"flow_config_required_for_flow_agent"`
-- `type='prompt'` with non-null `flow_config` → `"flow_config_only_for_flow_agent"`
-- `flow_config` invalid (no start node, dangling next_step_id, duplicate node id) → `"flow_config_invalid"` + details
+> **A flow agent can no longer be created.** `POST /agents` answers
+> `410 AGENT_LEGACY_CREATION_GONE` for any body without `workflow`. Everything in this
+> section describes a flow agent that **already exists**: it still takes calls, and its
+> graph is still read and edited through `PATCH /agents/:id`. A new agent gets its
+> conversation graph from `PUT /agents/:id/workflow` instead, and the equivalent shapes
+> are in the canonical workflow document, not here.
 
 ## PATCH /agents/:id (additive)
 
