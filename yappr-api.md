@@ -183,7 +183,10 @@ failed workflow create.
 
 Agents that already exist are unaffected: they keep taking calls, keep their tools,
 lifecycle webhooks and phone numbers, and are still read with `GET /agents/:id`, updated
-with `PATCH /agents/:id` and archived with `DELETE /agents/:id`.
+with `PATCH /agents/:id` and archived with `DELETE /agents/:id`. The one thing that does
+change for them is **when** the agent is moved onto the workflow engine: its three webhook
+columns are emptied and its notifications become After triggers, and the request body your
+endpoint receives changes shape. *Webhook Events* below carries both shapes side by side.
 
 Moving an integration off the old body:
 
@@ -192,7 +195,7 @@ Moving an integration off the old body:
 | `system_prompt` | `workflow.global_instructions` on create |
 | `type`, `flow_config` | the conversation graph in `PUT /agents/:id/workflow` |
 | voice, VAD, timeouts, background sound, lead memory | `PATCH /agents/:id` after creation |
-| `webhook_url`, `webhook_events`, `webhook_headers` | unchanged, on `PATCH /agents/:id` |
+| `webhook_url`, `webhook_events`, `webhook_headers` | After triggers on the workflow, one per event — see *Webhook Events* |
 | `extraction_parameters` | unchanged, on `PATCH /agents/:id` |
 | tool attachments | `POST /tools` plus the workflow's own bindings |
 
@@ -2701,8 +2704,11 @@ Generate a Stripe Checkout link for adding a payment method.
 Events sent to the agent's configured `webhook_url` as calls progress.
 
 Configure on agent: `webhook_url` (HTTPS URL) + `webhook_events` (array of event names).
+Once the agent is moved to the workflow engine those three columns are emptied and the
+same endpoint and events live on the workflow as After triggers; the events you receive
+and their names do not change, the request body does.
 
-**Payload shape:**
+**Payload shape — agent not yet moved to the workflow engine:**
 ```json
 {
   "event": "call.analyzed",
@@ -2713,6 +2719,50 @@ Configure on agent: `webhook_url` (HTTPS URL) + `webhook_events` (array of event
   "data": { ... }
 }
 ```
+
+**Payload shape — agent moved to the workflow engine:**
+```json
+{
+  "event": "call.analyzed",
+  "call": {
+    "company_id": "uuid", "agent_id": "uuid", "agent_name": "string", "call_id": "uuid",
+    "call_direction": "inbound", "caller_number": "+972…", "callee_number": "+972…",
+    "call_metadata": {}, "call_variables": {}, "channel": "phone",
+    "status": "completed", "started_at": "ISO8601", "ended_at": "ISO8601",
+    "duration_seconds": 0, "ended_by": "string", "close_reason": "string",
+    "recording_url": "string", "transcript": [],
+    "analysis": { "summary": "string", "extracted_data": {}, "disposition_label": "Booked" },
+    "disposition": { "id": "uuid", "label": "Booked" },
+    "lead": {}, "billing": {}
+  }
+}
+```
+
+`event` is the only member that stays where it is, and it keeps the **same spelling**
+you read today (`call.analyzed`, `call.started`, …) even where the workflow's own
+trigger has a different name. Everything else moves under `call`:
+
+| Before the move | After the move |
+|---|---|
+| `event` | `event` — unchanged |
+| `timestamp` | *gone* — it was the sender's clock; the call's own times are `call.started_at` / `call.ended_at` |
+| `agent_id`, `company_id`, `call_id` | `call.agent_id`, `call.company_id`, `call.call_id` |
+| `data.direction` | `call.call_direction` |
+| `data.from_number`, `data.to_number` | `call.caller_number`, `call.callee_number` |
+| `data.status`, `data.duration_seconds`, `data.transcript` | `call.status`, `call.duration_seconds`, `call.transcript` |
+| `data.disposition` (label string) | `call.disposition` — an **object**; the label is `call.disposition.label` |
+| `data.summary` | `call.analysis.summary` |
+| `data.extracted_data` | `call.analysis.extracted_data` |
+| per-event extras inside `data` (a failure's `error`, a blocked call's reason) | *gone* |
+
+There is no `data` wrapper after the move. Read `event` first and branch on the presence
+of `call` if you have to serve both shapes during the migration; you are told before your
+agent is moved, so the simpler path is to switch your parser at the same time.
+
+The `call` object is the same **call package** a workflow tool receives, so it carries
+more than the old payload did: the lead, the call's `metadata` and per-call variables,
+billing, the recording URL and the full disposition object are all in it. The warning
+below about fetching `GET /calls/:id` applies to the old shape only.
 
 **Event reference:**
 
@@ -2953,7 +3003,7 @@ Same validation as POST. Plus:
 }
 ```
 
-**Node types**: `start`, `conversation`, `tool_call`, `transfer`, `end`. (`integration_call` is retired — see below.) There are no `webhook` or `structured_output` flow nodes — for per-call extraction or webhook delivery, use the agent-level `extraction_parameters` and `webhook_url` / `webhook_events` fields. They apply uniformly to both prompt and flow agents.
+**Node types**: `start`, `conversation`, `tool_call`, `transfer`, `end`. (`integration_call` is retired and the builder no longer draws it — see below.) There are no `webhook` or `structured_output` flow nodes — for per-call extraction or webhook delivery, use the agent-level `extraction_parameters` and `webhook_url` / `webhook_events` fields. They apply uniformly to both prompt and flow agents.
 
 **Terminal rule**: only `end` and `transfer` nodes are allowed to be terminal. Every `conversation` and `tool_call` node must have at least one outgoing edge — for `conversation`, that's any transition; for `tool_call`, the `success_next_step_id` must be wired. Saves that violate this return `terminal_not_allowed` (per offending node) or `no_terminal` (no `end` / `transfer` reachable in the flow at all) under the `FLOW_INVALID` 400 — see "Save validation" below.
 
@@ -2991,6 +3041,9 @@ dispatched against a Yappr-managed OAuth client. **It no longer exists.**
   the runtime refuses the call at load rather than skipping the step, because a
   skipped booking step means the agent tells the caller it booked something it
   did not.
+- The builder has no editor for it either. Opening a stored flow that contains
+  one draws it as an inert "unsupported step" card you cannot configure; the rest
+  of the canvas still works so you can rewire around it.
 - There is no migration and no compatibility mode. Delete the node.
 
 **What to do instead:** connect the calendar or mailbox as a connected account
