@@ -512,7 +512,13 @@ immutable revision so a workflow can use it. The body is strictly
 `{expected_revision, contract}` — any other property is `400 WORKFLOW_REQUEST_INVALID`.
 `contract` requires object `input_schema` and `output_schema` and optionally
 `allowed_phases` (default all three), `allowed_channels` (default both), `timeout_ms`
-(default 30000), `effect` (default `write`) and `replay_safe` (default false). Name,
+(default 30000), `effect` (default `write`), `replay_safe` (default false) and
+`include_call_context` (default `true` — every request this tool makes carries the call
+under `call`; send `false` to stop that for one tool without touching its mapped inputs,
+which still substitute `{{call.field}}` either way). The default is silence: a contract
+that says nothing, or says `true`, stores no key and the revision comes back without the
+field; only `false` is ever recorded, and turning it back on is a revision that says
+nothing again. Anything other than `true`/`false` is `400 WORKFLOW_REQUEST_INVALID`. Name,
 description and private endpoint configuration are read from the saved tool and cannot
 be supplied here. Transfer tools always come back as during-phone-only, `terminal` and
 not replay-safe, whatever the request asked for. Send the highest `revision` you read
