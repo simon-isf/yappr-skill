@@ -2239,6 +2239,7 @@ This exact allowlist applies to both `POST` and `PATCH`. **Any other key — inc
 | `description` | string | null | Free text |
 | `agent_id` | uuid | null | Required before launch |
 | `from_phone_number_id` | uuid | null | Required before launch; must be an active number the workspace owns |
+| `split` | object \| null | null | Optional two-agent A/B test — `{ "agent_id": "...", "percent": 1-99 }`. `percent` is the **second** agent's share of contacts; `agent_id` on the campaign above takes the rest. See [Testing two agents on a campaign](#testing-two-agents-on-a-campaign) below |
 | `retry_rules` | object | `{}` | JSON object (not an array). See [retry_rules and calling_window](#retry_rules-and-calling_window) before using it |
 | `calling_window` | object | `{}` | JSON object. **Not the gate that decides when a campaign dials** — see the same note |
 | `stop_disposition_ids` | uuid[] | `[]` | Array of **disposition ids**, never labels. Every id must belong to this workspace, or `400` |
@@ -2293,6 +2294,46 @@ Both are stored as-is and echoed back, and the dashboard's campaign wizard write
 - when the campaign may dial → the **workspace** call windows (`GET`/`PUT /call-windows`). That is the gate the pacer evaluates; a campaign with no reachable workspace window refuses to launch and pauses itself as `paused_config`.
 
 Leave both at `{}` unless you are deliberately mirroring dashboard state.
+
+#### Testing two agents on a campaign
+
+```json Split the list 70/30
+{ "split": { "agent_id": "SECOND_AGENT_ID", "percent": 30 } }
+```
+
+**A contact keeps the agent it got, forever.** The pick happens once — on a
+contact's first admission — and every later attempt, including a no-answer
+redial, reuses that agent. This is not a fresh coin toss per attempt: if it
+were, a no-answer retry could switch versions mid-comparison and the result
+at the end would be measuring nothing. Raising or lowering `percent` later
+only changes which agent a **not-yet-dialed** contact gets.
+
+**Turning the test off, or changing an agent, does reach contacts already
+dialed.** Send `{ "split": null }` and every contact returns to the
+campaign's own `agent_id` on its next attempt. Replace either agent in the
+pair and contacts pinned to the one you removed are re-assigned across the
+pair you are running now.
+
+**Both agents are screened against the do-not-call list at enrolment** — a
+contact suppressed for either one is reported `on_do_not_call` and never
+enrolled, so a contact can never be assigned an agent that is not cleared
+to call it.
+
+**Both agents must be launchable, or `POST /campaigns/:id/launch` refuses**
+and names the one that is not: each needs a positive `max_call_duration_secs`,
+and the second one must additionally be active and (if a workflow agent)
+published. **Deactivating the second agent is not how you end the test** — a
+contact already pinned to it just falls back to the campaign's own agent
+(recorded as variant `a`, since that is who actually called), while the pin
+itself survives, so re-activating the agent returns its contacts to it. Send
+`{ "split": null }` to actually end it.
+
+**Read the results** with `GET /calls?ab_variant=a` and `?ab_variant=b`.
+
+| Status | Code | When |
+|---|---|---|
+| 422 | `INVALID_SPLIT` | `percent` outside 1–99, the second agent is the same as `agent_id`, the agent belongs to another workspace, or `split` is neither an object nor `null` |
+| 422 | `CAMPAIGN_NOT_READY` (at launch) | The second agent can't take these calls — see the launch preflight above |
 
 ---
 
@@ -2604,6 +2645,7 @@ Rules that matter:
 | 409 | `DUPLICATE_NAME` | Another non-archived campaign already uses that name |
 | 409 | `ALREADY_IN_ACTIVE_CAMPAIGN` | A number is live in another active campaign |
 | 422 | `CAMPAIGN_NOT_READY` | Launch preflight failed; `message` names the single blocking cause |
+| 422 | `INVALID_SPLIT` | A malformed or out-of-range `split` on create/update — see [Testing two agents on a campaign](#testing-two-agents-on-a-campaign) |
 
 > **Envelope note — campaigns invert the usual error shape on 409/422.** The three coded errors above return `{ "error": "<CODE>", "message": "<human text>" }` — the machine code is in `error`, not in `code`. Plain `400`/`404`/`500` responses use the standard `{ "error": "<human text>" }`. So parse defensively: read `code` first, then fall back to `error` when it matches `^[A-Z_]+$`.
 
