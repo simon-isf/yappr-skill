@@ -909,11 +909,19 @@ List all phone numbers owned by the company.
       "status": "active" | "pending_requirements",
       "inbound_agent_id": "uuid | null",
       "outbound_agent_id": "uuid | null",
+      "inbound_split": { "agent_id": "uuid", "percent": 30 } | null,
+      "outbound_split": { "agent_id": "uuid", "percent": 30 } | null,
       "created_at": "ISO8601"
     }
   ]
 }
 ```
+
+`inbound_split` / `outbound_split` is the number's two-agent A/B test on that
+direction, or `null` when it always answers with the one bound agent.
+`percent` is the **second** agent's share (`agent_id` inside the split object)
+— the bound agent keeps the rest. See **PATCH /phone-numbers/:id** below for
+how to set it.
 
 ---
 
@@ -970,7 +978,9 @@ Purchase a phone number. Starts a $10/month Stripe subscription on the user's sa
 
 ### POST /phone-numbers/configure
 
-Assign inbound and/or outbound agents to a phone number.
+Assign inbound and/or outbound agents to a phone number. Also accepts
+`inbound_split` / `outbound_split`, the same shape `PATCH /phone-numbers/:id`
+takes — that endpoint below is the preferred one for new integrations.
 
 **Scopes:** `phone_numbers:configure`
 
@@ -979,10 +989,73 @@ Assign inbound and/or outbound agents to a phone number.
 | `phone_number_id` | uuid | yes | The number's internal UUID (from GET /phone-numbers) |
 | `inbound_agent_id` | uuid | no | Agent to handle inbound calls |
 | `outbound_agent_id` | uuid | no | Agent to use for outbound calls |
+| `inbound_split` | object \| null | no | See **PATCH /phone-numbers/:id** |
+| `outbound_split` | object \| null | no | See **PATCH /phone-numbers/:id** |
 
 **CRITICAL:** All fields use `snake_case`. Using camelCase returns a 400 error.
 
 **Response:** `200` — updated phone number object
+
+---
+
+### PATCH /phone-numbers/:id
+
+Update one number's agent bindings, its friendly name, or its A/B tests.
+Preferred over `configure` for anything touching a split.
+
+**Scopes:** `phone_numbers:configure`
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `friendly_name` | string \| null | no | |
+| `inbound_agent_id` | uuid \| null | no | |
+| `outbound_agent_id` | uuid \| null | no | |
+| `inbound_split` | object \| null | no | `{ "agent_id": "uuid", "percent": 1-99 }`, or `null` to turn the test off |
+| `outbound_split` | object \| null | no | Same shape. Applies when `POST /calls` is sent **without** an `agent_id` — see **POST /calls** below |
+
+```bash
+# Send 30% of this number's incoming calls to a second agent, keep 70% on the bound one
+curl -X PATCH "https://api.goyappr.com/phone-numbers/PHONE_NUMBER_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "inbound_split": { "agent_id": "SECOND_AGENT_ID", "percent": 30 } }'
+
+# Turn it off
+curl -X PATCH "https://api.goyappr.com/phone-numbers/PHONE_NUMBER_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "inbound_split": null }'
+```
+
+**`percent` is the SECOND agent's share.** The number's already-bound agent
+(`inbound_agent_id` / `outbound_agent_id`) keeps `100 - percent`. The second
+agent must belong to your workspace and must differ from the bound one.
+
+**Which agent answers a given call never changes mid-call and never re-rolls
+on retry** — it is derived once from the carrier's call id (inbound) or the
+request's `Idempotency-Key` (outbound).
+
+**A second agent that cannot take calls yet — inactive, or an unpublished
+workflow — is not an error at configure time.** The split saves, but every
+call quietly goes to the first agent until the second one is ready, and the
+call record marks it with `metadata.ab_variant_fallback: true`. Publish the
+copy (see **Duplicating an agent to A/B test a change** in `SKILL.md`) before
+you expect it to receive anything.
+
+**Read the results** with `GET /calls?ab_variant=a` / `?ab_variant=b`, or the
+`ab_variant` field on each call.
+
+**Campaigns and BYOC SIP endpoints do not use this.** Campaigns run their own
+per-contact split (`split` on `POST /campaigns` — see **Campaigns** below);
+SIP endpoints carry no split at all.
+
+**Response:** `200` — updated phone number object, same shape as `GET /phone-numbers`.
+
+| Status | Code | When |
+|---|---|---|
+| 404 | — | No such number in this workspace |
+| 422 | `INVALID_SPLIT` | `percent` outside 1–99, the second agent is the one already bound, the agent belongs to another workspace, or the split is neither an object nor `null` |
+| 400 | — | A field this endpoint does not update, or the number is still `pending_requirements` |
 
 ---
 
