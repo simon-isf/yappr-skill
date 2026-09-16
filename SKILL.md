@@ -209,6 +209,54 @@ Full field-by-field detail — what is copied, what is deliberately skipped, the
 tool-reference-invalid case, idempotency scoping — is in
 **POST /agents/:id/duplicate** in `yappr-api.md`.
 
+### A/B test two agents on a number: duplicate → change one thing → publish → set the split → read the panel
+
+The five-beat sequence that actually finishes what "Duplicating an agent"
+above starts — a variation you can compare on real traffic, not just a copy
+sitting unused:
+
+1. **Duplicate** the agent you want to test against, per the journey above —
+   `POST /agents/{id}/duplicate` with an `Idempotency-Key`.
+2. **Change one thing** on the copy — a prompt line, a voice, a step in the
+   workflow. One variable at a time, or the comparison at the end answers
+   nothing about which change mattered.
+3. **Publish** the copy. Skip this and the split you set in the next step
+   silently does nothing: an unpublished (or inactive) second agent means
+   every call keeps going to the first one, and the call record says so with
+   `metadata.ab_variant_fallback: true`. There is no error to catch here —
+   check the flag, don't assume silence means it worked.
+4. **Set the split** — `PATCH /phone-numbers/{id}` with
+   `inbound_split`/`outbound_split: { "agent_id": "<copy's id>", "percent": N }`
+   for calls that come in or go out on that number, or `split` on
+   `POST /campaigns` / `PATCH /campaigns/{id}` for a campaign. `percent` is
+   always the **new** agent's share — the original keeps the rest. An
+   explicit `agent_id` on `POST /calls` always wins over a number's
+   `outbound_split`, and a campaign contact is pinned to whichever agent it
+   got on its first attempt, so a redial never re-rolls it.
+5. **Read the panel** — the phone-number page's per-variant summary, once it
+   ships; today, from the API, that is `GET /calls?ab_variant=a` and
+   `?ab_variant=b` (calls, `disposition`, `duration_seconds`), or
+   `GET /campaigns/{id}/stats` for a campaign. Every call also carries
+   `ab_variant` on its own record.
+
+Anti-patterns:
+- **Never assume an unpublished copy is receiving traffic.** It is receiving
+  none, by design — see step 3.
+- **An explicit `agent_id` on `POST /calls` always wins.** A split is only
+  ever consulted when the request omits `agent_id`.
+- **Campaigns never use the phone-number split, and phone numbers never use
+  the campaign split** — they are two independent `split` configurations, set
+  and read separately, even when the campaign dials from a split number.
+- **Turning a variant off is not the same as ending the test.** Deactivating
+  the losing agent still leaves it pinned to whatever it already answered
+  (campaigns) or leaves the split configured and silently falling back
+  (numbers); to actually end the test, clear the split itself
+  (`inbound_split`/`outbound_split`/`split: null`).
+
+Endpoint detail — request/response shapes, the percent-inversion rule,
+refusal codes — is in **PATCH /phone-numbers/:id**, **POST /calls** and
+**Testing two agents on a campaign** in `yappr-api.md`.
+
 ### There is one kind of agent
 
 **A new agent is a workflow agent, and nothing else can be created.** `POST /agents` takes
