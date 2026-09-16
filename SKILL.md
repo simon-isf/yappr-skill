@@ -714,9 +714,8 @@ payload = {
     # 'silence_timeout_secs': 60,
     # 'max_continuous_speech_secs': 120,
     # 'max_call_duration_secs': 600,
-    # Webhook: only include if the user asked for call event notifications
-    # 'webhook_url': 'https://...',
-    # 'webhook_events': ['call.no_answer', 'call.failed', 'call.analyzed'],
+    # Call event notifications are not an agent field any more — see PHASE 4,
+    # "Post the call to your system", for the tool + After trigger that replace them.
     'idempotency_key': str(uuid.uuid4())
 }
 with open('/tmp/agent-payload.json', 'w', encoding='utf-8') as f:
@@ -789,7 +788,7 @@ Identify the steps. For each step decide:
 - **Conversation node** (LLM talks): what the bot is trying to accomplish, plus N labeled transitions out (e.g. "User confirmed attendance" → next-step). The model picks based on what the user just said.
 - **Tool-call node** (deterministic): which existing tool (by `tool_id`) and what to do on success / error / custom branches (custom branches use simple JSONPath-equality matching like `$.status == "no_availability"`). Tool args are owned by the **tool itself** via `payload_config` (literals + `ai_extract`-by-the-runtime); `tool_call` nodes have **no per-node `args_template`** field. At call start the effective linked-tool config (including `config_override`) becomes a flat submission schema with one field per extraction parameter; the model never submits a nested `args` object. `required` defaults to true, while optional fields do not block dispatch. Use a node's `config_override` for deliberate per-flow differences, remembering that `payload_config` is replaced as one complete section. Create a new tool when the action is a distinct reusable capability rather than a variation of the same one.
 - **Transfer node** / **End node**: terminal.
-- **Post-call extraction and automation**: there are no `webhook` or `structured_output` flow nodes. For per-call extraction, use the agent-level `extraction_parameters` field. For post-call automation, use `webhook_url` + `webhook_events` on the agent. Both apply to prompt and flow agents — flow agents do not have separate post-end node types.
+- **Post-call extraction and automation**: there are no `webhook` or `structured_output` flow nodes. For per-call extraction, use the agent-level `extraction_parameters` field. For post-call automation, add an After trigger to the workflow document — see PHASE 4, "Post the call to your system".
 
 A flow can expose at most **127 unique typed extraction contracts**. Reusing the same effective tool and extraction schema across nodes shares one contract. If the API returns `too_many_extraction_contracts`, reuse a schema or split the graph into smaller agents.
 
@@ -1120,38 +1119,70 @@ A workflow agent whose published workflow runs before-call steps cannot serve a 
 
 What happens after a call ends. Configure this based on per-disposition routing answers from Phase 0.
 
-### Layer 1 — Webhook Event Guide
+### Layer 1 — Post the call to your system (After triggers)
 
-Configure the agent's `webhook_url` and `webhook_events` (via PATCH /api-v1/agents/:id or at creation time).
+There is no agent-level `webhook_url` / `webhook_events` to configure — every agent this
+skill creates is a workflow agent (Phase 1), so "notify my system when X happens" is two
+ordinary API calls: give the tool an After-phase contract, then bind it into the workflow
+document's `after` array, one trigger per event.
 
-**Event reference:**
+1. Create the tool once (Step 2.1), then add a workflow contract restricted to `after`:
+   ```bash
+   curl -s -X POST "https://api.goyappr.com/tools/TOOL_ID/workflow-revisions" \
+     -H "Authorization: Bearer $YAPPR_API_KEY" -H "x-company-id: $COMPANY_ID" \
+     -H "Content-Type: application/json" -d '{
+       "expected_revision": null,
+       "contract": {
+         "input_schema": {"type":"object","properties":{}},
+         "output_schema": {"type":"object","properties":{}},
+         "allowed_phases": ["after"]
+       }
+     }'
+   ```
+2. In the same `PUT /agents/:id/workflow` document you already have open (Phase 1), add a
+   `bindings` entry naming that revision and one `after` trigger per event:
+   ```json
+   {
+     "bindings": [
+       { "id": "notify-endpoint", "tool_revision_id": "TOOL_ID" }
+     ],
+     "after": [
+       { "id": "on-analyzed", "event": "analysis.ready",
+         "steps": [{ "id": "post", "binding_id": "notify-endpoint" }] },
+       { "id": "on-no-answer", "event": "call.no_answer",
+         "steps": [{ "id": "post", "binding_id": "notify-endpoint" }] }
+     ]
+   }
+   ```
+3. Publish. A trigger step is validated the same as any other step —
+   `POST /agents/:id/workflow/validate` returns the exact JSON pointer to fix.
 
-| Event | When it fires | Best use |
+**Event reference:** see "What each phase actually runs" above for the full vocabulary,
+and `yappr-api.md`'s Webhook Events → "Trigger events (the workflow's own names)" for the
+complete list with every value. The ones that matter most here:
+
+| Event | Fires when | Legacy name, if you're used to it |
 |-------|---------------|----------|
-| `call.no_answer` | Fires immediately when no one picks up | Trigger retry logic |
-| `call.failed` | Fires on connection error | Log failure, alert ops |
-| `call.analyzed` | Fires when full AI pipeline completes: transcript + disposition + summary | Main post-call automation trigger |
-| `transcript.ready` | Legacy — fires when transcript is saved | Use `call.analyzed` instead |
+| `call.no_answer` | Nobody picks up | `call.no_answer` |
+| `call.failed` | Connection error | `call.failed` |
+| `analysis.ready` | Full AI pipeline completes: transcript + disposition + summary | `call.analyzed` |
+| `call.answered` | The call is picked up — fires *while the call is still going*, not after | `call.answered` / `call.started` |
 
-**Recommended default event set:** `call.no_answer`, `call.failed`, `call.analyzed`
-
-The `call.analyzed` payload includes: `direction`, `status`, `from`, `to`, `duration_seconds`, `disposition` (label string or null), `summary`, `transcript`.
+**Recommended default trigger set:** `call.no_answer`, `call.failed`, `analysis.ready`.
 
 **Who ended the call (`ended_by`)** — `GET /calls/:id` returns an `ended_by` field that distinguishes hang-up causality: `"caller"` (the human picked up and ended it), `"agent"` (the bot ended it — e.g. timed out or chose to hang up), `"system"` (the platform ended it — e.g. voicemail detection, max duration), or `"unknown"`. Useful for retry and analytics logic so you don't auto-retry calls the user intentionally ended. First-write-wins — once set, it isn't overwritten.
 
-### CRITICAL — Webhook Payload Blind Spot
+### The trigger's payload is not minimal
 
-> **WARNING:** The `call.analyzed` payload is minimal. It does NOT include:
-> - The lead object (name, tags, history, metadata)
-> - Metadata passed at call creation time (`metadata` field from POST /api-v1/calls)
-> - Cost data
-> - The full disposition object — only the label string is included, and it may be `null` if AI classification failed
->
-> **To get the full call record** including resolved lead, full disposition object, and all metadata: `GET /api-v1/calls/:id` after receiving the webhook.
->
-> **Pattern for needing the lead's name in a post-call WhatsApp:**
-> - Option A: pass `"name": "ישראל כהן"` in `metadata` when creating the call → read from webhook's call record after fetching `GET /api-v1/calls/:id`
-> - Option B: fetch `GET /api-v1/calls/:id` immediately after receiving the webhook — the response includes the full lead object
+A trigger step's request is the same [call package](yappr-api.md) every workflow tool
+gets: `{"event": "analysis.ready", "call": {…}}`. Unlike the legacy `call.analyzed`
+webhook this replaces, `call` already carries the lead object, the `metadata` and
+`call_variables` from call creation, billing, the recording URL and the full disposition
+object (`{id, label}`, not just the label string) — see the phase table in `yappr-api.md`
+for exactly which members are populated by the time an `after` trigger runs. There is no
+required `GET /calls/:id` follow-up fetch for anything in that package; only reach for it
+when you need something the package genuinely does not carry, such as the lead's full
+history rather than the lead attached to this call.
 
 ### Step 4.1 — Disposition Routing Architecture
 
@@ -1329,8 +1360,8 @@ Before telling the user they're live, verify each item:
 - [ ] Phone number is active (or pending regulatory approval with explanation)
 - [ ] Phone number is assigned to the correct agent(s)
 - [ ] Billing balance is above $5 (GET /billing)
-- [ ] Webhook URL is set on the agent if post-call automation is needed
-- [ ] `call.no_answer` and `call.analyzed` events are in the `webhook_events` list
+- [ ] An After trigger + HTTP tool is bound and published for each post-call event the customer needs (PHASE 4)
+- [ ] `call.no_answer` and `analysis.ready` are among the triggered events, if post-call automation is needed
 - [ ] Any custom variables used in the system prompt are documented — caller must supply them at call creation time
 - [ ] Dispositions needed for routing are created
 

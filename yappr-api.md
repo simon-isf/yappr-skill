@@ -2896,6 +2896,29 @@ below about fetching `GET /calls/:id` applies to the old shape only.
 
 **Default recommended set:** `call.no_answer`, `call.failed`, `call.analyzed`
 
+### Trigger events (the workflow's own names)
+
+The table above is indexed by the legacy event names, because that's what an agent still
+on the old webhook still sends. A workflow's After trigger is authored against its own
+`event` enum instead — most values are the same word, a few are not, and a few exist only
+on the workflow side with no legacy equivalent at all:
+
+| Trigger event | Legacy equivalent | Notes |
+|---|---|---|
+| `call.answered` | `call.answered`, `call.started` | The pickup itself — the **only** event published while the call is still going. |
+| `call.ended` | `call.ended` | |
+| `call.failed` | `call.failed` | |
+| `call.no_answer` | `call.no_answer` | |
+| `any_end` | *(none — subscribe to the three above individually on the legacy side)* | Authoring shortcut, not a wire event: `call.ended` + `call.failed` + `call.no_answer`. |
+| `request.failed` | `call.dnc_blocked` | The request died before anything was dialled; no call exists. |
+| `transcript.ready` | `transcript.ready` | |
+| `analysis.ready` | `call.analyzed` | |
+| `lead.ready` | `lead.created`, `lead.updated` | |
+| `recording.ready` | *(new)* | The legacy webhook never pushed this; you polled `recording_url`. |
+| `billing.ready` | *(new)* | |
+| `transfer.accepted`, `transfer.answered`, `transfer.failed` | *(new)* | A transfer's own lifecycle. |
+| `ai_session.ended` | *(new)* | The AI portion of the call ending, distinct from the call itself ending. |
+
 **WARNING — Webhook payloads are minimal.** The `call.analyzed` payload does NOT include:
 - The lead object (name, phone, tags, history)
 - `metadata` from call creation
