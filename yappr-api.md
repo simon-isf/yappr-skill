@@ -1220,6 +1220,7 @@ List calls with optional filters and pagination.
 | `direction` | string | — | `inbound`, `outbound`, `web_call` |
 | `callee` | string | — | filter by callee phone (E.164). Useful for counting prior attempts to the same lead within a retry window. |
 | `caller` | string | — | filter by caller phone (E.164) |
+| `ab_variant` | `a` \| `b` | — | Only calls answered/placed by one side of a number's split — `a` the number's own agent, `b` the second one. Calls on a number with no split carry no variant and are excluded by either value. |
 | `from` | ISO8601 | — | `created_at` lower bound |
 | `to` | ISO8601 | — | `created_at` upper bound |
 
@@ -1246,6 +1247,7 @@ Response's `data.length` gives you the prior-attempt count. Use in retry-throttl
       "duration_seconds": 120,
       "created_at": "ISO8601",
       "tool_calls_count": 2,
+      "ab_variant": "a" | "b" | null,
       "recording_url": "string | null",
       "disposition": { "id": "uuid", "label": "string", "color": "#hex" },
       "lead": { "...full lead object with tags..." }
@@ -1554,7 +1556,7 @@ Initiate an outbound call.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `agent_id` | uuid | yes | Agent to use for the call |
+| `agent_id` | uuid | no | Optional. Omit it and the `from` number decides: its `outbound_agent_id` places the call, or — if that number has an `outbound_split` configured — the split picks between the bound agent and the second one. An explicit `agent_id` always wins over a split; sending one skips split resolution entirely. A `from` number with no agent attached and no resolvable split is refused with `422 AGENT_NOT_RESOLVED` — *"Attach an agent to this phone number or send agent_id"* — nothing is queued or dialed. When a split resolved the agent, the call carries `metadata.ab_variant` (`"a"`/`"b"`); a value you send in `metadata.ab_variant` yourself is dropped and replaced. A retry under the same `Idempotency-Key` reuses whichever agent the original accepted call resolved to — it never re-rolls, even if you change the split in between. |
 | `to` | string | yes | Destination phone number — strict E.164 format (see Phone validation below) |
 | `from` | string | yes | Caller phone number — strict E.164, must be an active number owned by the company |
 | `metadata` | object | no | JSONB stored in `call_logs.metadata` — arbitrary key-value pairs, not injected into prompt. **Forwarded in real-time to every tool webhook as `call_metadata`** (see [Tool Webhook Payload](#tool-webhook-payload)) — ideal for carrying internal IDs (appointment_id, contact_id, calendar_id) that tool receivers need without requiring a `GET /calls/:id` round-trip. |
