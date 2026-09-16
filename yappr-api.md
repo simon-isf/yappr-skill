@@ -148,6 +148,26 @@ Fetch complete config of a single agent.
 }
 ```
 
+**Turn-taking and interruption.** An agent stops the instant the caller starts
+talking — queued audio is dropped, on phone calls and browser calls alike — and
+it is free to react, interject or make listening noises while the caller speaks.
+Nothing on the platform suppresses that. To make an agent wait in silence until
+the caller finishes, write the instruction into `system_prompt`; it is the only
+thing that will.
+
+The three `vad_*` fields tune the reaction and are per-agent, never global:
+
+| Field | Effect on the call |
+| --- | --- |
+| `vad_start_secs` | How much speech counts as the caller starting, and how much of the audio just before it is kept so the first word survives an interruption |
+| `vad_stop_secs` | How long a pause ends the caller's turn — how fast the agent answers, and how likely it is to cut in on someone still thinking. Below ~0.5s it may answer half a sentence |
+| `vad_confidence` | How sure the agent must be it is hearing speech. Below the 0.7 default it reacts more eagerly, including to background noise on a noisy line |
+
+The eight expressive voices (`Keren`, `Eitan`, `Hila`, `Ido`, `Boaz`, `Tali`,
+`Erez`, `Efrat`) run their own turn-taking, so `temperature` and the three
+`vad_*` fields are rejected with `400` on an agent using one. They are
+interrupted exactly like every other agent.
+
 ---
 
 ### POST /agents
