@@ -15,12 +15,11 @@ This skill is organized into phases. Work through them sequentially. Each phase'
 
 **Before writing any code or making any API call**, run Phase 0 discovery — query the live account and ask the user the questions. The answers determine everything that follows.
 
-### Unified draft creation and legacy migration boundary
+### One kind of agent
 
-For an account using the unified workflow cohort, do not ask the user to choose an
-immutable prompt/flow type. Follow discovery, then POST /agents with name and an
-explicit workflow starter as documented in yappr-api.md. Keep an Idempotency-Key
-across identical retries; never retry via legacy creation after an error. Read the
+There is one kind of agent. Never ask the user to choose a prompt or a flow type:
+follow discovery, then POST /agents with a name and an explicit workflow starter as
+documented in yappr-api.md. Keep an Idempotency-Key across identical retries. Read the
 server-owned draft, edit Before/During/After, and explicitly Save/validate/publish.
 Strict Mode starts off. Creation/publication alone does not establish runtime readiness
 or authorize test calls. Archive is distinct from reversible deactivation.
@@ -118,11 +117,6 @@ response. An allowlisted test requires authorization for that saved binding's re
 effect. Unknown outcomes require reconciliation, not automatic repetition. Transfer
 tests are mock-only and confer no live-call authority. Unavailable services do not
 authorize a legacy fallback or a real call; observe the deployment's readiness gates.
-
-The prompt/flow decision and Phase 1A/1B instructions below describe existing legacy
-cohorts during migration only. Do not mix their graph, tool-attachment or test-runner
-contracts with a workflow-owned agent. Detect the server-returned execution_version;
-never write it or silently move an existing agent between execution owners.
 
 ### A sequence that checks before it acts
 
@@ -471,14 +465,21 @@ Dispositions to create: [any gaps between current dispositions and what's needed
 
 For each agent identified in discovery, run this phase. If multiple agents are needed, complete one at a time.
 
-> **Building a new agent?** Neither fork below creates one any more — `POST /agents` takes
-> `name` plus `workflow.global_instructions` and refuses both old bodies. Create the draft
-> that way, then build what these two forks describe inside its workflow document. The
-> forks stay because they are how you work on an agent that already exists.
+> **Creating an agent** is always the same call: `POST /agents` with `name` plus
+> `workflow.global_instructions`. Any other create body is refused with `410`. Create the
+> draft that way, then build what the two sections below describe inside its workflow
+> document.
 
-**Phase 1 forks based on agent type** (set in DISCOVERY CONFIG):
-- `agent_type: prompt` → continue with **Phase 1A** below (single-prompt agent — the original journey).
-- `agent_type: flow` → jump to **Phase 1B** (graph-of-nodes agent). Phase 1B is documented in [`flow-composition-guide.md`](flow-composition-guide.md); a brief inline summary is at the end of this phase. After Phase 1B, **skip Phase 2 (Tools)** — flow agents reference tools from inside flow tool-call nodes, not via the `agent_tools` join.
+**One agent, two shapes of conversation.** Every agent is a workflow agent, and the
+two sections below are how you fill its document in, not two kinds of thing to choose
+between:
+- **Phase 1A** — one block of instructions and a single conversation step. Start here;
+  it is what `workflow.global_instructions` is for.
+- **Phase 1B** — a graph of steps, when the call has distinct stages the agent must
+  move through in order. Its design material is in
+  [`flow-composition-guide.md`](flow-composition-guide.md); build it as the workflow
+  document's conversation graph, and add its tools through the Unified Tools journey
+  above rather than through an attachment.
 
 ---
 
@@ -723,9 +724,10 @@ No Answer and Failed are auto-set by the system. The AI classifier sets all othe
 
 ## PHASE 1B: Flow Agent Creation
 
-**If `agent_type: prompt`, skip this section entirely — you've already built your agent in Phase 1A. Continue to Phase 2.**
+**Only if the call has distinct stages.** If one block of instructions covers the
+conversation, you are done in Phase 1A — continue to Phase 2.
 
-Flow agents replace one large system prompt with a graph of nodes — each node is a small step (conversation, tool call, transfer, end). Routing between nodes happens automatically: on every user-turn boundary the model evaluates what the user just said against the current step's outgoing transitions and either advances or stays. Tool-call nodes execute deterministically and route on the result. This pattern matches what Retell.ai and nlpearl.ai ship.
+A staged agent replaces one large block of instructions with a graph of steps — each node is a small step (conversation, tool call, transfer, end). Routing between nodes happens automatically: on every user-turn boundary the model evaluates what the user just said against the current step's outgoing transitions and either advances or stays. Tool-call nodes execute deterministically and route on the result. This pattern matches what Retell.ai and nlpearl.ai ship.
 
 The full how-to lives in [`flow-composition-guide.md`](flow-composition-guide.md). At a glance:
 
@@ -793,11 +795,9 @@ To add a tool to a flow: create the tool via `POST /tools` (same as Phase 2.1), 
 
 ## PHASE 2: Tooling
 
-This phase's webhook implementation and attachment instructions are the temporary
-legacy cohort path. Workflow-owned agents use the Unified Tools journey above, with
-explicit versioned bindings and publication; never substitute this direct-dispatch path.
-
-> **Flow agents (`agent_type: flow`)**: skip this phase. Your tools live inside `flow_config.nodes[].tool_id` references — see [`flow-composition-guide.md`](flow-composition-guide.md). The `tools` table itself is still the source of truth (one row per tool, reusable), but you never call `POST /tools/attach` for flow agents.
+The Unified Tools journey above is how a tool reaches an agent: an explicit versioned
+binding, published with the workflow. This phase is about what to build and how to build
+it well — the tool's own design, its payload and its endpoint — not about attaching it.
 
 Tools are webhook endpoints the agent can call during a conversation. This phase has two layers:
 
