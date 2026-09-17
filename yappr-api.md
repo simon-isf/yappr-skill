@@ -1453,6 +1453,67 @@ For flow-agent calls, prefer reading `flow_trace.steps[].tool_call` — same per
 
 **`events`** — Full chronological timeline of all call events (tool calls, transcriptions, LLM events, errors, termination). For advanced use cases / low-level analysis. For flow agents, prefer `flow_trace` (below) — `events` carries the same data more verbosely. Auth headers are also redacted.
 
+**`tool_calls`, `events` and `flow_trace` are superseded by `timeline`** (below) for anything you are building now. They are kept for integrations already reading them, and they are the raw view: apart from redacted auth headers they return a tool's URL, its arguments, the response body and the engine's own error text as recorded. The summaries-only rule below is a rule about `timeline`, not about the endpoint.
+
+**`timeline`** — **What happened on the call, as one time-ordered list.** This is the
+single read surface for call observability: the same rows the customer sees on the call
+log in the dashboard, read from the same place, so your view and theirs can never
+disagree. Prefer it over `events` and `flow_trace` for anything you are building now.
+
+Every row carries `kind` and `at`. The rest depends on the kind:
+
+| `kind` | What it is | Fields |
+|---|---|---|
+| `message` | A turn in the conversation | `role` (`agent` / `user` / `voicemail`), `text`, `offset_ms` |
+| `phase` | A stage of the call | `lane` (`before` / `during`), `status`, `error` |
+| `transition` | The conversation moving | `from_node`, `from_label`, `to_node`, `to_label`, `edge_id`, `edge_condition`, `edge_scope` (`direct` / `global`), `strict` |
+| `tool` | One tool invocation | `tool_type`, `name`, `step_id`, `lane`, `status`, `duration_ms`, `attempt_count`, `error` |
+| `trigger` | An after-call follow-up the workspace authored | `event`, `steps`, `status`, `error` |
+| `delivery` | One row of the webhook delivery ledger | `event`, `status`, `response_status`, `attempt_count`, `error_message`, `delivered_at`, `tool_name` |
+
+`strict` on a transition says where the row came from: `true` is the authoritative stage
+cursor a staged conversation holds, and only those rows carry `edge_condition`; `false`
+is the agent's own record of the stage it entered, which is what an older call has. An
+agent whose conversation has no stages produces no `transition` rows at all.
+
+`tool` rows come back for every agent, however it is built. A staged conversation's
+invocations and a single-prompt agent's own webhook tools, transfers and end-of-call all
+read back in the same shape, so "no `tool` rows" always means the call ran no tools.
+
+A `tool` row adds the fields for its own `tool_type`:
+
+| `tool_type` | Extra fields |
+|---|---|
+| `http` | `method`, `url_host` (host only), `request_bytes`, `response_status` |
+| `app` | `app`, `action`, `connection_label` |
+| `transfer` | `destination` |
+| `end` | `reason`, `ended_by` |
+
+**Summaries only.** A URL's path and query, request headers, credentials, the connected
+account behind an app action, and raw request and response bodies are never returned in
+these rows — `tool_calls` and `events` on the same response still return them, which is
+what they are for and why they are superseded. A failure is one sentence in `error` (or
+`error_message` on a delivery), written for a person to act on — never an internal code.
+Do not branch on its wording; branch on `status`.
+
+**`status` is one of three words** on every row that has one — `succeeded`, `failed`, or
+`pending` (it has not settled yet) — except a `delivery`, which carries the delivery
+ledger's own `delivered`, `failed` or `pending`. A row with no `status` at all means the
+agent's own record of that step never came back; that is not a failure.
+
+**Webhook deliveries live here.** If a customer asks why their CRM never got the
+appointment, read the `delivery` rows: one per attempt-set, whichever part of Yappr sent
+it — an after-call follow-up step and a workspace webhook both land in the same ledger
+and come back in the same shape.
+
+**An older call** has no `phase` rows and no `transition` rows of the newer kind; its
+transcript, tool rows and deliveries still come back here unchanged. Read each row's
+`kind` rather than assuming which kinds a call will have.
+
+**`ab_variant` / `ab_variant_fallback`** — Present only when the number that took the call
+is running an A/B split. `ab_variant` is `"a"` or `"b"`; `ab_variant_fallback` is `true`
+when the split picked `b` but the call went to `a` because `b` could not take it.
+
 **`flow_trace`** — *Present only on flow-agent calls*. Structured view of the path through the graph during the call. This is the recommended observability surface for flow agents.
 
 ### `flow_trace` shape

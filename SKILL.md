@@ -555,6 +555,7 @@ Already done in Phase 0. If the user wants to update an existing agent instead o
 - Forbid robotic transition phrases ("Great!", "Moving on", "Certainly", "Of course")
 - Emotional acknowledgment instruction: reference what was specifically said
 - One question at a time, then stop
+- End every turn on a question or hook, not a flat statement — except the closing line before hanging up, which stays a warm statement
 - No markdown, no bullet points — voice only
 - Use XML section tags for complex agents (see below)
 
@@ -1171,6 +1172,40 @@ complete list with every value. The ones that matter most here:
 **Recommended default trigger set:** `call.no_answer`, `call.failed`, `analysis.ready`.
 
 **Who ended the call (`ended_by`)** — `GET /calls/:id` returns an `ended_by` field that distinguishes hang-up causality: `"caller"` (the human picked up and ended it), `"agent"` (the bot ended it — e.g. timed out or chose to hang up), `"system"` (the platform ended it — e.g. voicemail detection, max duration), or `"unknown"`. Useful for retry and analytics logic so you don't auto-retry calls the user intentionally ended. First-write-wins — once set, it isn't overwritten.
+
+### Journey — read what happened on a call
+
+When a customer asks *why didn't my system get this booking* — or *did the agent
+actually call my endpoint* — read the call, not the logs:
+
+```
+GET /calls/:id   →   timeline[]
+```
+
+One time-ordered list, and it is the same list the customer is looking at on the call
+log in the dashboard, so you and they are never reading two different stories.
+
+1. Filter `timeline` for `kind === "delivery"` — that is the whole webhook ledger for
+   the call. `status`, `response_status`, `attempt_count` and `error_message` say whether
+   their endpoint took it, and what it said when it didn't.
+2. Filter for `kind === "tool"` to see every tool the call ran, typed by `tool_type`:
+   `http` (a webhook tool — method and host, the size sent, the status back), `app` (a
+   connected-app action — the app, the action, and the account it used), `transfer`
+   (where it handed off), `end` (why the call stopped).
+3. Filter for `kind === "transition"` to follow the conversation from step to step, with
+   the author's own condition for the route that fired.
+4. `kind === "trigger"` rows are the after-call follow-ups the workspace authored — the
+   `event` that opened each one and the steps inside it.
+
+A failure is already a sentence in `error` / `error_message`. Read it to the customer as
+it stands; do not translate it into internal vocabulary, and do not branch on its wording
+— branch on `status`, which is `succeeded`, `failed` or `pending` on every row that has
+one, and `delivered` / `failed` / `pending` on a delivery. Payloads, URLs, headers and
+credentials are deliberately not in the timeline, so if the answer needs the body that was
+sent, it is on their side to log. (The same response's older `tool_calls` and `events`
+members do still carry them, and are superseded — do not build new work on them.)
+
+Field-by-field reference: `yappr-api.md` → **GET /calls/:id** → `timeline`.
 
 ### The trigger's payload is not minimal
 

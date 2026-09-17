@@ -251,6 +251,14 @@ These are the specific instructions that research and platform documentation con
 **Prevent instruction drift in long calls**
 > Repeat the 1-2 most critical rules at both the top and bottom of the prompt. For multi-step flows, each stage should have its own focused instructions rather than relying on one global block.
 
+**End every turn on a hook**
+> "Every spoken turn must end on a question or a clear forward-pointing hook — never a flat statement. The one exception: the agent's final line immediately before ending the call, which stays a warm closing statement, not a forced question."
+
+A flat statement carries no next-action slot: the person on the other end can't tell whether they're supposed to reply, confirm, or wait, so the line lands and the call stalls into dead air or an awkward restart. A question (or an explicit "next, I'll...") hands the floor back on a fixed slot, so the caller always knows a response is expected.
+
+Flat: "קבעתי לך תור ליום שלישי בעשר בבוקר."
+Hook: "קבעתי לך תור ליום שלישי בעשר בבוקר — השעה הזו נוחה לך, או שנזיז אותה?"
+
 ---
 
 ## Part 10: Voice-Specific Formatting
