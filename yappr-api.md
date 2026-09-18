@@ -1315,6 +1315,16 @@ Get full details of a single call, including resolved lead and disposition objec
   "ended_at": "ISO8601 | null",
   "duration_seconds": 0,
   "transcript": [ { "role": "agent|user", "text": "string", "start": 0, "end": 0 } ],
+  "transcript_live": [ { "role": "agent|user", "text": "string", "start_ms": 0, "end_ms": 0, "source": "gemini|openai", "interrupted": true } ],
+  "usage": {
+    "cost_usd": 0.0412,
+    "legs": [ { "engine": "gemini-live|gpt-live", "model": "string", "cost_usd": 0.0412, "sessions": 1,
+                "input_tokens": 41200, "output_tokens": 9100,
+                "audio_input_tokens": 9200, "text_input_tokens": 32000, "audio_output_tokens": 9100,
+                "cached_input_tokens": 28400, "audio_seconds": null,
+                "backend_model": "string | null", "backend_unpriced": false,
+                "recorded_at": "ISO8601" } ]
+  },
   "summary": "string | null",
   "recording_url": "string | null",
   "ended_by": "caller" | "agent" | "system" | "unknown" | null,
@@ -1448,6 +1458,16 @@ In practice: `Completed`, `No answer`, `Busy`, `Call rejected`, `Cancelled`,
 `Transfer destination unreachable`, `Transfer never connected`, `Transfer failed`. A
 handoff that did connect leaves the reason to the call's own ending. Also first-write-wins,
 and `null` for short or atypical hangups.
+
+**`usage`** — *Present only when a reading exists.* What the call consumed on the voice model that ran it, reported by the provider and priced at published rates. One entry in `legs` per engine, summed across every provider session the call spanned — a call whose connection dropped and was rebuilt mid-call is still one entry carrying the whole call.
+
+The two engines report in different units and the leg says which: a Gemini voice bills tokens split by modality (`audio_input_tokens`, `text_input_tokens`, `audio_output_tokens`, `cached_input_tokens`), a GPT voice bills seconds of live audio (`audio_seconds`, with the token fields `null`). `backend_unpriced: true` means the reasoning model's tokens were counted but have no published rate yet, so `cost_usd` is the voice model alone.
+
+**No `usage` member is not a cost of zero** — a call that never reached the model, and every call from before this shipped, have no reading at all. This is what Yappr pays the provider, not what the call charged against the workspace's credits.
+
+**`transcript_live`** — *Present only when the model produced one.* The voice model's own transcript, recorded turn by turn while the call was happening, rather than transcribed from the recording afterwards. A SECOND, independent account of the same conversation; it does not replace `transcript`, which stays what `transcript.ready` carries and what the summary and extraction are built from.
+
+Roles are structural — the caller's audio and the agent's audio are separate streams — so a role here cannot be misattributed the way a speaker-diarizer's can. `interrupted: true` on an agent turn means the caller talked over it; a model's transcript can run ahead of its own voice, so those turns may contain words the caller never heard. Read `transcript` unless you have a specific reason to prefer the model's own account.
 
 **`tool_calls`** — One row per tool / integration invocation that fired during the call, in firing order. The `kind` field is the discriminator:
 
