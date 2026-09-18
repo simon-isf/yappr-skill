@@ -163,6 +163,12 @@ The three `vad_*` fields tune the reaction and are per-agent, never global:
 | `vad_stop_secs` | How long a pause ends the caller's turn — how fast the agent answers, and how likely it is to cut in on someone still thinking. Below ~0.5s it may answer half a sentence |
 | `vad_confidence` | How sure the agent must be it is hearing speech. Below the 0.7 default it reacts more eagerly, including to background noise on a noisy line |
 
+`vad_confidence` is read two ways. How readily the caller can cut the agent off
+mid-sentence follows the number continuously. Where the caller's turn begins and
+ends is a two-position switch either side of the `0.7` default — at or above it
+deliberate, below it eager — so for that half `0.05` and `0.69` behave
+identically, as do `0.70` and `1.00`. Move it across the default, not by 0.05.
+
 The eight expressive voices (`Keren`, `Eitan`, `Hila`, `Ido`, `Boaz`, `Tali`,
 `Erez`, `Efrat`) run their own turn-taking, so `temperature` and the three
 `vad_*` fields are rejected with `400` on an agent using one. They are
@@ -1627,6 +1633,24 @@ when the split picked `b` but the call went to `a` because `b` could not take it
 | `flow_node_entered` | `{step_id, node_kind, name, reason, via_transition_id?}` — `node_kind` is one of `start`, `conversation`, `tool_call`, `transfer`, `end`, or, on calls placed before the native calendar/mailbox step was retired, `integration_call`. |
 | `flow_eval_decision` | `{step_id, decision, reasoning?, turn_id?, target_step_id?, valid}` |
 | `flow_tool_result` | `{step_id, kind, status, tool_name, tool_id?, provider?, action?, integration_id?, args, arg_sources, response_preview, raw_response_preview?, error, duration_ms}` — `kind` is `tool_call`, or `integration_call` on calls from before that step was retired, with the integration-specific fields populated. `raw_response_preview` is set when the runtime post-processed the LLM-facing view (currently Google Calendar wall-clock conversion). |
+
+### How the turn-taking actually went, per call
+
+The last event in `events[]` is `call_ended`, and its `data` carries two counts
+beside `end_reason`:
+
+| Key | What it counts |
+|---|---|
+| `barge_ins` | Times the caller spoke over the agent **while it was talking** and stopped it mid-sentence |
+| `barge_ins_within_250ms_of_bot_audio_onset` | The subset that landed in the first quarter-second of the agent's own audio |
+
+A caller who waits for the agent to finish and then answers is not a barge-in,
+so `0` on a long call means the agent was never talked over — not that
+interruption was off. One intrusion counts once however many of the call's
+detectors noticed it. The second count is a diagnostic for the line: a stop that
+early is more likely the agent hearing its own voice come back on a phone leg
+with no echo cancellation than a caller cutting in that precisely. Calls placed
+before 2026-09-16 carry neither key.
 
 **Recording URL notes:**
 - `recording_url` is a permanent signed URL (contains `?sig=...` — do not modify)
