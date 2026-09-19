@@ -1,9 +1,11 @@
 {
   "_template_meta": {
     "name": "lead-qualification",
-    "description": "Outbound lead-qualification call. Routes the caller to hot/warm/cold paths based on their answers, then either books a follow-up, schedules a callback, or marks them DNC. Configure post-call CRM delivery via the AGENT-LEVEL `extraction_parameters` and `webhook_url` / `webhook_events` fields, NOT inside this flow_config.",
+    "description": "Outbound lead-qualification call. Routes the caller to hot/warm/cold paths based on their answers, then either books a follow-up, schedules a callback, or marks them DNC. Configure post-call CRM delivery via the AGENT-LEVEL `extraction_parameters` field (PATCH /agents/:id) plus an After trigger on the workflow document (event 'analysis.ready') — not inside this document.",
     "required_tools": [],
     "agent_fields_to_set": {
+      "agent_speaks_first": true,
+      "greeting_message": "Greet the lead by name and identify yourself in one short sentence.",
       "extraction_parameters": [
         { "name": "outcome", "description": "hot_booked | warm_callback | cold | dnc | wrong_person | no_answer" },
         { "name": "callback_iso", "description": "ISO 8601 callback time if caller asked for one" },
@@ -11,107 +13,94 @@
         { "name": "scale", "description": "Approximate company size or scope (small/mid/large)" },
         { "name": "timing", "description": "When they're looking to act (now/soon/later)" },
         { "name": "objection", "description": "Top objection raised, if any" }
-      ],
-      "webhook_events": ["call.analyzed"]
-    }
+      ]
+    },
+    "after_triggers_to_add": [
+      { "id": "notify_crm", "event": "analysis.ready", "steps": [] }
+    ]
   },
-  "flow_config_version": "1",
-  "metadata": { "purpose": "BANT-lite qualification + handoff" },
-  "nodes": [
-    {
-      "id": "start",
-      "type": "start",
-      "agent_speaks_first": true,
-      "greeting": "Greet the lead by name and identify yourself in one short sentence.",
-      "is_literal": false,
-      "next_step_id": "greet_and_introduce"
-    },
+  "schema_version": "1",
+  "id": "lead-qualification",
+  "name": "Lead Qualification",
+  "strict_mode": true,
+  "global_instructions": "You are calling a lead to qualify them. Stay brief and respectful of their time; BANT-lite qualification (pain, scale, timing), then route to the matching close.",
+  "channels": ["phone"],
+  "conversation": {
+    "entry_node_id": "greet_and_introduce",
+    "nodes": [
+      {
+        "id": "greet_and_introduce",
+        "type": "conversation",
+        "label": "Greet and introduce why you're calling",
+        "instructions": "Greet by name. State who you are and the ONE-line reason for the call. Ask if it's a good time to talk for 2 minutes. If they want to be removed from outreach entirely, close with: 'Understood, I'll remove you from our list. Sorry for the disturbance.' If you've reached the wrong person, close with: 'Sorry to bother you, have a great day.'"
+      },
+      {
+        "id": "qualify_pain",
+        "type": "conversation",
+        "label": "Probe the pain / need",
+        "instructions": "Ask one open-ended question about their current situation related to our offering. Listen for: signal of pain, scale (small/mid/large), and timing (now/soon/later). Capture into slots: 'pain_signal' (string), 'scale' (string), 'timing' (string)."
+      },
+      {
+        "id": "hot_path",
+        "type": "conversation",
+        "label": "Hot lead — book a follow-up",
+        "instructions": "The caller is qualified. Briefly confirm the value prop, then propose a 15-min discovery call with a sales rep. Get their preferred time. Once booked, close with: 'Excellent. You'll get a calendar invite shortly. Talk to you then.'"
+      },
+      {
+        "id": "handle_objection",
+        "type": "conversation",
+        "label": "Acknowledge and respond to objection",
+        "instructions": "Acknowledge the objection without saying 'I understand' robotically. Respond once. Then ask: would they like to learn more, or should we end here?"
+      },
+      {
+        "id": "warm_path",
+        "type": "conversation",
+        "label": "Warm lead — schedule callback later",
+        "instructions": "Thank them. Ask when would be a better time to follow up (in days/weeks). Get a specific window. Once you have it, close with: 'Thanks for the time. We'll be in touch.'"
+      },
+      {
+        "id": "cold_path",
+        "type": "conversation",
+        "label": "Cold — polite close",
+        "instructions": "Thank them politely. Ask if it's ok to remove them from outreach, OR if they'd prefer occasional updates. If they want removal, close with: 'Understood, I'll remove you from our list. Sorry for the disturbance.' If they're fine with occasional updates, close with: 'Thanks for chatting. Have a great day.'"
+      },
+      {
+        "id": "schedule_callback",
+        "type": "conversation",
+        "label": "Schedule a callback",
+        "instructions": "Apologize for the bad timing. Ask for a specific day and time to call back. Confirm before ending, then close with: 'Got it, I'll call you back then. Have a great day.'"
+      },
+      { "id": "hot_end", "type": "end", "label": "Booked" },
+      { "id": "warm_end", "type": "end", "label": "Warm close" },
+      { "id": "cold_end", "type": "end", "label": "Cold close" },
+      { "id": "callback_end", "type": "end", "label": "Callback scheduled" },
+      { "id": "mark_dnc_and_end", "type": "end", "label": "Marked DNC" },
+      { "id": "polite_end_wrong_person", "type": "end", "label": "Wrong person" }
+    ],
+    "edges": [
+      { "id": "yes_good_time", "source": "greet_and_introduce", "target": "qualify_pain", "kind": "conversation", "condition": "Caller said yes, has 2 minutes" },
+      { "id": "no_call_back", "source": "greet_and_introduce", "target": "schedule_callback", "kind": "conversation", "condition": "Caller is busy, asked to be called another time" },
+      { "id": "not_interested", "source": "greet_and_introduce", "target": "mark_dnc_and_end", "kind": "conversation", "condition": "Caller is not interested at all, wants to be removed" },
+      { "id": "wrong_person", "source": "greet_and_introduce", "target": "polite_end_wrong_person", "kind": "conversation", "condition": "Wrong person, ask for the right one" },
 
-    {
-      "id": "greet_and_introduce",
-      "type": "conversation",
-      "name": "Greet and introduce why you're calling",
-      "instructions": "Greet by name. State who you are and the ONE-line reason for the call. Ask if it's a good time to talk for 2 minutes.",
-      "transitions": [
-        { "id": "yes_good_time",  "label": "Caller said yes, has 2 minutes", "next_step_id": "qualify_pain" },
-        { "id": "no_call_back",   "label": "Caller is busy, asked to be called another time", "next_step_id": "schedule_callback" },
-        { "id": "not_interested", "label": "Caller is not interested at all, wants to be removed", "next_step_id": "mark_dnc_and_end" },
-        { "id": "wrong_person",   "label": "Wrong person, ask for the right one", "next_step_id": "polite_end_wrong_person" }
-      ]
-    },
+      { "id": "hot", "source": "qualify_pain", "target": "hot_path", "kind": "conversation", "condition": "Caller has a clear pain AND timing is now/soon" },
+      { "id": "warm", "source": "qualify_pain", "target": "warm_path", "kind": "conversation", "condition": "Caller has some interest but no urgency" },
+      { "id": "cold", "source": "qualify_pain", "target": "cold_path", "kind": "conversation", "condition": "Caller has no real need or fit" },
 
-    {
-      "id": "qualify_pain",
-      "type": "conversation",
-      "name": "Probe the pain / need",
-      "instructions": "Ask one open-ended question about their current situation related to our offering. Listen for: signal of pain, scale (small/mid/large), and timing (now/soon/later). Capture into slots: 'pain_signal' (string), 'scale' (string), 'timing' (string).",
-      "transitions": [
-        { "id": "hot",    "label": "Caller has a clear pain AND timing is now/soon", "next_step_id": "hot_path" },
-        { "id": "warm",   "label": "Caller has some interest but no urgency", "next_step_id": "warm_path" },
-        { "id": "cold",   "label": "Caller has no real need or fit", "next_step_id": "cold_path" }
-      ]
-    },
+      { "id": "booked", "source": "hot_path", "target": "hot_end", "kind": "conversation", "condition": "Caller agreed to a follow-up call and gave a time" },
+      { "id": "wants_info", "source": "hot_path", "target": "warm_path", "kind": "conversation", "condition": "Caller wants to receive info first by email/WhatsApp" },
+      { "id": "objection", "source": "hot_path", "target": "handle_objection", "kind": "conversation", "condition": "Caller has an objection that needs handling" },
 
-    {
-      "id": "hot_path",
-      "type": "conversation",
-      "name": "Hot lead — book a follow-up",
-      "instructions": "The caller is qualified. Briefly confirm the value prop, then propose a 15-min discovery call with a sales rep. Get their preferred time.",
-      "transitions": [
-        { "id": "booked",        "label": "Caller agreed to a follow-up call and gave a time", "next_step_id": "hot_end" },
-        { "id": "wants_info",    "label": "Caller wants to receive info first by email/WhatsApp", "next_step_id": "warm_path" },
-        { "id": "objection",     "label": "Caller has an objection that needs handling", "next_step_id": "handle_objection" }
-      ]
-    },
+      { "id": "convinced", "source": "handle_objection", "target": "hot_path", "kind": "conversation", "condition": "Caller is convinced, willing to book" },
+      { "id": "still_no", "source": "handle_objection", "target": "cold_path", "kind": "conversation", "condition": "Caller still says no" },
 
-    {
-      "id": "handle_objection",
-      "type": "conversation",
-      "name": "Acknowledge and respond to objection",
-      "instructions": "Acknowledge the objection without saying 'I understand' robotically. Respond once. Then ask: would they like to learn more, or should we end here?",
-      "transitions": [
-        { "id": "convinced", "label": "Caller is convinced, willing to book", "next_step_id": "hot_path" },
-        { "id": "still_no",  "label": "Caller still says no", "next_step_id": "cold_path" }
-      ]
-    },
+      { "id": "got_window", "source": "warm_path", "target": "warm_end", "kind": "conversation", "condition": "Caller gave a callback window" },
+      { "id": "no_window", "source": "warm_path", "target": "cold_path", "kind": "conversation", "condition": "Caller declined to give a window" },
 
-    {
-      "id": "warm_path",
-      "type": "conversation",
-      "name": "Warm lead — schedule callback later",
-      "instructions": "Thank them. Ask when would be a better time to follow up (in days/weeks). Get a specific window.",
-      "transitions": [
-        { "id": "got_window", "label": "Caller gave a callback window", "next_step_id": "warm_end" },
-        { "id": "no_window",  "label": "Caller declined to give a window", "next_step_id": "cold_path" }
-      ]
-    },
+      { "id": "remove", "source": "cold_path", "target": "mark_dnc_and_end", "kind": "conversation", "condition": "Caller wants to be removed from all outreach" },
+      { "id": "keep_low", "source": "cold_path", "target": "cold_end", "kind": "conversation", "condition": "Caller is fine with occasional updates" },
 
-    {
-      "id": "cold_path",
-      "type": "conversation",
-      "name": "Cold — polite close",
-      "instructions": "Thank them politely. Ask if it's ok to remove them from outreach, OR if they'd prefer occasional updates.",
-      "transitions": [
-        { "id": "remove",   "label": "Caller wants to be removed from all outreach", "next_step_id": "mark_dnc_and_end" },
-        { "id": "keep_low", "label": "Caller is fine with occasional updates", "next_step_id": "cold_end" }
-      ]
-    },
-
-    {
-      "id": "schedule_callback",
-      "type": "conversation",
-      "name": "Schedule a callback",
-      "instructions": "Apologize for the bad timing. Ask for a specific day and time to call back. Confirm before ending.",
-      "transitions": [
-        { "id": "got_callback", "label": "Caller gave a callback time", "next_step_id": "callback_end" }
-      ]
-    },
-
-    { "id": "hot_end", "type": "end", "farewell": "Excellent. You'll get a calendar invite shortly. Talk to you then." },
-    { "id": "warm_end", "type": "end", "farewell": "Thanks for the time. We'll be in touch." },
-    { "id": "cold_end", "type": "end", "farewell": "Thanks for chatting. Have a great day." },
-    { "id": "callback_end", "type": "end", "farewell": "Got it, I'll call you back then. Have a great day." },
-    { "id": "mark_dnc_and_end", "type": "end", "farewell": "Understood, I'll remove you from our list. Sorry for the disturbance." },
-    { "id": "polite_end_wrong_person", "type": "end", "farewell": "Sorry to bother you, have a great day." }
-  ]
+      { "id": "got_callback", "source": "schedule_callback", "target": "callback_end", "kind": "conversation", "condition": "Caller gave a callback time" }
+    ]
+  }
 }

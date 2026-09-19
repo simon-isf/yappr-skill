@@ -1,99 +1,84 @@
 {
   "_template_meta": {
     "name": "rsvp",
-    "description": "Hebrew wedding RSVP flow. Outbound call asks attendance, count, dietary needs. Localized for Hebrew (instructions in Hebrew, voice='Zephyr', language='he'). Configure post-call host notification via the AGENT-LEVEL extraction_parameters + webhook_url + webhook_events fields, NOT inside this flow_config.",
+    "description": "Hebrew wedding RSVP graph. Outbound call asks attendance, count, dietary needs. Localized for Hebrew (instructions in Hebrew, voice='Zephyr', language='he'). Configure post-call host notification via the AGENT-LEVEL extraction_parameters field (PATCH /agents/:id) plus an After trigger on the workflow document (event 'analysis.ready') — not inside this document.",
     "required_tools": [],
     "agent_fields_to_set": {
+      "agent_speaks_first": true,
+      "greeting_message": "ברך את האורח בחום ואמור שאתה מתקשר בנוגע לחתונה.",
       "extraction_parameters": [
         { "name": "attendance", "description": "coming | not_coming | undecided" },
         { "name": "guest_count", "description": "Number of guests attending (integer if known)" },
         { "name": "dietary_notes", "description": "Special meal needs (kosher, vegan, allergies)" },
         { "name": "callback_time", "description": "If undecided, when to call back" }
-      ],
-      "webhook_events": ["call.analyzed"]
-    }
+      ]
+    },
+    "after_triggers_to_add": [
+      { "id": "notify_host", "event": "analysis.ready", "steps": [] }
+    ]
   },
-  "flow_config_version": "1",
-  "metadata": { "purpose": "Wedding RSVP — attendance + count + dietary" },
-  "nodes": [
-    {
-      "id": "start",
-      "type": "start",
-      "agent_speaks_first": true,
-      "greeting": "ברך את האורח בחום ואמור שאתה מתקשר בנוגע לחתונה.",
-      "is_literal": false,
-      "next_step_id": "ask_attendance"
-    },
-
-    {
-      "id": "ask_attendance",
-      "type": "conversation",
-      "name": "ברך ושאל אם מגיעים",
-      "instructions": "ברך בחום. ספר על החתונה (תאריך + מקום + שמות הזוג) במשפט אחד. שאל אם מגיעים. שאלה אחת בלבד, אל תכניס שאלות נוספות.",
-      "transitions": [
-        { "id": "coming",      "label": "האורח אישר שהוא מגיע",                     "next_step_id": "ask_count" },
-        { "id": "not_coming",  "label": "האורח אמר שלא יגיע",                       "next_step_id": "thank_no_show" },
-        { "id": "maybe",       "label": "האורח לא בטוח / יענה אחר כך",                "next_step_id": "thank_undecided" }
-      ]
-    },
-
-    {
-      "id": "ask_count",
-      "type": "conversation",
-      "name": "כמה אורחים",
-      "instructions": "שאל בעדינות בכמה אנשים יגיעו (כולל האורח עצמו). קלוט את המספר לתוך הסלוט 'guest_count'.",
-      "transitions": [
-        { "id": "got_count", "label": "האורח אמר מספר ספציפי", "next_step_id": "ask_dietary" }
-      ]
-    },
-
-    {
-      "id": "ask_dietary",
-      "type": "conversation",
-      "name": "צרכי תפריט מיוחדים",
-      "instructions": "שאל אם מישהו מהאורחים צריך מנה מיוחדת — בד\"ץ, צמחוני, טבעוני, או אלרגיות. אם כן, ברר כמה ומאיזה סוג. קלוט לסלוט 'dietary_notes'.",
-      "transitions": [
-        { "id": "no_special", "label": "אין צרכים מיוחדים",                "next_step_id": "say_goodbye" },
-        { "id": "has_special","label": "יש צרכים מיוחדים, האורח פירט אותם", "next_step_id": "say_goodbye" }
-      ]
-    },
-
-    {
-      "id": "thank_no_show",
-      "type": "conversation",
-      "name": "תודה שעדכן שלא מגיע",
-      "instructions": "תודה לו על העדכון. אמור משהו לבבי קצר (לא מקצועי-יבש). הודע שהזוג יראה את התשובה.",
-      "transitions": [
-        { "id": "ready_end", "label": "האורח השיב בקצרה ואפשר לסגור", "next_step_id": "polite_end" }
-      ]
-    },
-
-    {
-      "id": "thank_undecided",
-      "type": "conversation",
-      "name": "מחכים לתשובה",
-      "instructions": "אמור שאין בעיה, ושנחזור לקראת האירוע. שאל מתי נוח לחזור אליו.",
-      "transitions": [
-        { "id": "got_callback_time", "label": "האורח אמר מתי לחזור אליו", "next_step_id": "polite_end" },
-        { "id": "no_callback_time",  "label": "לא רוצה שיחזרו, יענה לבד",   "next_step_id": "polite_end" }
-      ]
-    },
-
-    {
-      "id": "say_goodbye",
-      "type": "conversation",
-      "name": "פרידה חמה",
-      "instructions": "אמור פרידה חמה ואישית. הזכר שמתרגשים לראות אותם בחתונה. אל תמשיך את השיחה.",
-      "transitions": [
-        { "id": "ready_end", "label": "האורח השיב, מוכן לסגור", "next_step_id": "polite_end" }
-      ]
-    },
-
-    {
-      "id": "polite_end",
-      "type": "end",
-      "farewell": "תודה רבה ולהתראות.",
-      "is_literal": true
-    }
-  ]
+  "schema_version": "1",
+  "id": "rsvp",
+  "name": "Wedding RSVP",
+  "strict_mode": true,
+  "global_instructions": "אתה מתקשר בנוגע לחתונה. ברך בחום, היה אישי ולא רשמי-יבש. לפני סיום השיחה, בכל מסלול, אמור: 'תודה רבה ולהתראות.'",
+  "channels": ["phone"],
+  "conversation": {
+    "entry_node_id": "ask_attendance",
+    "nodes": [
+      {
+        "id": "ask_attendance",
+        "type": "conversation",
+        "label": "ברך ושאל אם מגיעים",
+        "instructions": "ברך בחום. ספר על החתונה (תאריך + מקום + שמות הזוג) במשפט אחד. שאל אם מגיעים. שאלה אחת בלבד, אל תכניס שאלות נוספות."
+      },
+      {
+        "id": "ask_count",
+        "type": "conversation",
+        "label": "כמה אורחים",
+        "instructions": "שאל בעדינות בכמה אנשים יגיעו (כולל האורח עצמו). קלוט את המספר לתוך הסלוט 'guest_count'."
+      },
+      {
+        "id": "ask_dietary",
+        "type": "conversation",
+        "label": "צרכי תפריט מיוחדים",
+        "instructions": "שאל אם מישהו מהאורחים צריך מנה מיוחדת — בד\"ץ, צמחוני, טבעוני, או אלרגיות. אם כן, ברר כמה ומאיזה סוג. קלוט לסלוט 'dietary_notes'."
+      },
+      {
+        "id": "thank_no_show",
+        "type": "conversation",
+        "label": "תודה שעדכן שלא מגיע",
+        "instructions": "תודה לו על העדכון. אמור משהו לבבי קצר (לא מקצועי-יבש). הודע שהזוג יראה את התשובה."
+      },
+      {
+        "id": "thank_undecided",
+        "type": "conversation",
+        "label": "מחכים לתשובה",
+        "instructions": "אמור שאין בעיה, ושנחזור לקראת האירוע. שאל מתי נוח לחזור אליו."
+      },
+      {
+        "id": "say_goodbye",
+        "type": "conversation",
+        "label": "פרידה חמה",
+        "instructions": "אמור פרידה חמה ואישית. הזכר שמתרגשים לראות אותם בחתונה. אל תמשיך את השיחה."
+      },
+      {
+        "id": "polite_end",
+        "type": "end",
+        "label": "סיום השיחה"
+      }
+    ],
+    "edges": [
+      { "id": "coming", "source": "ask_attendance", "target": "ask_count", "kind": "conversation", "condition": "האורח אישר שהוא מגיע" },
+      { "id": "not_coming", "source": "ask_attendance", "target": "thank_no_show", "kind": "conversation", "condition": "האורח אמר שלא יגיע" },
+      { "id": "maybe", "source": "ask_attendance", "target": "thank_undecided", "kind": "conversation", "condition": "האורח לא בטוח / יענה אחר כך" },
+      { "id": "got_count", "source": "ask_count", "target": "ask_dietary", "kind": "conversation", "condition": "האורח אמר מספר ספציפי" },
+      { "id": "no_special", "source": "ask_dietary", "target": "say_goodbye", "kind": "conversation", "condition": "אין צרכים מיוחדים" },
+      { "id": "has_special", "source": "ask_dietary", "target": "say_goodbye", "kind": "conversation", "condition": "יש צרכים מיוחדים, האורח פירט אותם" },
+      { "id": "no_show_ready_end", "source": "thank_no_show", "target": "polite_end", "kind": "conversation", "condition": "האורח השיב בקצרה ואפשר לסגור" },
+      { "id": "got_callback_time", "source": "thank_undecided", "target": "polite_end", "kind": "conversation", "condition": "האורח אמר מתי לחזור אליו" },
+      { "id": "no_callback_time", "source": "thank_undecided", "target": "polite_end", "kind": "conversation", "condition": "לא רוצה שיחזרו, יענה לבד" },
+      { "id": "goodbye_ready_end", "source": "say_goodbye", "target": "polite_end", "kind": "conversation", "condition": "האורח השיב, מוכן לסגור" }
+    ]
+  }
 }
