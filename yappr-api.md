@@ -1325,7 +1325,7 @@ Get full details of a single call, including resolved lead and disposition objec
   },
   "summary": "string | null",
   "recording_url": "string | null",
-  "ended_by": "caller" | "agent" | "system" | "unknown" | null,
+  "ended_by": "caller" | "agent" | "system" | "operator" | "unknown" | null,
   "disconnect_reason": "string | null",
   "metadata": { /* ONLY keys you passed at POST /calls — see note below */ },
   "disposition": {
@@ -1435,6 +1435,7 @@ Get full details of a single call, including resolved lead and disposition objec
 | `"caller"` | The far end went away first — the human on the line hung up, or the browser closed the connection. |
 | `"agent"` | The agent chose to end the call: its end-call tool, the End step of its flow, or its closing line followed by a hangup. |
 | `"system"` | Yappr ended it — the silence timeout, the maximum-duration cap, an answering machine, or a fault that took the call down. |
+| `"operator"` | A Yappr operator ended it from the platform side — a call found still open after its conversation had ended. Its `disconnect_reason` reads `Ended by operator`. |
 | `"unknown"` | The carrier reported the ending but did not say which side dropped the call. |
 | `null` | Call has not yet ended, or nothing could attribute it. |
 
