@@ -495,11 +495,10 @@ No authoring endpoint starts a real call.
 
 ### DELETE /agents/:id
 
-For workflow-owned agents, archive and remove from ordinary lists while retaining
-workflow/run history. New calls are blocked; running calls are not aborted. PATCH
-cannot undo archival. Same-key creation replay returns 410. To pause reversibly,
-PATCH is_active=false; the agent stays visible and can be reactivated. Legacy Delete
-still soft-deactivates during migration.
+Archives the agent and removes it from ordinary lists while retaining workflow/run
+history. New calls are blocked; running calls are not aborted. PATCH cannot undo
+archival. Same-key creation replay returns 410. To pause reversibly, PATCH
+is_active=false; the agent stays visible and can be reactivated.
 
 **Scopes:** `agents:update`
 
