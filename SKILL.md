@@ -265,10 +265,15 @@ refusal codes — is in **PATCH /phone-numbers/:id**, **POST /calls** and
 between a prompt agent and a flow agent, and never fall back to the old body after a
 failed create — there is no field to fix and no retry that succeeds.
 
-Both old kinds are described in this skill because agents of both kinds are still live:
-they take calls, keep their tools, lifecycle webhooks and phone numbers, and are read,
-updated and archived exactly as before. Read those sections when you are working on an
-agent that already exists; never as a way to build a new one.
+**There is no agent left running the old prompt/flow engine.** Every agent that existed
+before this release was converted onto the workflow engine as part of it — an agent you
+find on an existing account is a workflow agent, whatever it looked like when it was
+created. `agents.system_prompt`, `type` and `flow_config` remain on the row only as
+frozen history: `GET`/`PATCH /agents/:id` null them out (see *Canonical workflow
+authoring* in `yappr-api.md`), and writing to them does nothing a call will ever see. If
+you meet a mention of "prompt agent" or "flow agent" anywhere outside this sentence,
+including a few sections still further down in this file, read it as history, not as a
+second kind of agent you might be building or managing today.
 
 What the old choice used to decide is now one document. An open-ended conversation is one
 conversation step with Strict Mode off. A procedure with required steps in order is a
@@ -276,11 +281,13 @@ graph of steps with Strict Mode on — and it is the same agent, the same editor
 same endpoints either way, so the decision is no longer made at create time and no longer
 permanent. Start from the shape the caller needs and change it later.
 
-For the how-to on building that graph, open
-[`flow-composition-guide.md`](flow-composition-guide.md) for the conversational patterns
-and the canonical workflow document in `yappr-api.md` for its shapes. For calendars,
-mailboxes and every other third-party account an agent acts on, open the **Connected
-accounts** section of [`yappr-api.md`](yappr-api.md).
+For the how-to on building that graph, see **PHASE 1B** below for the journey and **The
+conversation graph** in `yappr-api.md` for its exact shapes —
+[`flow-composition-guide.md`](flow-composition-guide.md) still carries the conversational
+design patterns (transitions, globals, humanization) at a conceptual level, but its JSON
+examples predate this document. For calendars, mailboxes and every other third-party
+account an agent acts on, open the **Connected accounts** section of
+[`yappr-api.md`](yappr-api.md).
 
 
 ### Core files in this skill directory
@@ -531,9 +538,9 @@ between:
 
 ---
 
-## PHASE 1A: Prompt Agent Creation
+## PHASE 1A: The single-block conversation
 
-For each agent identified in discovery, run this phase. If multiple agents are needed, complete one at a time.
+For each agent identified in discovery, run this phase. If multiple agents are needed, complete one at a time. What follows is content-authoring guidance — the words that go in `workflow.global_instructions` and, for a graph, in a conversation node's `instructions` — the same craft either way.
 
 ### Step 1.1 — Check for Existing Agents
 
@@ -694,29 +701,15 @@ Set limits to prevent runaway calls. See Appendix C for values.
 
 ### Step 1.8 — API Calls to Make
 
-**Create the agent** — use the file-based payload approach (required for Hebrew/special characters):
+**Create the draft** — use the file-based payload approach (required for Hebrew/special characters). `name` plus `workflow.global_instructions` is the whole body; anything else (`system_prompt`, `type`, `flow_config`) answers `410 AGENT_LEGACY_CREATION_GONE`:
 
 ```bash
 python3 -c "
 import json, uuid
 payload = {
     'name': 'Agent Name',
-    'system_prompt': '...',
-    'voice': 'Michal',
     'language': 'he',
-    'temperature': 0.5,
-    'agent_speaks_first': True,
-    'greeting_message': '...',
-    # VAD: include only if deviating from defaults
-    # 'vad_stop_secs': 0.5,
-    # 'vad_start_secs': 0.2,
-    # 'vad_confidence': 0.7,
-    # Call guards: include only if deviating from defaults
-    # 'silence_timeout_secs': 60,
-    # 'max_continuous_speech_secs': 120,
-    # 'max_call_duration_secs': 600,
-    # Call event notifications are not an agent field any more — see PHASE 4,
-    # "Post the call to your system", for the tool + After trigger that replace them.
+    'workflow': {'global_instructions': '...'},
     'idempotency_key': str(uuid.uuid4())
 }
 with open('/tmp/agent-payload.json', 'w', encoding='utf-8') as f:
@@ -724,31 +717,31 @@ with open('/tmp/agent-payload.json', 'w', encoding='utf-8') as f:
 "
 curl -s -X POST 'https://api.goyappr.com/agents' \
   -H 'Authorization: Bearer $YAPPR_API_KEY' \
+  -H 'Idempotency-Key: <the same uuid>' \
   -H 'Content-Type: application/json' \
   --data-binary @/tmp/agent-payload.json | jq .
 ```
 
-Save the returned `id`.
+Save the returned `id`. This starts Strict Mode off, with an empty Before/After and no
+publication — see **PHASE 1: Agent Creation** above.
 
-**Attach the end_call system tool (required for every agent):**
-
-```bash
-# Find the end_call system tool for this company
-curl -s "https://api.goyappr.com/tools" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  | jq '.data[] | select(.type == "system") | {id, name}'
-```
-
-Then attach it with `execution_order: 999` so it's always last:
+**Set voice, language extras, VAD and call guards** with `PATCH /agents/:id` — they are
+ordinary settings, not part of the workflow document:
 
 ```bash
-curl -s -X POST "https://api.goyappr.com/tools/attach" \
+curl -s -X PATCH "https://api.goyappr.com/agents/AGENT_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"agent_id": "AGENT_ID", "tool_id": "END_CALL_TOOL_ID", "execution_order": 999}'
+  -d '{"voice": "Michal", "agent_speaks_first": true, "greeting_message": "..."}'
+  # VAD / call guards: include only if deviating from defaults (Steps 1.6/1.7)
 ```
 
-Do this silently — no explanation needed unless the user asks.
+**There is no end_call tool to attach.** Intrinsic End is not a tool and never was
+one to add — every workflow agent can end the call as a plain outcome of its
+conversation graph or a Before-call `"#decline"`, with nothing to create, find or
+attach. If you are looking at an agent that still has an `agent_tools` row named
+`end_call`, that agent predates this and the row is inert — do not recreate the
+pattern.
 
 ### Step 1.9 — Disposition Gap Check
 
@@ -770,74 +763,93 @@ No Answer and Failed are auto-set by the system. The AI classifier sets all othe
 
 ---
 
-## PHASE 1B: Flow Agent Creation
+## PHASE 1B: The graph conversation
 
 **Only if the call has distinct stages.** If one block of instructions covers the
 conversation, you are done in Phase 1A — continue to Phase 2.
 
-A staged agent replaces one large block of instructions with a graph of steps — each node is a small step (conversation, tool call, transfer, end). Routing between nodes happens automatically: on every user-turn boundary the model evaluates what the user just said against the current step's outgoing transitions and either advances or stays. Tool-call nodes execute deterministically and route on the result. This pattern matches what Retell.ai and nlpearl.ai ship.
+A staged agent replaces one large block of instructions with a graph of steps inside the
+workflow document's `conversation` object — the same document Phase 1's intro points
+at, saved with `PUT /agents/:id/workflow` and read back with `GET /agents/:id/workflow`.
+Routing between conversation nodes happens automatically: on every user-turn boundary the
+model evaluates what the user just said against the current node's outgoing edges and
+either advances or stays — advisory under Strict Mode off, enforced once you turn it on.
+Deterministic nodes route on their tool's result, never on the model. This pattern
+matches what Retell.ai and nlpearl.ai ship.
 
-The full how-to lives in [`flow-composition-guide.md`](flow-composition-guide.md). At a glance:
+The exact document shape — `conversation.entry_node_id`, `nodes[]`, `edges[]`,
+`global_edges[]`, and the four node types (`conversation`, `action`, `sequence`, `end`) —
+is **The conversation graph** in `yappr-api.md`, under *Canonical workflow authoring*.
+[`flow-composition-guide.md`](flow-composition-guide.md) still carries the transition-
+design, globals and humanization patterns below at a conceptual level; its JSON examples
+predate this document and use the retired `flow_config` field names — follow the shapes
+in `yappr-api.md`, not the JSON there.
 
-### Step 1B.1 — Design the global system prompt
+### Step 1B.1 — Design the global instructions
 
-Flow agents still have a global `system_prompt` (persona, brand rules, hard constraints). It's layered with each node's `instructions` at runtime. Apply HUMANIZE_PLAYBOOK rules — same as Phase 1A.2.
+`workflow.global_instructions` is the graph's persona, brand rules and hard constraints,
+layered with each conversation node's own `instructions` at runtime. Apply HUMANIZE_PLAYBOOK
+rules — same as Step 1.2 above.
 
 ### Step 1B.2 — Sketch the graph
 
-Identify the steps. For each step decide:
-- **Conversation node** (LLM talks): what the bot is trying to accomplish, plus N labeled transitions out (e.g. "User confirmed attendance" → next-step). The model picks based on what the user just said.
-- **Tool-call node** (deterministic): which existing tool (by `tool_id`) and what to do on success / error / custom branches (custom branches use simple JSONPath-equality matching like `$.status == "no_availability"`). Tool args are owned by the **tool itself** via `payload_config` (literals + `ai_extract`-by-the-runtime); `tool_call` nodes have **no per-node `args_template`** field. At call start the effective linked-tool config (including `config_override`) becomes a flat submission schema with one field per extraction parameter; the model never submits a nested `args` object. `required` defaults to true, while optional fields do not block dispatch. Use a node's `config_override` for deliberate per-flow differences, remembering that `payload_config` is replaced as one complete section. Create a new tool when the action is a distinct reusable capability rather than a variation of the same one.
-- **Transfer node** / **End node**: terminal.
-- **Post-call extraction and automation**: there are no `webhook` or `structured_output` flow nodes. For per-call extraction, use the agent-level `extraction_parameters` field. For post-call automation, add an After trigger to the workflow document — see PHASE 4, "Post the call to your system".
+Identify the steps. For each one decide:
+- **`conversation` node** (the model talks): `instructions` for what the bot is trying to
+  accomplish, plus `available_binding_ids` for any tool the model may call by its own
+  choice while there. Routing out is a `conversation`-kind edge per labeled transition —
+  the model picks one based on what the user just said (or stays, or ends, when Strict
+  Mode is off).
+- **`action` node** (deterministic): one tool, by `binding_id` — this covers what used to
+  be a separate tool-call node and a separate transfer node; a transfer is simply the
+  binding behind an `action` node being a transfer tool. Route its outcome with `result`
+  edges (`outcome: "succeeded" | "failed"`), never with a labeled transition.
+- **`sequence` node**: `sequence_id` pointing at a private, tool-only `ToolSequence` in
+  `document.sequences[]` — use it for "check, then branch on what came back" in one node
+  rather than three conversation nodes; see **A sequence that checks before it acts**
+  above for the branching grammar.
+- **`end` node**: terminal, and the only terminal kind besides a transfer's own `action`.
+- **Post-call extraction and automation**: there is no `webhook` or `structured_output`
+  node. For per-call extraction use the agent-level `extraction_parameters` field; for
+  post-call automation add an After trigger to the workflow document — see PHASE 4,
+  "Post the call to your system".
 
-A flow can expose at most **127 unique typed extraction contracts**. Reusing the same effective tool and extraction schema across nodes shares one contract. If the API returns `too_many_extraction_contracts`, reuse a schema or split the graph into smaller agents.
+### Step 1B.2a — Greeting before the graph
 
-### Step 1B.2a — Greeting before flow (`auto_advance: false`)
+The greeting is `agent_speaks_first` / `greeting_message` on `PATCH /agents/:id`, same as
+Phase 1A — the graph does not override them per-node. Design the entry node's
+`instructions` to pick up cleanly after whatever the greeting says, rather than assuming
+the caller heard node-specific framing in it.
 
-Pattern name: **Greeting before flow**.
+### Step 1B.2b — Globals (escape hatches reachable from any node)
 
-When to use: the agent should greet neutrally and listen for the caller's open-ended intent before routing into structured steps. Useful when the first conversation node's instructions are intent-specific (e.g. "ask which service they want") and you don't want the greeting itself to bend toward that intent.
-
-How: set `auto_advance: false` on the StartNode. The bot delivers the greeting in start-node context only — no first-conversation-node instructions are pre-loaded. After the user's first reply, the flow automatically enters the first conversation node and the bot replies in that node's voice.
-
-When `auto_advance: true` (default, legacy behavior): greeting + the first conversation node's instructions are pre-loaded together, so the greeting is delivered "in" the first node's voice. Saves one round-trip but blends greeting with that node's behavior.
-
-### Step 1B.2b — Globals (escape hatches reachable from any step)
-
-For escape hatches that should be reachable from any step (transfer-to-human, end-on-DNC, wrong-number, "user reveals they're actually X" misclassification recovery), use **global nodes** instead of wiring an explicit transition into every source node. See [`flow-composition-guide.md`](flow-composition-guide.md) section on globals for the full how-to.
+For escape hatches that should be reachable from any conversation node (transfer-to-human,
+end-on-DNC, wrong-number, "user reveals they're actually X" misclassification recovery),
+add a `global_edges[]` entry — `target` plus a prose `condition` — instead of wiring an
+explicit edge from every source node. See [`flow-composition-guide.md`](flow-composition-guide.md)'s
+section on globals for the design patterns; the field names there are pre-migration, but
+the "reachable from anywhere, offered as an extra candidate every turn" behavior is the
+same idea.
 
 ### Step 1B.3 — Connect a calendar or mailbox (if scheduling or email is involved)
 
 For deployments with workspace connected accounts enabled, use the **Connected accounts** journey in [`yappr-api.md`](yappr-api.md). Discover configured apps with `GET /tool-apps/connection-options`, create an explicitly labeled account with `POST /tool-connections`, and give the expiring Yappr handoff to an authorized human. An API key cannot provide OAuth consent. Poll the exact returned auth-attempt ID with bounded backoff; `completed` authorization is distinct from `connection.state: ready`. Keep provider IDs, OAuth state and handoff capabilities out of tools, prompts, call history and logs. Replacement is explicit and applies to future bindings; disconnect blocks new actions without pretending to revoke every provider grant.
 
-**The native OAuth integrations are retired.** `GET /integrations` and `DELETE /integrations/{id}` answer `410` with `code: endpoint_retired`, and the `integration_call` flow node no longer exists: saving one is rejected, and an agent whose stored flow still contains one cannot take calls. There is nothing to fall back to when a connection fails — retry the connection, never reach for the old path. If you meet an agent in that state, delete the retired node and rebuild the step as a `tool_call` bound to a connected account.
+**The native OAuth integrations are retired.** `GET /integrations` and `DELETE /integrations/{id}` answer `410` with `code: endpoint_retired` — they listed and revoked credentials that no longer exist. There is nothing to fall back to when a connection fails — retry the connection, never reach for the old path. Connect the calendar or mailbox as a connected account, then call it from a `sequence` step or an `action` node bound to that connection.
 
-### Step 1B.4 — Create the agent via API
+### Step 1B.4 — Build the graph
 
-```bash
-curl -X POST "https://api.goyappr.com/agents" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Wedding RSVP",
-    "type": "flow",
-    "language": "he",
-    "voice": "Zephyr",
-    "system_prompt": "You are Michal, the personal assistant for the wedding...",
-    "flow_config": { /* the graph — see flow-composition-guide.md */ }
-  }'
-```
+Read the draft with `GET /agents/:id/workflow`, add your nodes/edges to `document.conversation` and your tool bindings to `document.bindings[]`, then save with `PUT /agents/:id/workflow` carrying the `expected_version` you just read. `POST /agents/:id/workflow/validate` checks the draft without saving; `POST /agents/:id/workflow/publish` makes it live. See *Canonical workflow authoring* in `yappr-api.md` for the exact request/response shapes and every `issues[]` code.
 
-The API validates `flow_config` (Zod-equivalent JSON schema): exactly one start node, all `next_step_id`s resolve, unique node ids. Validation errors come back as 400s with a clear message.
+### Step 1B.5 — Tools come from the same registry as Phase 2
 
-### Step 1B.5 — Skip Phase 2 (Tooling)
+There is no separate attachment step and no `agent_tools` join for a graph node. A node's
+`binding_id` (on an `action` node) or `available_binding_ids` (on a `conversation` node)
+references an entry in the workflow document's own `bindings[]`, each pointing at a
+`tool_revision_id` from the **Unified Tools journey** above. Create the tool via `POST /tools`
+(Phase 2.1), then add a binding for it in the document you save in Step 1B.4.
 
-Phase 2 below describes how prompt agents attach tools via the `agent_tools` join. **Flow agents do NOT use `agent_tools`** — tools live inside `flow_config.nodes[].tool_id`. The tools themselves still live in the `tools` table and are reusable across multiple flows or attached to prompt agents.
-
-To add a tool to a flow: create the tool via `POST /tools` (same as Phase 2.1), then reference its `tool_id` from a tool-call node in your `flow_config`.
-
-**Continue to Phase 3 (Call Dispatch)** — that phase works for both agent types.
+**Continue to Phase 3 (Call Dispatch)** — that phase is unaffected by which conversation
+shape the agent uses.
 
 ---
 
@@ -862,7 +874,7 @@ Apply these rules before deciding what tools to build:
 
 **Rule 3: Full CRUD when the domain is relevant.** If the use case involves appointments → build `checkAvailability`, `bookAppointment`, and (if inbound/support) `cancelAppointment` and `rescheduleAppointment`. Don't create tools that won't be used, but don't skip the safeguards.
 
-**Rule 4: `endCall` is always last.** The system tool is already attached in Phase 1. Write explicit trigger conditions in the system prompt.
+**Rule 4: Ending is intrinsic, not a tool.** There is nothing to attach — every workflow agent can end the call as a plain outcome of the conversation. Write explicit trigger conditions in the instructions (farewell said, goal achieved, caller asked to hang up) so the model ends promptly instead of stalling.
 
 ### Layer 2 — Tool Decision Tree
 
@@ -895,7 +907,10 @@ The client constructor's optional `fetchFn` parameter means the same code works 
 
 ### Step 2.1 — Creating Tools via Yappr API
 
-For each tool, use the file-based approach:
+Use the **Unified Tools journey** above for the exact request: `POST /tools` with
+`{name, description, workflow: {kind:"http", input_schema, output_schema, configuration,
+effect, timeout_ms}}` and an `Idempotency-Key`. Design-wise, still decide the same things
+per tool — name, description, and the fields it needs:
 
 ```bash
 python3 -c "
@@ -903,21 +918,23 @@ import json, uuid
 payload = {
     'name': 'bookAppointment',
     'description': 'Book an appointment. Call only after the caller has confirmed a specific date, time, and their full name.',
-    'type': 'webhook',
-    'config': {
-        'url': 'https://YOUR_EDGE_FUNCTION_URL',
-        'method': 'POST',
-        'headers': {},
-        'payload_config': {
-            'include_standard_metadata': True,
-            'static_parameters': [],
-            'extraction_parameters': [
-                {'name': 'callerName', 'description': 'Full name of the caller as stated', 'required': True},
-                {'name': 'preferredDate', 'description': 'Requested appointment date in natural language', 'required': True},
-                {'name': 'preferredTime', 'description': 'Requested appointment time in natural language', 'required': True},
-                {'name': 'serviceType', 'description': 'Type of service or appointment requested', 'required': False}
-            ]
-        }
+    'workflow': {
+        'kind': 'http',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'callerName': {'type': 'string', 'description': 'Full name of the caller as stated'},
+                'preferredDate': {'type': 'string', 'description': 'Requested appointment date in natural language'},
+                'preferredTime': {'type': 'string', 'description': 'Requested appointment time in natural language'},
+                'serviceType': {'type': 'string', 'description': 'Type of service or appointment requested'}
+            },
+            'required': ['callerName', 'preferredDate', 'preferredTime'],
+            'additionalProperties': False
+        },
+        'output_schema': {'type': 'object'},
+        'configuration': {'url': 'https://YOUR_EDGE_FUNCTION_URL', 'method': 'POST', 'headers': {}},
+        'effect': 'write',
+        'timeout_ms': 10000
     },
     'idempotency_key': str(uuid.uuid4())
 }
@@ -926,6 +943,7 @@ with open('/tmp/tool-payload.json', 'w', encoding='utf-8') as f:
 "
 curl -s -X POST 'https://api.goyappr.com/tools' \
   -H 'Authorization: Bearer $YAPPR_API_KEY' \
+  -H 'Idempotency-Key: <the same uuid>' \
   -H 'Content-Type: application/json' \
   --data-binary @/tmp/tool-payload.json | jq .
 ```
@@ -934,24 +952,18 @@ curl -s -X POST 'https://api.goyappr.com/tools' \
 - Name MUST be camelCase English: `bookAppointment`, `logLead`, `checkAvailability`
 - No snake_case, no spaces, no Hebrew in the name
 - Descriptions can be in Hebrew
-- All parameter names are normalized to camelCase automatically
 - Webhook targets must be final public HTTP(S) URLs; localhost, cloud-metadata hosts, non-global literal or DNS-resolved addresses, mixed public/private DNS answers, and redirects are rejected, so configure the final destination directly
 - Custom `Authorization` / `Content-Type` headers are supported, but routing and framing headers (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Expect`, `Keep-Alive`, `Proxy-*`, `TE`, `Trailer`, `Upgrade`) are rejected
-- Webhook actions run once; do not add `retry_count` because automatic action retries are unsupported
 
-**Attach to agent:**
-```bash
-curl -s -X POST "https://api.goyappr.com/tools/attach" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"agent_id": "AGENT_ID", "tool_id": "TOOL_ID", "execution_order": 0}'
-```
-
-One tool per attach call. Increment `execution_order` by 1 for each additional tool.
+**Reach the agent, not by attaching — by binding.** Add `{id, tool_revision_id}` to the
+workflow document's `bindings[]` (Step 1B.4/1B.5 above), then reference that binding's
+`id` from a conversation node's `available_binding_ids` or an `action` node's
+`binding_id`. There is no `POST /tools/attach` call and no `execution_order` in the
+unified model — order comes from where the binding sits in the graph, not a number.
 
 ### Step 2.2 — Writing Tool Instructions in the Prompt
 
-The platform auto-registers tool names, descriptions, and flat parameter schemas with the AI. This applies to prompt agents and to every referenced `tool_call` in a flow. Flow schemas are resolved when the call starts, so a tool/config-override edit applies on the next call. Do NOT repeat the schema in the prompt, and never instruct the model to wrap fields in `args` or send a `node_id`.
+The platform auto-registers a bound tool's name, description and input schema with the model — for every `available_binding_ids` entry on a conversation node and every `action` node's `binding_id`. Bindings resolve at session start, so a tool/binding edit applies on the next call, not the one in flight. Do NOT repeat the schema in the prompt, and never instruct the model to wrap fields in `args` or send a node id.
 
 What you MUST write in the `<tools>` section of the prompt:
 - **When to call the tool** — specific conditions that must ALL be met
@@ -1015,7 +1027,7 @@ When the agent invokes the tool during a real call, Yappr sends this flat shape 
 Two critical fields for multi-tenant / CRM-integrated setups:
 
 - **`call_metadata`** — forwards in real-time whatever you passed as `metadata` when creating the call. This is the right place for CRM IDs (appointment_id, contact_id, calendar_id) that the tool receiver needs to route updates back to the correct record. The agent NEVER sees these (they don't go into the prompt).
-- **`call_variables`** — the same `{{VariableName}}` values that were injected into the system prompt. Useful when the tool receiver wants to echo the lead's name into a Slack alert, an outbound WhatsApp, etc. — without re-fetching the call.
+- **`call_variables`** — the same `{{VariableName}}` values that were injected into the agent's instructions. Useful when the tool receiver wants to echo the lead's name into a Slack alert, an outbound WhatsApp, etc. — without re-fetching the call.
 
 **Tool webhooks are synchronous and real-time.** No `GET /calls/:id` round-trip required — everything the receiver needs arrives in one payload. This is what separates tool webhooks from event webhooks (`call.analyzed` etc.) which are minimal and require a follow-up fetch.
 
