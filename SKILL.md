@@ -284,8 +284,9 @@ permanent. Start from the shape the caller needs and change it later.
 For the how-to on building that graph, see **PHASE 1B** below for the journey and **The
 conversation graph** in `yappr-api.md` for its exact shapes —
 [`flow-composition-guide.md`](flow-composition-guide.md) still carries the conversational
-design patterns (transitions, globals, humanization) at a conceptual level, but its JSON
-examples predate this document. For calendars, mailboxes and every other third-party
+design patterns (transitions, globals, humanization) at a conceptual level, but it
+describes a retired surface — its endpoints and JSON examples predate this document and
+no longer work; follow the shapes above instead. For calendars, mailboxes and every other third-party
 account an agent acts on, open the **Connected accounts** section of
 [`yappr-api.md`](yappr-api.md).
 
@@ -296,7 +297,7 @@ account an agent acts on, open the **Connected accounts** section of
 |------|----------------|
 | `yappr-api.md` | Anytime you need an exact endpoint shape, request/response fields, validation rules, or error codes |
 | `HUMANIZE_PLAYBOOK.md` | When writing or reviewing any agent system prompt — research-backed principles for voice AI dialogue |
-| `flow-composition-guide.md` | Designing flow agents — node catalog, transition heuristics, common topologies |
+| `flow-composition-guide.md` | **Retired surface** — its endpoints no longer work; open only for the node catalog, transition heuristics and topology patterns as conceptual design reference |
 | `agent-eval-guide.md` | **Programmatic regression testing** — how to design personas, build cases + suites, wire suites into CI, debug failing assertions. Open whenever the user wants to test agents without making real calls. |
 | `yappr-api.md` → *Connected accounts* | Connecting a calendar, mailbox or any third-party account an agent acts on, and the human authorization handoff |
 | `SKILL.md` (this file) | The journey guide — what to build, in what order, and why |

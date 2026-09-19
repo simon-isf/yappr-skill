@@ -1,6 +1,16 @@
 # Flow Agents — Composition Guide
 
-For procedural conversations (booking, intake, qualification, RSVP) you build a **flow agent**: a graph of nodes where the model itself picks the next transition on every user turn via a `pick_transition` tool call. This guide covers how to design the graph, how transitions work, and how tool-call nodes integrate with the existing `tools` table. For the prompt-agent path, see `SKILL.md` Phase 1A.
+> **This describes a retired surface.** `flow_config` and the `POST /agents` /
+> `PATCH /agents/:id` bodies that carried it are gone — every agent that existed
+> converted onto the workflow engine at release, and creating a new one this way has
+> answered `410 AGENT_LEGACY_CREATION_GONE` since before this release. See **Flow
+> agents — retired** in [`yappr-api.md`](yappr-api.md) for the exact current state.
+> The node catalog, transition heuristics and topologies below are still useful as
+> conceptual design guidance, but build the actual graph with `PUT /agents/:id/workflow`
+> and the document shape in **The conversation graph** in `yappr-api.md` — not any
+> endpoint named in this file.
+
+For procedural conversations (booking, intake, qualification, RSVP) a flow agent was a graph of nodes where the model itself picked the next transition on every user turn via a `pick_transition` tool call. This guide covers how the graph was designed, how transitions worked, and how tool-call nodes integrated with the `tools` table — read it for the design patterns, not the endpoints. For the current agent journey, see `SKILL.md` Phase 1A/1B.
 
 For calendars, mailboxes and any other third-party account a tool-call node acts on, see the **Connected accounts** section of [`yappr-api.md`](yappr-api.md).
 
