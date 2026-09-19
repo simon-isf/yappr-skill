@@ -178,7 +178,7 @@ interrupted exactly like every other agent.
 
 ### POST /agents
 
-For the unified workflow cohort, create one unpublished draft using
+Create one unpublished draft using
 `{"name":"Reception assistant","language":"en","workflow":{"global_instructions":"Help callers with their questions."}}`
 and an `Idempotency-Key` header (16–128 letters, digits, `_` or `-`). Only name,
 description (optional, up to 2,000 characters), language (`he` default or `en`) and
@@ -335,6 +335,37 @@ and stored documents have a 512 KiB budget. Preserve large integers/precise deci
 with a lossless JSON codec rather than native floating-point parse/stringify.
 The chat builder uses a bounded `document_json` string at the model boundary and
 the same document/API/validator underneath; it is not a separate execution graph.
+
+**The conversation graph.** `document.conversation` is `{entry_node_id, nodes[], edges[],
+global_edges[]}`. Four node types, discriminated by `type`:
+
+- `conversation` — `instructions` (the model's own behavior for this step) plus
+  `available_binding_ids`, the tools the model may call by its own choice while there.
+  This is the only node the model speaks from.
+- `action` — one deterministic call to a single tool binding (`binding_id`). A transfer
+  is an `action` node whose binding is a transfer tool — there is no separate transfer
+  node type.
+- `sequence` — `sequence_id`, pointing at one of `document.sequences[]` (a
+  `ToolSequence`: `id`, `name`, optional `output_schema`/`output_mapping`, and `steps[]`
+  in the same `SequenceStep` shape Before/After use — see **Branching inside a sequence**
+  below).
+- `end` — the terminal node: just `id`/`label`. This is the Intrinsic End the Unified
+  Tools catalog above excludes.
+
+Two edge kinds route between nodes. A `conversation` edge (`kind:"conversation"`) carries
+`source`, `target` and a `condition` — up to 10,000 characters of prose the model reads
+to decide whether to take it; it is guidance, not code. A `result` edge
+(`kind:"result"`) carries `source`, `target` and `outcome:"succeeded"|"failed"`, and only
+ever leaves an `action` or `sequence` node — its target is decided by the tool's own
+result, never by the model. `global_edges[]` are the escape hatches: each carries a
+`target` and its own prose `condition`, reachable from every conversation node without a
+wired edge — the model gets it as an extra candidate on every turn.
+
+**Strict Mode governs `conversation`-kind edges only.** Off (the default), the model may
+also end the call, restate, or diverge from a wired edge when the caller's words call for
+it — the graph is instructional weight, not a cage. On, only a wired edge or global edge
+advances the conversation. Either way, `result` edges are always enforced: a tool's
+outcome is never advisory.
 
 Before/After dependencies and private sequence children are explicit. A sequence
 contains tool-only children and an explicit public output schema/mapping; never
@@ -611,38 +642,6 @@ uncertain effect automatically. Public output is a bounded/redacted preview, not
 vendor evidence or reusable execution input; inspect `redaction`, `receipt_settled_test`
 and `resolution` alongside IDs/status. Fixed account, URL, action and destination remain
 immutable through testing. Tool tests and call tests are separate authorization subjects.
-
-### Temporary legacy Tools boundary
-
-The propagation and webhook contracts below apply only to existing legacy tools and
-agents. They do not override unified publication, revision, test or ownership rules.
-
-**Tool & agent schema propagation timing**
-
-Tool and agent config (system prompt, tools list, extraction parameters, voice/language/model
-settings) is read from the database **once per call, at call start**. Once a call is
-connected, the LLM session holds that schema for the lifetime of the call — there is no
-mid-call refresh.
-
-What this means in practice:
-
-- After `POST /tools`, `PATCH /tools/:id`, `POST /tools/attach`, or any change to an agent
-  via `PATCH /agents/:id`, **the next call placed (or received) by that agent uses the new
-  config**. In-flight calls finish with whatever they started with.
-- There is no separate "publish" or "resync" step. The PATCH/POST is the publish.
-- If you maintain tool configs in your own codebase and push them via the API, the
-  effective state in Yappr is whatever your last successful `PATCH /tools/:id` set —
-  changes to your local source of truth that you haven't PATCHed have **not** reached
-  Yappr.
-- For testing during development: place a fresh call after every tool/agent edit to
-  verify the change took effect. Re-using an in-flight call to test a new schema will
-  not work.
-
-This is the expected design — swapping function declarations mid-call would break the
-LLM's mental model of available tools. But it does mean a "ship a fix locally, expect
-it to work on the next call" workflow requires an explicit PATCH between the two.
-
----
 
 ### GET /tools
 
@@ -1540,9 +1539,15 @@ transcript, tool rows and deliveries still come back here unchanged. Read each r
 is running an A/B split. `ab_variant` is `"a"` or `"b"`; `ab_variant_fallback` is `true`
 when the split picked `b` but the call went to `a` because `b` could not take it.
 
-**`flow_trace`** — *Present only on flow-agent calls*. Structured view of the path through the graph during the call. This is the recommended observability surface for flow agents.
+**`flow_trace`** — *Present only on a call placed against the retired `flow_config` engine, never on a converted agent's call.* Structured view of the path through that old graph. Superseded by `timeline`'s `transition` rows for anything current — see above.
 
 ### `flow_trace` shape
+
+`flow_trace` is per-call history from the retired `flow_config` engine (see **Flow
+agents — retired**) — superseded by `timeline` above for a converted agent, whose
+`transition` rows carry the same "which edge fired and why" answer for the current
+conversation graph. Read on for the shape `flow_trace` itself still returns, on the
+calls it was ever populated for.
 
 ```json
 {
@@ -1632,7 +1637,7 @@ when the split picked `b` but the call went to `a` because `b` could not take it
 ### Reading `flow_trace` for debugging
 
 - **"Which branch did the call take?"** — read `steps[].step_id` in order.
-- **"Why did the bot transition from conversation node X?"** — find that step's `eval_decisions[]`. The last entry's `decision` is the transition that fired (its label maps to `flow_config.nodes[].transitions[].id`); its `reasoning` is the model's justification for the choice.
+- **"Why did the bot transition from conversation node X?"** — find that step's `eval_decisions[]`. The last entry's `decision` is the transition that fired (its label maps to a transition id in that call's stored `flow_config`); its `reasoning` is the model's justification for the choice.
 - **"What did the bot send to / receive from a tool?"** — find the tool_call step; `tool_call.args` is what was sent, `tool_call.response_preview` is what came back (JSON-stringified, truncated to ~2KB).
 - **"Why did a tool route to error / a custom branch instead of success?"** — read the *next* step's `reason`: `"tool success"` / `"tool custom: <label>"` / `"tool error: <msg>"`.
 
@@ -1744,16 +1749,13 @@ publish the agent first. `503 WORKFLOW_ADMISSION_UNAVAILABLE` means **no call wa
 
 **Reserved keys (400 on collision).** The five built-in tokens (`id`, `direction`, `agent_number`, `user_number`, `agent_name`) are platform-supplied — the bot emits them itself at call start. Using any of them as a key in `metadata` is rejected with `400 INVALID_METADATA_RESERVED_KEY`. Pick a different name for your custom field (e.g. `customer_id` instead of `id`, `caller_phone` instead of `user_number`).
 
-**Calling a flow agent? Check its metadata contract first.** Flow agents can reference `{{metadata.<key>}}` inside `args_template` values, so a missing key silently renders as an empty string at runtime — the carrier never warns you, the carrier never knows. Before dispatching, fetch the agent and read `flow_config.metadata.custom_metadata_keys`:
-
-```bash
-curl -s -H "Authorization: Bearer $YAPPR_API_KEY" \
-  "https://api.goyappr.com/agents/<agent_id>" \
-  | jq '.flow_config.metadata.custom_metadata_keys'
-# → ["customer_email", "appointment_id"]
-```
-
-Every key in that array must be present in your `metadata` body. The five **built-in** tokens (`id`, `direction`, `agent_number`, `user_number`, `agent_name`) are platform-supplied — you don't need to pass them. Anything else is a contract the flow author chose and the dispatcher (you) must honor. Skip a required key → the dependent node fires with an empty arg → integration validation routes the flow to its `error` branch (assuming the author wired one).
+**This was a flow-agent-only contract and it is retired along with `flow_config`** (see
+**Flow agents — retired**): a stored flow could reference `{{metadata.<key>}}` inside
+`args_template`, and reading `flow_config.metadata.custom_metadata_keys` in advance was
+how you found which keys it needed. `GET /agents/:id` nulls `flow_config` for every
+converted agent now, so that read returns nothing. A workflow document's own tool
+bindings declare their inputs explicitly — see **The conversation graph** — so there is
+no separate metadata-contract lookup to make before dispatching a call to one.
 
 **Response:** `201`
 ```json
@@ -1961,7 +1963,7 @@ older client that sends a one-shot offer to an agent that prepares gets
 is not spent and no line is taken, so the same token can create a request
 instead.
 
-The browser presents the token as the `x-yappr-web-token` header to the endpoints in `connection` — the SDK does this for you; you never set it. Pass a `variables` object at mint (`POST /calls {type:"web", agent_id, variables}`) and it is injected into the agent's system prompt as `{{Variable}}` tokens, exactly like a phone call. **Preview limitations:** no live in-browser transcript yet (`onMessage` reserved — server-side transcript above is unaffected); very restrictive networks that block UDP may fail to connect, surfaced via `onError`.
+The browser presents the token as the `x-yappr-web-token` header to the endpoints in `connection` — the SDK does this for you; you never set it. Pass a `variables` object at mint (`POST /calls {type:"web", agent_id, variables}`) and it is injected into the agent's instructions as `{{Variable}}` tokens, exactly like a phone call. **Preview limitations:** no live in-browser transcript yet (`onMessage` reserved — server-side transcript above is unaffected); very restrictive networks that block UDP may fail to connect, surfaced via `onError`.
 
 ---
 
@@ -3164,287 +3166,43 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 
 ---
 
-# Flow agents
+# Flow agents — retired
 
-A flow agent (`type: "flow"`) is driven by `flow_config` — a graph of nodes — instead of a single `system_prompt`. Both fields are still required for flow agents (the `system_prompt` is the global persona; node `instructions` are per-step). See [`flow-composition-guide.md`](flow-composition-guide.md) for the conceptual guide.
+**There is no flow agent left to describe.** `type: "flow"` and `flow_config` were the
+pre-release procedural shape — a graph of nodes instead of one `system_prompt`.
+`POST /agents` has answered `410 AGENT_LEGACY_CREATION_GONE` for any body without
+`workflow` since before this release, and at release every agent that existed is
+converted onto the workflow engine — there is no agent left running on `flow_config`.
+Build the graph in **The conversation graph** above, inside *Canonical workflow
+authoring*; [`flow-composition-guide.md`](flow-composition-guide.md) still carries
+transition-design and humanization patterns at a conceptual level, but its JSON examples
+predate the migration — follow the shapes above, not the ones there.
 
-> **A flow agent can no longer be created.** `POST /agents` answers
-> `410 AGENT_LEGACY_CREATION_GONE` for any body without `workflow`. Everything in this
-> section describes a flow agent that **already exists**: it still takes calls, and its
-> graph is still read and edited through `PATCH /agents/:id`. A new agent gets its
-> conversation graph from `PUT /agents/:id/workflow` instead, and the equivalent shapes
-> are in the canonical workflow document, not here.
+`agents.type` and `agents.flow_config` remain on a converted agent's row as frozen
+history. `GET`/`PATCH /agents/:id` null them out in the response (see *Canonical workflow
+authoring*), and `PATCH` refuses a body naming `flow_config` (or `system_prompt`, `type`)
+outright for any workflow-engine agent — `422 WORKFLOW_SETTINGS_REQUEST_INVALID`, "Use
+ordinary agent settings only. Edit instructions, graph and bindings through the workflow
+document." It does not silently drop the field.
 
-## PATCH /agents/:id (additive)
+Three endpoints below `flow_config` were not withdrawn and still answer requests, with a
+real gap worth knowing before you reach for them:
 
-Same validation as POST. Plus:
-- `type` field is **rejected** in PATCH body (immutable post-create — DB trigger enforces)
-- Each `flow_config` change auto-creates a row in `flow_versions` (deduped by SHA-256 content hash)
+- `GET /agents/:id/flow/versions` and `POST /agents/:id/flow/test` are read-only /
+  simulate-only — harmless against a converted agent, just meaningless, since nothing
+  they show is what the agent will actually do on a call.
+- `POST /agents/:id/flow/restore` **writes**. It checks the row's `type` column, not
+  execution state, and a converted agent's `type` is untouched by the conversion — so a
+  restore against a converted agent that was `type:"flow"` before release still succeeds,
+  still returns `200`, and still updates `flow_config`. The call engine never reads that
+  column for a converted agent. A `200` here is not proof of anything happening to what
+  the agent will say next; do not use this endpoint to inspect or change a converted
+  agent's conversation.
 
-## flow_config JSON schema
-
-```jsonc
-{
-  "flow_config_version": "1",
-  "nodes": [
-    {
-      "id": "start",
-      "type": "start",
-      // For flow agents these OVERRIDE agent.agent_speaks_first +
-      // agent.greeting_message. Configure them here, not on the agent.
-      "agent_speaks_first": true,
-      "greeting": "Greet the caller warmly",
-      "is_literal": false,
-      "next_step_id": "first_conversation_node_id",
-      // Default true (legacy). When false, the greeting is delivered in
-      // start-node context only and the first conversation node is entered
-      // automatically after the user's first reply — useful when you want
-      // a neutral greeting that doesn't blend with node 1's instructions.
-      "auto_advance": true
-    },
-    {
-      "id": "ask_name",
-      "type": "conversation",
-      "name": "Ask for name",
-      "instructions": "Politely ask the caller for their full name.",
-      "transitions": [
-        {
-          "id": "got_name",
-          "label": "Caller provided their name",
-          "description": "Optional clarifier the model also sees",
-          "next_step_id": "ask_date"
-        },
-        { "id": "refused", "label": "Caller refused", "next_step_id": "polite_end" }
-      ]
-    },
-    {
-      // Global conversation node — reachable from any conversation node
-      // without an explicit transition edge. The model gets it as an extra
-      // candidate transition on every user turn.
-      "id": "transfer_to_human",
-      "type": "conversation",
-      "name": "User asked for a human",
-      "instructions": "Acknowledge briefly, then say you're transferring.",
-      "is_global": true,
-      "global_jump_description": "User explicitly asks to speak to a human / agent / representative",
-      "transitions": [
-        { "id": "do_transfer", "label": "Acknowledged", "next_step_id": "transfer_node" }
-      ]
-    },
-    {
-      "id": "create_event",
-      "type": "tool_call",
-      "name": "Book the calendar event",
-      // tool_call nodes have NO args_template — tool args are owned by the
-      // tool's payload_config (static_parameters + extraction_parameters).
-      // At call start, the effective tool + config_override becomes a flat
-      // model submission schema: one field per extraction parameter, with no
-      // nested args wrapper or model-supplied node_id.
-      "tool_id": "<tool uuid from /tools>",
-      "config_override": {},
-      "pre_fire_announcement": true,  // optional bool — plays a short platform-controlled hold tone while the webhook runs. Use for webhooks > ~500 ms.
-      "timeout_secs": 30,             // optional number 1–300 — hard cap. On timeout → error_next_step_id.
-      "transitions": {
-        "success_next_step_id": "confirm_node",
-        "error_next_step_id": "apologize_node",
-        "custom": [
-          {
-            "id": "no_avail",
-            "label": "No availability",
-            "jsonpath": "$.available",
-            "equals": "false",
-            "next_step_id": "suggest_alternatives"
-          }
-        ]
-      }
-    },
-    {
-      "id": "transfer_to_human",
-      "type": "transfer",
-      "transfer_to": "+972501234567",
-      "transfer_message": "Connecting you to our team now."
-    },
-    {
-      "id": "polite_end",
-      "type": "end",
-      "farewell": "Thanks for your time, goodbye.",
-      "is_literal": false
-    }
-  ]
-}
-```
-
-**Node types**: `start`, `conversation`, `tool_call`, `transfer`, `end`. (`integration_call` is retired and the builder no longer draws it — see below.) There are no `webhook` or `structured_output` flow nodes — for per-call extraction or webhook delivery, use the agent-level `extraction_parameters` and `webhook_url` / `webhook_events` fields. They apply uniformly to both prompt and flow agents.
-
-**Terminal rule**: only `end` and `transfer` nodes are allowed to be terminal. Every `conversation` and `tool_call` node must have at least one outgoing edge — for `conversation`, that's any transition; for `tool_call`, the `success_next_step_id` must be wired. Saves that violate this return `terminal_not_allowed` (per offending node) or `no_terminal` (no `end` / `transfer` reachable in the flow at all) under the `FLOW_INVALID` 400 — see "Save validation" below.
-
-**Global nodes**: any `conversation`, `transfer`, or `end` node can carry `is_global: true` + `global_jump_description: "<user-side signal>"`. Global nodes are reachable from any conversation node without explicit edges — the model gets them as extra candidates on every turn (with a "prefer labeled transitions" bias). Use for misclassification recovery and universal escape hatches (transfer-to-human, end-on-DNC). Recommended max ≤3 per flow. The API rejects (400) `is_global` on `start` / `tool_call`, and rejects globals without a non-empty `global_jump_description`. See the flow composition guide for full guidance.
-
-**Tool-call routing (`success` vs `error` vs `custom`)** — deterministic, no LLM, exactly **one** out-edge per fire (mutually exclusive):
-
-1. `error_next_step_id` fires only on hard failures: network timeout, redirect or other non-2xx status, integration disconnected, tool deleted/inactive, missing config.
-2. Otherwise dispatcher walks `custom[]` top-to-bottom — first branch whose `jsonpath` extracts a value `==` `equals` (after stringification) wins, **loop returns**, success is NOT also taken.
-3. If no custom matched → `success_next_step_id` fires.
-
-Any 2xx is `success` — including soft-fail bodies like `{"available": false}`. The result is injected as a `<tool_result>` block into the next node's LLM context, so a single `success` → conversation node usually handles both "booked" and "no slots" gracefully via prompt instructions. **Reach for `custom[]` only when the next node should be structurally different** (different instructions, different downstream tools).
-
-**JSONPath subset** (root `$` = tool's parsed response body):
-- Supported: `$.foo.bar.baz`, `$.list[0].name`, `$.items[2]`
-- NOT supported: recursive descent (`$..foo`), wildcards (`$.*`), filter expressions (`$[?(...)]`)
-- Missing key / wrong type / out-of-bounds → branch silently does not match → falls through
-
-**Stringification for `equals`** (must match exactly or branch never fires):
-- boolean `true` → `"true"` (lowercase, NOT `"True"`)
-- boolean `false` → `"false"`
-- `null` → `"null"`
-- number `42` → `"42"`
-- string `"booked"` → `"booked"`
-
-Constraints validated server-side: see "Save validation (`FLOW_INVALID`)" below.
-
-## `integration_call` node — RETIRED
-
-This node carried a Google Calendar or Gmail credential on the node itself and
-dispatched against a Yappr-managed OAuth client. **It no longer exists.**
-
-- Saving a flow that contains one is rejected as `FLOW_INVALID`.
-- An agent whose stored `flow_config` still contains one **cannot take calls**:
-  the runtime refuses the call at load rather than skipping the step, because a
-  skipped booking step means the agent tells the caller it booked something it
-  did not.
-- The builder has no editor for it either. Opening a stored flow that contains
-  one draws it as an inert "unsupported step" card you cannot configure; the rest
-  of the canvas still works so you can rewire around it.
-- There is no migration and no compatibility mode. Delete the node.
-
-**What to do instead:** connect the calendar or mailbox as a connected account
-(see *Connected accounts* below), then call it from an ordinary `tool_call`
-node bound to that connection. Availability checks, event creation and email
-sends are all actions on the connected app.
-
-If you are repairing an existing agent: `GET /agents/{id}` to read the
-`flow_config`, remove the `integration_call` node, rewire the step that pointed
-at it, add a `tool_call` node in its place, then `PATCH` the agent. The save
-will not succeed until the retired node is gone.
-
-## Save validation (`FLOW_INVALID`)
-
-Saves to `POST /agents` (with `flow_config`) or `PATCH /agents/:id` (with `flow_config`) run a full graph validator. Any failure returns:
-
-```http
-HTTP/1.1 400 Bad Request
-Content-Type: application/json
-
-{
-  "error": "FLOW_INVALID",
-  "issues": [
-    { "node_id": "lookup",       "code": "tool_id_missing",
-      "message": "tool_call node requires tool_id" },
-    { "node_id": "ask_date",     "code": "terminal_not_allowed",
-      "message": "conversation node has no outgoing transitions" }
-  ]
-}
-```
-
-Fix every entry in `issues` and re-save — the API returns all problems at once, not just the first one.
-
-| Code | Applies to | Meaning |
-|------|-----------|---------|
-| `no_start` | flow | No `start` node found. |
-| `multiple_starts` | flow | More than one `start` node. |
-| `start_unwired` | start | `start.next_step_id` missing. |
-| `instructions_missing` | conversation | Empty/absent `instructions`. |
-| `tool_id_missing` | tool_call | `tool_id` missing. |
-| `success_not_wired` | tool_call | No `success_next_step_id`. |
-| `transfer_to_missing` | transfer | No `transfer_to` configured. |
-| `terminal_not_allowed` | conversation, tool_call | Node has no outgoing edge. **Only `end` and `transfer` nodes may be terminal.** |
-| `no_terminal` | flow | No `end` or `transfer` node reachable from `start`. |
-| `unreachable_node` | any | Node exists but no path from `start` reaches it. |
-| `unknown_target_node` | any with edges | An edge's `next_step_id` doesn't match any node id. |
-| `schema_invalid` | any | Zod parse failure (unknown enum value, wrong type, etc.). Also what a retired `integration_call` node produces — delete the node. |
-
-## GET /agents/:id/flow/versions
-
-Paginated list of flow snapshots (every save creates one, deduped by content hash).
-
-```bash
-curl "https://api.goyappr.com/agents/<agent_id>/flow/versions?limit=10" \
-  -H "Authorization: Bearer $YAPPR_API_KEY"
-```
-
-Response:
-```jsonc
-{
-  "data": [
-    {
-      "id": "uuid",
-      "agent_id": "uuid",
-      "content_hash": "<sha-256>",
-      "created_at": "...",
-      "created_by_email": "user@example.com"
-    }
-  ],
-  "next_cursor": "iso-timestamp"
-}
-```
-
-## POST /agents/:id/flow/restore
-
-Restore a flow agent's `flow_config` to a previously-saved version. Useful when a change broke the flow and you want to revert without rebuilding by hand.
-
-```bash
-curl -X POST "https://api.goyappr.com/agents/<agent_id>/flow/restore" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{ "version_id": "<id from /agents/:id/flow/versions>" }'
-```
-
-Required scope: `agents:update`.
-
-Behavior:
-- Replaces `agents.flow_config` with the version's stored content.
-- Snapshots a new `flow_versions` row (deduped — restoring to the current head is a no-op).
-- Returns the updated agent (same shape as `GET /agents/:id`).
-
-Constraints:
-- Agent must be a flow agent (`type='flow'`); restoring on a prompt agent returns 400.
-- `version_id` must reference a row whose `agent_id` matches the URL — cross-agent ids return 404.
-
-Workflow: list versions with `GET /agents/:id/flow/versions`, pick the `id` of the target version, POST it here.
-
-## POST /agents/:id/flow/test
-
-Hermetic simulator — does NOT write `call_logs`, does NOT call real tools. CI-safe.
-
-```jsonc
-// Request
-{
-  "transcript": [
-    { "role": "assistant", "text": "Hi, can you make it?" },
-    { "role": "user",      "text": "Yes I'll be there with 4 guests" }
-  ],
-  "mock_tool_results": {
-    "create_event": { "result": { "id": "evt_123" } }
-  }
-}
-```
-
-Response:
-```jsonc
-{
-  "trace": [
-    { "step_id": "ask_attendance", "kind": "enter" },
-    { "step_id": "ask_attendance", "kind": "eval", "decision": "got_yes" },
-    { "step_id": "create_event",   "kind": "tool_mock", "result": { "id": "evt_123" } },
-    { "step_id": "polite_end",     "kind": "enter" }
-  ],
-  "named_results": { "summary": { "guest_count": 4 } },
-  "slot_values": { /* whatever your flow accumulated */ },
-  "ended_at_step_id": "polite_end"
-}
-```
-
-v1 of the test simulator uses a deterministic keyword-overlap heuristic for transition selection (free, fast, CI-safe) — it does not invoke the production routing LLM. Use the simulator for smoke testing flow logic; for measuring real conversational behavior, run a live test call.
+The `integration_call` node these endpoints could once show is itself retired — it
+carried a Google Calendar or Gmail credential on the node and dispatched against a
+Yappr-managed OAuth client. Connect the account instead under **Connected accounts**
+below and call it from a `sequence` step or an `action` node bound to that connection.
 
 ---
 
