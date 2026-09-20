@@ -361,6 +361,20 @@ result, never by the model. `global_edges[]` are the escape hatches: each carrie
 `target` and its own prose `condition`, reachable from every conversation node without a
 wired edge — the model gets it as an extra candidate on every turn.
 
+**Authoring a tool step.** An `action` node needs a route into it: publication refuses a
+step nothing reaches (`unreachable_node`). Add the node and a `conversation` edge from
+the step it follows in the same document write, and remember a `conversation` edge's
+`condition` must be at least one character — an empty one is refused by the document
+contract itself, not by a validation issue you can read and act on.
+
+**Check / publish refusals.** `422 WORKFLOW_VALIDATION_FAILED` returns `issues[]`, each
+with `code`, `path` and `message`. An issue that belongs to one conversation step also
+carries `node_id` (that step's `conversation.nodes[].id`) and `label` (its label in the
+document); both are optional and absent on an issue about the document as a whole. Use
+them to point the author at the step instead of at the JSON pointer — e.g.
+`unreachable_node` arrives once per unreachable step with `path:
+/conversation/nodes/<id>`.
+
 **Strict Mode governs `conversation`-kind edges only.** Off (the default), the model may
 also end the call, restate, or diverge from a wired edge when the caller's words call for
 it — the graph is instructional weight, not a cage. On, only a wired edge or global edge
