@@ -1423,7 +1423,15 @@ Two options — offer both:
 https://app.goyappr.com/he/agents/AGENT_ID
 ```
 
-Direct link to the agent's page in the Yappr dashboard. Click "Test Call" to speak with the agent in the browser.
+Direct link to the agent's page in the Yappr dashboard. Click "Test Call" to speak with
+the agent in the browser — this needs a **published** workflow; an unpublished agent's
+Testing tab offers "Go to the workflow" instead of a call, so publish first
+(`POST /agents/:id/workflow/publish`, Step 1B.4) if it is not live yet. To rehearse the
+same way without a browser click, mint a session with `POST /calls {"type":"web"}` (see
+**PHASE 3B** below) or hand out a `POST /shared-links` page. **Do not** reach for
+`POST /agents/:id/flow/test` to rehearse a workflow agent — it is the retired flow
+simulator and answers `409 WORKFLOW_FLOW_TEST_UNSUPPORTED` for every agent this skill
+creates (see **Flow agents — retired** in `yappr-api.md`).
 
 **Option B: Phone Call (requires purchased number)**
 
