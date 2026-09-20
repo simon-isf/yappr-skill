@@ -544,8 +544,14 @@ keys remain company-scoped. IDs, revision numbers and head generations are serve
 | `GET /tool-apps/{slug}/actions?version=YYYYMMDD_NN` | `tools:read` | Version-specific action page; pass opaque cursors unchanged. |
 | `GET /tool-apps/{slug}/actions/{action}?version=YYYYMMDD_NN` | `tools:read` | Full authoritative input/output schemas, local metadata ID, scope alternatives and reviewed eligibility/fixed-field policy. `latest` is not a pin. |
 
-The `/tool-apps` reads forward the catalog service's own failures: a `WORKFLOW_*` code you
-will not find documented, always carried as `422` or `503`. Branch on the status, not the
+**Discovery.** An app whose publisher has not dated it comes back on `GET /tool-apps`
+with `version: null`; that is normal, not an error. Ask for `GET /tool-apps/{slug}`
+before choosing an action version, and expect `422 WORKFLOW_DATED_VERSION_REQUIRED`
+there for a `version: null` app — it cannot be used yet, pick another.
+
+The `/tool-apps` reads forward the catalog service's own failures: a `WORKFLOW_*` code
+you will not find documented elsewhere — `WORKFLOW_DATED_VERSION_REQUIRED` above is the
+one named exception — always carried as `422` or `503`. Branch on the status, not the
 code — retry a `503` unchanged; a `422` means the catalog rejected the request itself, so
 re-read the app or action and correct the query.
 
@@ -3252,6 +3258,13 @@ Connection control is available on deployments that enable the workspace connect
 | `GET /tool-connection-auth-attempts/{id}` | `tool-connections:read` | Exact local attempt plus safe connection state. Never infer success from list differences or browser messages. |
 | `POST /tool-connections/{id}/reconnect` | `tool-connections:manage` | Body `{ "mode": "replace", "locale": "en" }`; returns a fresh one-time human handoff. Same-account reauthorization is not yet exposed. |
 | `DELETE /tool-connections/{id}` | `tool-connections:manage` | Returns `202 {connection}` after immediate local denial; removal at the connected-app service and manual revocation in the provider account may still be outstanding. Repeated requests do not advance the authorization epoch again. |
+
+`POST /tool-connections` requires both `toolkit` and `label` — omitting `label` is
+`400 CONNECTION_INVALID`. `toolkit` must be a `slug` from
+`GET /tool-apps/connection-options`, which is a *different, shorter* list than
+`GET /tool-apps`; anything else is `409 CONNECTION_APP_UNAVAILABLE`. If connection
+options returns `{"data": []}`, nothing can be connected in that workspace yet and every
+create will `409`.
 
 Give the handoff privately to the intended authorized human, who signs in to Yappr, reviews the target workspace and label, and explicitly claims the browser-bound attempt before receiving the app authorization link. The API key initiator and consenting human are separate identities. Treat the URL fragment as a temporary capability: present it only for this consent step; do not log it, persist it in workflow/call data, or include it in voice-agent prompts. Account records belong to the company, not the human who completed consent. Several labeled accounts per app are supported.
 
