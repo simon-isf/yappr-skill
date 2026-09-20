@@ -181,11 +181,17 @@ interrupted exactly like every other agent.
 Create one unpublished draft using
 `{"name":"Reception assistant","language":"en","workflow":{"global_instructions":"Help callers with their questions."}}`
 and an `Idempotency-Key` header (16–128 letters, digits, `_` or `-`). Only name,
-description (optional, up to 2,000 characters), language (`he` default or `en`) and
-workflow.global_instructions (optional, up to 100,000 characters) are accepted in
-this branch. Name is trimmed and limited to 200 characters. IDs, name on the canonical
-workflow, and execution ownership are assigned by Yappr; never send execution_version,
-publication pointers, legacy type/flow_config/system_prompt, or caller-owned IDs.
+description (optional, up to 2,000 characters), language (`he` default or `en`),
+authoring_locale (optional, `he` or `en`) and workflow.global_instructions (optional,
+up to 100,000 characters) are accepted in this branch. Name is trimmed and limited to
+200 characters. IDs, name on the canonical workflow, and execution ownership are
+assigned by Yappr; never send execution_version, publication pointers, legacy
+type/flow_config/system_prompt, or caller-owned IDs.
+
+`authoring_locale` is `"he"` or `"en"` — the language Yappr writes the new agent's
+starting step names, their instructions and the closing route condition in, text that
+is read in the editor, never spoken on the call. It defaults to `language`: send the
+language of whoever is reading, not the language of the call.
 
 The response has the standard Agent fields plus read-only execution_version and
 published_workflow_revision_id. Draft creation returns 201; an identical normalized
@@ -227,7 +233,7 @@ Moving an integration off the old body:
 
 **Scopes:** `agents:create`
 
-**Request body:** `name`, optional `description` and `language`, and
+**Request body:** `name`, optional `description`, `language` and `authoring_locale`, and
 `workflow.global_instructions`. Nothing else is accepted.
 
 **Response:** `201` — the agent object, as an unpublished draft. `200` on an idempotent
