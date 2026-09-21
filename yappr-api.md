@@ -393,6 +393,17 @@ expose private children independently or recursively nest sequences. Request sch
 and stored-context schema are distinct; schemas are not runtime values. Missing
 references may use an explicit typed fallback, including false, zero or null.
 
+**Every lifecycle step needs a `label`.** A before-call step, a follow-up step and a
+sequence child are all `{"id", "label", "binding_id"}` — a step written as
+`{"id":"post","binding_id":"notify-endpoint"}` is refused, and the refusal does not
+name the field. Worked After trigger:
+
+```json
+{"after":[{"id":"summary","event":"any_end","steps":[
+  {"id":"email","label":"Email the clinic the call summary",
+   "binding_id":"email-summary","requires":["transcript"],"on_failure":"continue"}]}]}
+```
+
 **Branching inside a sequence.** A sequence step may carry a `when` condition and
 route its outcome with `on_succeeded` / `on_failed`. Conditions are declarative data;
 no expression is evaluated and no customer code is run.
@@ -462,15 +473,17 @@ dialled: the request ends `failed` with `preparation_status:"declined"` and
 `error_code:"before_declined"`, and no call record is created. `"#decline"` is the only
 route target a before-call step may name.
 
-A document with before-call steps **cannot also list `"web"` in `channels`**, and the
-preparation window belongs to the platform with no field to set: an inbound call prepares
-after it arrives and before it is answered within 30 s, an outbound one before the dial
-within five minutes. Publication follows the longest `depends_on` chain, charging each step
-its resolved tool's `timeout_ms`, and refuses a chain that fits neither window. Independent
-steps run together, so only the longest counts.
+A document with before-call steps **may also offer the `"web"` channel** — that
+combination publishes and works: a browser call is created, prepared and then started by
+the caller, the same way an outgoing call is (see **Web calls on an agent that
+prepares** below). The preparation window belongs to the platform with no field to set:
+an inbound call prepares after it arrives and before it is answered within 30 s, an
+outbound or browser call before the dial within five minutes. Publication follows the
+longest `depends_on` chain, charging each step its resolved tool's `timeout_ms`, and
+refuses a chain that fits neither window. Independent steps run together, so only the
+longest counts.
 
-Phase `issues[]` codes: `before_unsupported_on_web` (before-call steps plus the web
-channel), `before_budget_exceeded` (the chain fits neither window),
+Phase `issues[]` codes: `before_budget_exceeded` (the chain fits neither window),
 `guard_phase` (a `when` on a before-call or follow-up step — conditions belong to a
 sequence), `route_phase` (a route on a follow-up step), `before_route_target` (a before-call
 step routing anywhere but `"#decline"`), `decline_phase` (`"#decline"` inside a sequence,
@@ -561,6 +574,14 @@ one named exception — always carried as `422` or `503`. Branch on the status, 
 code — retry a `503` unchanged; a `422` means the catalog rejected the request itself, so
 re-read the app or action and correct the query.
 
+**Connected-app slugs.** The `{slug}` in `/tool-apps/{slug}` and its action routes matches
+`^[a-z0-9_]{1,100}$` — lowercase letters, digits and underscores. Google Calendar is
+`googlecalendar`; `google-calendar` is a `404 WORKFLOW_NOT_FOUND`. Use whatever
+`GET /tool-apps` returned, verbatim. The `toolkit` you send to `POST /tool-connections`
+is the same shape, but from the different, shorter `GET /tool-apps/connection-options`
+list — see **Connected accounts** below; a slug from `GET /tool-apps` that this workspace
+has not opened for connection fails there with `409 CONNECTION_APP_UNAVAILABLE`.
+
 HTTP example (no request is dispatched by saving):
 
 ```json
@@ -628,6 +649,13 @@ parameters. Promotion preserves the old head until every affected follow-current
 workflow validates and the complete affected set/freshness is rechecked atomically.
 Explicit pins and accepted runs stay unchanged. Each compile input has a 1 MiB technical
 budget; this is not a fanout cap. Failed/conflicting promotion makes no partial update.
+
+**Reading an HTTP tool back is lossy.** `configuration` returns `url_display` (scheme,
+host, path), `url_redacted`, `configured_query_names`, `configured_header_names` and the
+constant `url_replacement_required: true`. That constant is a rule, not a flag: a
+revision that changes the URL must send the whole URL again, query string included;
+omit the field to keep the saved one. Never echo `url_display` back as the replacement
+URL.
 
 #### Standalone saved-tool tests
 
@@ -762,6 +790,13 @@ Create a new webhook tool.
 
 **Response:** `201` — full tool object
 
+**A legacy create renames your tool.** `POST /tools` with a `type`/`config` body stores
+the name camelCased: `critic-ron-notify-noshow` is created as `criticRonNotifyNoshow`,
+and a legacy `PATCH /tools/{id}` that renames a tool does the same. Read the stored name
+back out of the response and use that when you look the tool up or name it in a
+prompt — the string you sent will not match. A name sent with the `workflow` variant is
+stored exactly as given, trimmed only.
+
 ---
 
 ### PATCH /tools/:id
@@ -820,6 +855,12 @@ Detach a tool from an agent.
 ---
 
 ### POST /tools/:id/test
+
+**`POST /tools/{id}/test` has two contracts, on the same path.** A workflow-owned tool
+answers `202` with a `test_id` to poll (see **Standalone saved-tool tests** above) and is
+mock-by-default. A legacy `type`/`config` tool, documented below, delivers immediately and
+answers `200` with `payload_sent`, or `502`/`504`. Which one you get depends on the tool,
+not on the request.
 
 Send a test delivery to the saved tool's configured URL. The request follows the same payload contract and HTTP semantics used during a live call, including static parameters, optional standard metadata, the configured HTTP method, and `timeout_seconds`.
 
@@ -1050,7 +1091,26 @@ takes — that endpoint below is the preferred one for new integrations.
 
 **CRITICAL:** All fields use `snake_case`. Using camelCase returns a 400 error.
 
-**Response:** `200` — updated phone number object
+**Response:** `200` — updated phone number object. Also answers `400` (missing
+`phone_number_id`, invalid JSON, or an agent change while the number is
+`pending_requirements`), `403` (the number belongs to another workspace) and `404`
+(unknown id) — not only `200` / `422`.
+
+**Takes effect immediately.** There is no staging step. The moment this call returns
+`200`, the number's next call goes to the agent you named — including a call that is
+already ringing but has not been answered yet; calls already connected finish with the
+agent that answered them. Nothing warns you that the number was busy. Before pointing a
+production number at a different agent, read it back with `GET /phone-numbers` and find
+the row by `id` — there is no GET for a single number, and the call list has no
+per-number filter, so to see how busy a number is, open it in the dashboard, which shows
+per-direction counts and asks you to confirm. To undo, send the previous agent ids back.
+
+**One number per location.** A number answers with exactly one agent, so a customer with
+several branches buys a number per branch, creates (or duplicates) an agent per branch,
+and calls `configure` once per number. The number dialled is what decides which branch
+the caller reached — there is no routing to write inside the agent. Outbound works the
+same way: set `outbound_agent_id` on that location's number and place the call with
+`from` set to it; an explicit `agent_id` on `POST /calls` always wins.
 
 ---
 
@@ -1883,13 +1943,13 @@ Mint a short-lived, single-use token for an **in-browser** voice call via the [`
 }
 ```
 
-**A workflow that prepares before it answers cannot serve a browser call.** Minting always
-succeeds for a reachable active agent, and the browser's connect is then refused with
-`409 workflow_preparation_required` — before the token is claimed, so nothing is spent and
-no call slot is taken. There is nothing to retry: republish that agent's workflow without
-the web channel, or without its before-call steps. Publishing that combination is itself
-refused (`before_unsupported_on_web`), so a `409` here means a version published before
-that rule is still current.
+**A web channel alongside before-call steps publishes and works.** Minting always
+succeeds for a reachable active agent, and the response's `protocol` says which exchange
+the browser must speak — see below. Only an older client that ignores `protocol` and
+sends a one-shot offer anyway is refused, with `409 workflow_preparation_required` —
+before the token is claimed, so nothing is spent and no call slot is taken. There is
+nothing to retry on that refusal: switch the client to create a call request, poll it and
+start it, the same way an outgoing call is placed on a preparing agent.
 
 **`protocol` says which exchange this agent needs.** `"offer"` is the one-shot
 connect every version of the SDK speaks. `"call_request"` means the agent's
@@ -2213,12 +2273,12 @@ Create a lead.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `phone_number` | string | yes | E.164 format |
+| `phone_number` | string | yes | E.164 or the local Israeli form (`0501234567`); normalised on write |
 | `name` | string | no | |
 | `email` | string | no | |
-| `source` | string | no | e.g. `"facebook"`, `"website"` |
-| `tags` | string[] | no | Tag names — resolved to IDs server-side |
-| `tag_ids` | uuid[] | no | Alternative to `tags` — pass UUIDs directly |
+| `source` | string | no | `api` (default), `manual` or `csv_import`. Any other value is `400 INVALID_LEAD_SOURCE`, never silently rewritten. `call` is Yappr's own and cannot be claimed. |
+| `tags` | string[] | no | Tag names, matched exactly — resolved to IDs server-side. One unknown name is `400 INVALID_TAG_NAMES` and nothing is written |
+| `tag_ids` | uuid[] | no | Alternative to `tags` — pass UUIDs directly. One unknown id is `400 INVALID_TAG_IDS`. Send one of the two, not both: `tags` wins when both are present |
 | `long_term_context` | string | no | AI memory injected into system prompt at call time |
 | `metadata` | object | no | Arbitrary JSONB |
 
@@ -2862,7 +2922,13 @@ Delete a tag.
 
 ## Shared Links
 
-Shareable URLs for browser-based agent testing without login. Calls billed to the link creator's company.
+**Shared links are the reliable way to hear an agent.** `POST /shared-links
+{"agent_id":"…"}` returns a `url` of the form `https://app.goyappr.com/share/<token>`.
+Opening it places a real browser call: billed, listed by `GET /calls` with
+`direction: "web_call"`, recorded and analysed like a phone call. `created_by` is `null`
+for a link made with an API key. There is no delete — `PATCH /shared-links/{id}
+{"is_revoked":true}` retires it, and `false` brings the same URL back. Read `status`
+(`active` / `expired` / `revoked`), not `is_revoked`, to ask whether a link still works.
 
 **URL format:** `https://app.goyappr.com/share/{token}`
 

@@ -118,6 +118,22 @@ effect. Unknown outcomes require reconciliation, not automatic repetition. Trans
 tests are mock-only and confer no live-call authority. Unavailable services do not
 authorize a legacy fallback or a real call; observe the deployment's readiness gates.
 
+**New journey — where a tool's arguments come from.** `bindings[].inputs` maps each
+field of a tool's `input_schema` to one source: `{"kind":"model","path":"/field"}` (the
+agent collects it; conversation only, one top-level name), `literal`, `request` /
+`stored` (the document's own schemas), `sequence` (inside a sequence), `step` (another
+step's output, `scope` `local` / `before` / `during`) and `artifact` (After only). Every
+source except `model` and `literal` takes `{"fallback":{"value":…}}`. Never write
+`ai_extract` in a document — it is a runtime label. Full prose and a complete validated
+document: `/concepts/tool-inputs` and `/examples/complete-workflow.json` in the docs
+repo.
+
+**Argument lists need an object root.** A tool's `input_schema`, the document's
+`request_schema` and `stored_schema`, and a sequence's `input_schema` / `output_schema`
+must each be `{"type":"object", …}`. The refusal reads *"Tool inputs must declare an
+object root."* whichever of the five it was; when its `path` is empty, it is one of the
+document's two.
+
 ### A sequence that checks before it acts
 
 The pattern most accounts want first: look something up, then do different work
@@ -141,6 +157,18 @@ JSON pointer of the step or condition part to change.
 
 See **Branching inside a sequence** in `yappr-api.md` for the full grammar, the
 operator rules and every issue code.
+
+**Tool sequences in the dashboard.** A workflow's `sequences[]` can now be managed from
+the agent's Workflow tab without touching the API. The During phase carries a **Tool
+sequences** panel that lists every sequence with its step count, renames one in place,
+and deletes one that no conversation node references (a sequence a `sequence` node still
+points at cannot be deleted — delete the node, which removes the sequence with it).
+Inside a sequence, steps can be reordered, and a step's `when` guard can be edited either
+through the plain-language rows or directly as JSON, which is the only way to author the
+nested `all_of` / `any_of` / `not` shapes the row builder cannot represent. Adding a
+sequence from the toolbar while a conversation step is selected also creates the
+conversation edge into it; added with nothing selected, the node is flagged as
+unreachable until the author connects it.
 
 ### Saying a before-call result out loud
 
@@ -1162,14 +1190,22 @@ document's `after` array, one trigger per event.
      ],
      "after": [
        { "id": "on-analyzed", "event": "analysis.ready",
-         "steps": [{ "id": "post", "binding_id": "notify-endpoint" }] },
+         "steps": [{ "id": "post", "label": "Send the call results", "binding_id": "notify-endpoint" }] },
        { "id": "on-no-answer", "event": "call.no_answer",
-         "steps": [{ "id": "post", "binding_id": "notify-endpoint" }] }
+         "steps": [{ "id": "post", "label": "Send the call results", "binding_id": "notify-endpoint" }] }
      ]
    }
    ```
+   Every step needs a `label` alongside `id` and `binding_id` — a step missing it is
+   refused, and the refusal does not name the field.
 3. Publish. A trigger step is validated the same as any other step —
    `POST /agents/:id/workflow/validate` returns the exact JSON pointer to fix.
+
+**Where a call's results go, in the dashboard.** Extraction parameters on an agent only
+decide *what* is pulled out of the call; they do not decide where it lands — that is the
+After trigger above. In the dashboard this is one shortcut — After call → **Notify URL /
+send webhook** — which creates the tool and one trigger per event you tick. Each delivery
+is `{"event": "<event>", "call": {…}}`; see `yappr-api.md` → **Webhook Events**.
 
 **Event reference:** see "What each phase actually runs" above for the full vocabulary,
 and `yappr-api.md`'s Webhook Events → "Trigger events (the workflow's own names)" for the
