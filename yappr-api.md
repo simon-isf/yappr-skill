@@ -1020,6 +1020,13 @@ direction, or `null` when it always answers with the one bound agent.
 — the bound agent keeps the rest. See **PATCH /phone-numbers/:id** below for
 how to set it.
 
+**These fields are the whole of a phone number.** The same object is what
+`from_phone_number` expands to on a campaign (and anywhere else a number is
+embedded) — one projection, one allowlist. A stored row also holds the carrier
+account's own plumbing; none of it is part of this object, none of it is
+returned, and nothing in your integration should expect a provider or order
+id, a SIP trunk or credential id, or SIP usernames and secrets from this API.
+
 ---
 
 ### POST /phone-numbers/search
@@ -1111,6 +1118,16 @@ and calls `configure` once per number. The number dialled is what decides which 
 the caller reached — there is no routing to write inside the agent. Outbound works the
 same way: set `outbound_agent_id` on that location's number and place the call with
 `from` set to it; an explicit `agent_id` on `POST /calls` always wins.
+
+**Partial updates.** `PATCH /phone-numbers/:id` and this endpoint write only the fields
+the request names. An omitted field is left alone — it is not read back and re-sent — so
+two callers changing different fields on the same number do not overwrite each other.
+Send an explicit `null` to unbind an agent or clear a name; send
+`{"inbound_split": null}` to stop a split. A body with no writable field answers `200`
+and writes nothing.
+
+Do not "read the number, then send the whole object back". That pattern reverts any
+change made between your read and your write. Send just the field you are changing.
 
 ---
 
@@ -1395,6 +1412,7 @@ Get full details of a single call, including resolved lead and disposition objec
   "to": "+972...",
   "direction": "inbound" | "outbound" | "web_call",
   "status": "ringing" | "in-progress" | "completed" | "failed",
+  "failure": { "code": "string", "reason": "string", "stage": "dialing|connecting|conversation|null", "at": "ISO8601 | null" },
   "started_at": "ISO8601 | null",
   "ended_at": "ISO8601 | null",
   "duration_seconds": 0,
@@ -1514,6 +1532,28 @@ Get full details of a single call, including resolved lead and disposition objec
 
 **`metadata`** — The metadata object you attached at `POST /calls`. Empty object `{}` if no metadata was provided at call creation.
 
+**`failure`** — Present only on a call whose `status` is `failed` or `no_answer`. A call
+that completed has **no** `failure` member at all — check for the member, not for a value
+in it.
+
+`failure.code` is stable and is what you branch on; `failure.reason` is one sentence for
+a person and its wording changes. `failure.stage` is `dialing`, `connecting`,
+`conversation` or `null`. `failure.at` is when the failure was recorded, or `null`.
+
+Codes: `no_answer`, `busy`, `rejected`, `cancelled`, `unreachable` (all `dialing`);
+`network_blocked` — a browser call the caller's own network never let connect — and
+`voice_unavailable` (both `connecting`); `call_interrupted` and `transfer_failed` (both
+`conversation`); `unknown` when nothing recorded why. Treat a code you do not recognise
+as `unknown` rather than as an error in your integration.
+
+The same failure is in `timeline` as a `phase` row with `scope: "call"`,
+`status: "failed"` and the same sentence in `error`.
+
+The raw text the platform recorded internally is not returned anywhere on this endpoint —
+not in `failure`, and not in `metadata` either, which stays only what you attached at
+`POST /calls`. It is the carrier's own cause code, an exception's tail, or a provider's
+error class, and it is ours, not yours to read.
+
 **`ended_by`** — Who ended the call. One of:
 
 | Value | Meaning |
@@ -1626,6 +1666,22 @@ is running an A/B split. `ab_variant` is `"a"` or `"b"`; `ab_variant_fallback` i
 when the split picked `b` but the call went to `a` because `b` could not take it.
 
 **`flow_trace`** — *Present only on a call placed against the retired `flow_config` engine, never on a converted agent's call.* Structured view of the path through that old graph. Superseded by `timeline`'s `transition` rows for anything current — see above.
+
+**`execution`** (optional) — Workspaces with execution history enabled also get an
+`execution` block on `GET /calls/:id` and on `GET /call-requests/:id`: how the platform
+carried the call out — the steps it ran, their attempts, timings, and input/output
+previews — beside the conversation itself. Ask for a page of it with `execution_limit`
+and follow `execution.history.next_url` for the next one.
+
+It is an investigation view, not an authority: read-only, a bounded snapshot (history is
+retained for a limited window; `execution.history.complete` says whether you have all of
+it), and stripped of the platform's own plumbing — delivery-row ids, internal job and
+journal counts and storage-retention flags are removed before the response is written,
+and every URL in it points at the public API base. **A field you see there but cannot
+find in `CallExecution` in the OpenAPI schema is not part of the contract; do not build
+on it.** For the conversation itself — turns, tools, transfers, webhook deliveries —
+read `timeline` above; `execution` answers the different question of whether the
+platform finished its own work.
 
 ### `flow_trace` shape
 
@@ -1938,10 +1994,25 @@ Mint a short-lived, single-use token for an **in-browser** voice call via the [`
     "web_call_url": "…",
     "call_requests_url": "…",
     "turn_credentials_url": "…",
-    "api_key": "…"
+    "api_key": "publishable key, or null"
   }
 }
 ```
+
+**The key in `connection` is publishable, and only ever publishable** — the same class
+as a Stripe publishable key. It identifies the data plane, grants nothing on its own, and
+the browser is where it belongs. Two deployment cases, and they are not the same one:
+
+- the workspace's data-plane key is a **secret-class** key → the mint refuses the whole
+  request with `503 WEB_CALL_UNAVAILABLE`. No session is minted and no token is spent; a
+  retry does not clear it.
+- there is **no** data-plane key at all → `201` as usual, with `connection.api_key: null`.
+  The browser then has no key to present unless you pass one to the SDK yourself
+  (`apiKey` on `YapprConversation`).
+
+So type it `string | null`, and branch on the `503` rather than on an empty key. The
+per-call credential is `token`, which is single-use and short-lived — that is the value
+to keep out of logs and out of your page source.
 
 **A web channel alongside before-call steps publishes and works.** Minting always
 succeeds for a reachable active agent, and the response's `protocol` says which exchange
@@ -2511,6 +2582,12 @@ Both are stored as-is and echoed back, and the dashboard's campaign wizard write
 
 - retry timing → `retry_no_answer_seconds`, `retry_completed_seconds`, `max_attempts`, `max_infra_retries`
 - when the campaign may dial → the **workspace** call windows (`GET`/`PUT /call-windows`). That is the gate the pacer evaluates; a campaign with no reachable workspace window refuses to launch and pauses itself as `paused_config`.
+
+**`calling_window` needs a zone.** `{}` inherits the workspace calling hours — this is an
+optional per-campaign narrowing, not the gate itself (see above). As soon as the object
+sets `days`, `start` or `end`, `tz` (an IANA name such as `Asia/Jerusalem`) is required —
+`"09:00-18:00"` says nothing until it says whose nine in the morning. Setting one without
+the other is `400`.
 
 Leave both at `{}` unless you are deliberately mirroring dashboard state.
 

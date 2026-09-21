@@ -863,6 +863,19 @@ same idea.
 
 For deployments with workspace connected accounts enabled, use the **Connected accounts** journey in [`yappr-api.md`](yappr-api.md). Discover configured apps with `GET /tool-apps/connection-options`, create an explicitly labeled account with `POST /tool-connections`, and give the expiring Yappr handoff to an authorized human. An API key cannot provide OAuth consent. Poll the exact returned auth-attempt ID with bounded backoff; `completed` authorization is distinct from `connection.state: ready`. Keep provider IDs, OAuth state and handoff capabilities out of tools, prompts, call history and logs. Replacement is explicit and applies to future bindings; disconnect blocks new actions without pretending to revoke every provider grant.
 
+**Connecting an app is two steps.** `POST /tool-connections` answers **201** with
+`connection`, `attempt` (a `tool-connection-auth-attempt`) and a `handoff_url` — the 201
+means the account exists and a human still has to authorize it, never that the
+connection is ready. Open `handoff_url` in the same tab; it is a page in the dashboard,
+so take its path and fragment and keep your own origin if the two ever differ. Poll
+`GET /tool-connection-auth-attempts/{id}` with the exact `attempt.id`; it settles into
+`completed`, `failed`, `expired`, `cancelled` or `reconciliation_required` — `completed`
+is not the same as the connection being ready, which is `connection.state: ready`. The
+dashboard's own handoff page offers **Cancel request** so a person can call off an
+authorization they started, right where the connect flow left them; there is no public
+API route for that yet. `POST /tool-connections/{id}/reconnect {"mode":"replace"}` issues
+a fresh link when you need to replace the account instead.
+
 **The native OAuth integrations are retired.** `GET /integrations` and `DELETE /integrations/{id}` answer `410` with `code: endpoint_retired` — they listed and revoked credentials that no longer exist. There is nothing to fall back to when a connection fails — retry the connection, never reach for the old path. Connect the calendar or mailbox as a connected account, then call it from a `sequence` step or an `action` node bound to that connection.
 
 ### Step 1B.4 — Build the graph
