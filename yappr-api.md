@@ -74,86 +74,190 @@ curl -s -X POST "https://api.goyappr.com/resource" \
 | 429 | Rate limit or concurrent call limit | Wait and retry |
 | 500 | Server error | Retry once; if persistent, report |
 
+### Errors
+
+Every error carries `error` (human) and `code` (machine). Branch on `code`. A refusal that
+names nothing more specific carries its status's code: `BAD_REQUEST` 400, `BILLING_ERROR` 402,
+`FORBIDDEN` 403, `NOT_FOUND` 404, `METHOD_NOT_ALLOWED` 405, `CONFLICT` 409, `GONE` 410,
+`PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `UNPROCESSABLE_REQUEST` 422,
+`RATE_LIMIT` 429, `INTERNAL_ERROR` 500, `UPSTREAM_ERROR` 502, `SERVICE_UNAVAILABLE` 503;
+anything else `REQUEST_FAILED`. `401` never falls back to a generic code — it is always one of
+`MISSING_KEY`, `INVALID_KEY`, `EXPIRED_KEY` or `INSUFFICIENT_SCOPE`.
+
+- `404 RESOURCE_ID_INVALID` — the id in the path is not a UUID. A malformed id is a
+  refusal, never the collection behind it.
+- `400 invalid_destination` — the ONLY code for a `to` that cannot be dialled, malformed or
+  unreachable. `INVALID_TO_NUMBER` no longer exists.
+- `400 INVALID_FROM_NUMBER`, `400 SELF_CALL_NOT_ALLOWED` — the other two number refusals.
+- `400 WORKFLOW_AGENT_REQUEST_INVALID` — `POST /agents` with something missing; `error`
+  names the field. `410 AGENT_LEGACY_CREATION_GONE` is only for a body that ASKS for the
+  retired kind (`system_prompt`, `type`, `flow_config`, `tools`, `tool_ids`, `prompt`,
+  `webhook_url`, `webhook_events`, `webhook_headers`).
+- `422 WORKFLOW_TOOL_REQUEST_INVALID` / `422 WORKFLOW_TOOL_TEST_INVALID` — carry
+  `issues[0].path`, a JSON pointer at the offending field.
+
+### Agent object
+
+A workflow agent answers `type: "workflow"` and has **no** `system_prompt`, `flow_config`,
+`webhook_url`, `webhook_events`, `webhook_headers` or `tools` — the fields are absent, not
+null. Its instructions, graph and tool bindings are its workflow document:
+`GET /agents/{id}/workflow`, whose `bindings` are the tools it can call. Agents created
+before the workflow engine keep `type: "prompt"` / `"flow"` and their old shape — these
+still exist and still take calls; branch on `execution_version`, not on `type`.
+
+### Publish → settings
+
+`POST /agents/{id}/workflow/publish` returns `settings_updated_at` beside `revision`.
+Publishing writes the agent row, so an `updated_at` read before it is stale afterwards.
+Send `settings_updated_at` as `expected_updated_at` on the next `PATCH /agents/{id}`;
+without it the documented create → save → check → publish → PATCH sequence answers
+`409 WORKFLOW_SETTINGS_CONFLICT` with nobody else involved.
+
+### Leads
+
+`phone_number` is E.164 or the local form (`0501234567`), normalised on write; anything
+undiallable is `400 INVALID_PHONE_NUMBER`. `source` may be `api` (default), `manual` or
+`csv_import` — anything else is `400 INVALID_LEAD_SOURCE`, and `call` is Yappr's own.
+`GET /leads` takes `limit`, `offset`, `search`, and `tag` (name) or `tag_id`; any other
+parameter is `400 LEADS_QUERY_INVALID`, and an unknown tag is `404 LEAD_TAG_UNKNOWN`.
+An agent tags a lead through `PATCH /leads/{id}` — extraction parameters land in
+`extracted_data` and the `call.analyzed` payload and never write tags themselves.
+`tags` (names, matched exactly) and `tag_ids` each replace every tag on the lead and are
+applied whole: one unknown name is `400 INVALID_TAG_NAMES`, one unknown id is
+`400 INVALID_TAG_IDS`, and nothing is written either way. `[]` clears the tags.
+
+### Campaigns and flows
+
+`CAMPAIGN_NOT_READY` (422 on launch/resume), `ALREADY_IN_ACTIVE_CAMPAIGN` (409 on enrol)
+and `FLOW_INVALID` (400 on a flow save) arrive in `code`, and are repeated in `error` for
+older clients. `FLOW_INVALID` carries `issues[]`; the campaign codes carry `message`.
+
 ---
 
 ## Agents
 
 ### GET /agents
 
-List all agents for the authenticated company.
+List all agents for the authenticated company, newest first.
 
 **Scopes:** `agents:read`
 
-**Query params:** none
+**Query params:** `limit` (1–100, default 20), `offset`. No name search and no status
+filter — page and filter client-side. Archived agents are never listed.
 
-**Response:**
+**Response:** each row is the **whole agent object** — the same shape `GET /agents/:id`
+returns, not a summary — with a `pagination` envelope (`total`, `limit`, `offset`,
+`has_more`). There are two shapes, and `execution_version` tells them apart: a
+`workflow_v1` row (almost every agent, and the only kind that can be created today)
+carries twenty-six fields; a `legacy` row — an agent from before the workflow engine,
+still taking calls — carries those same twenty-six plus six more. Every field of a
+row's own shape is present on it; a field you do not see in that shape is not part of
+its response, not `null`.
+
 ```json
 {
   "data": [
     {
       "id": "uuid",
       "name": "string",
+      "description": "string | null",
       "voice": "string",
       "language": "he" | "en",
+      "temperature": 0.5,
+      "greeting_message": "string | null",
+      "agent_speaks_first": true,
+      "vad_stop_secs": 0.5,
+      "vad_start_secs": 0.2,
+      "vad_confidence": 0.7,
+      "silence_timeout_secs": 60,
+      "max_continuous_speech_secs": 120,
+      "max_call_duration_secs": 600,
       "is_active": true,
+      "lead_memory_enabled": true,
+      "noise_cancellation_enabled": true,
+      "background_sound": "string | null",
+      "background_sound_volume": 0.3,
+      "type": "workflow",
+      "extraction_parameters": [{"name": "camelCaseName", "description": "AI instruction for what to extract from the call"}],
+      "idempotency_key": "string | null",
+      "execution_version": "workflow_v1",
+      "published_workflow_revision_id": "uuid | null",
       "created_at": "ISO8601",
       "updated_at": "ISO8601"
     }
-  ]
+  ],
+  "pagination": { "total": 0, "limit": 20, "offset": 0, "has_more": false }
 }
 ```
+
+A `legacy` row carries the same twenty-six fields plus `type: "prompt" | "flow"`,
+`system_prompt`, `flow_config`, `webhook_url`, `webhook_events`, `webhook_headers` and
+`tools` — real values, not empties: `system_prompt` is the prompt driving the call,
+`flow_config` the graph on a `flow` agent. Branch on `execution_version`, never on
+field count or on `type` alone — `"prompt"` and `"flow"` are a closing set (no agent is
+created into them any more), not a growing one, and existing agents in them still take
+calls.
 
 ---
 
 ### GET /agents/:id
 
-Fetch complete config of a single agent.
+Fetch complete config of a single agent. Same two shapes as `GET /agents` above — check
+`execution_version` first.
 
 **Scopes:** `agents:read`
 
-**Response — all fields:**
+**Response — `workflow_v1` agent (almost every agent):**
 ```json
 {
   "id": "uuid",
   "name": "string",
-  "system_prompt": "string",
+  "description": "string | null",
   "voice": "string",
   "language": "he" | "en",
   "temperature": 0.0 - 2.0,
-  "agent_speaks_first": true | false,
   "greeting_message": "string | null",
-  "webhook_url": "string | null",
-  "webhook_events": ["call.started", "call.answered", "call.ended", "call.failed", "call.no_answer", "call.dnc_blocked", "transcript.ready", "call.analyzed"],
-  "extraction_parameters": [{"name": "camelCaseName", "description": "AI instruction for what to extract from the call"}],
+  "agent_speaks_first": true | false,
   "vad_stop_secs": 0.5,
   "vad_start_secs": 0.2,
   "vad_confidence": 0.7,
   "silence_timeout_secs": 60,
   "max_continuous_speech_secs": 120,
   "max_call_duration_secs": 600,
-  "lead_memory_enabled": true,
   "is_active": true,
-  "tools": [
-    {
-      "id": "uuid",
-      "name": "string",
-      "type": "webhook" | "system",
-      "description": "string",
-      "config": { ... },
-      "execution_order": 0
-    }
-  ],
+  "lead_memory_enabled": true,
+  "noise_cancellation_enabled": true,
+  "background_sound": "string | null",
+  "background_sound_volume": 0.3,
+  "type": "workflow",
+  "extraction_parameters": [{"name": "camelCaseName", "description": "AI instruction for what to extract from the call"}],
+  "idempotency_key": "string | null",
+  "execution_version": "workflow_v1",
+  "published_workflow_revision_id": "uuid | null",
   "created_at": "ISO8601",
   "updated_at": "ISO8601"
 }
 ```
 
+It **omits** `system_prompt`, `flow_config`, `webhook_url`, `webhook_events`,
+`webhook_headers` and `tools` — it has none of those things, so the keys are absent
+rather than `null` or `[]`. Its instructions, its graph and its tool bindings are all in
+its workflow document: `GET /agents/{id}/workflow` returns them, and the document's
+`bindings` are the tools the agent can call. A `null` `published_workflow_revision_id`
+means draft-only, not call-ready.
+
+An agent created before the workflow engine keeps `type: "prompt"` or `"flow"` and every
+field it has always returned — `system_prompt`, `flow_config`, `webhook_url`,
+`webhook_events`, `webhook_headers`, `tools` — real values, unchanged. `voice` is the
+voice name a caller hears; the engine behind it is never set directly.
+
 **Turn-taking and interruption.** An agent stops the instant the caller starts
 talking — queued audio is dropped, on phone calls and browser calls alike — and
 it is free to react, interject or make listening noises while the caller speaks.
 Nothing on the platform suppresses that. To make an agent wait in silence until
-the caller finishes, write the instruction into `system_prompt`; it is the only
-thing that will.
+the caller finishes, write the instruction into a conversation node's `instructions`
+(or `global_instructions`) on a workflow agent, or into `system_prompt` on a legacy
+one — it is the only thing that will.
 
 The three `vad_*` fields tune the reaction and are per-agent, never global:
 
@@ -311,9 +415,11 @@ Settings do not accept prompt/graph/bindings/native-webhook configuration or
 publication/routing fields for a workflow owner. Saving uses the existing validated
 settings-snapshot promotion pipeline; accepted calls keep their immutable snapshot.
 Disabled unarchived agents remain editable, but editing does not reactivate them.
-GET Agent and PATCH keep the Agent compatibility shape: legacy prompt, flow graph
-and webhook URL are null; webhook headers/events and legacy tool attachments are
-empty. Read the canonical document, not those legacy slots.
+For a workflow agent the response is the workflow Agent object: `type: "workflow"`,
+with `system_prompt`, `flow_config`, `webhook_url`, `webhook_events`,
+`webhook_headers` and `tools` **absent** — not null, not empty — same as
+`GET /agents/:id`. Read the canonical workflow document, not those legacy fields.
+A legacy agent's PATCH response still carries them as real values, unchanged.
 
 **Scopes:** `agents:update`
 
@@ -1407,7 +1513,7 @@ List calls with optional filters and pagination.
 | `limit` | int | 20 | max 100 |
 | `offset` | int | 0 | pagination |
 | `agent_id` | uuid | — | filter by agent |
-| `status` | string | — | `ringing`, `in-progress`, `completed`, `failed`, `no_answer`, `dnc_blocked` (destination on the company DNC list — no carrier leg, no charge) |
+| `status` | string | — | `ringing`, `in_progress`, `completed`, `failed`, `no_answer`, `dnc_blocked` (destination on the company DNC list — no carrier leg, no charge) |
 | `direction` | string | — | `inbound`, `outbound`, `web_call` |
 | `callee` | string | — | filter by callee phone (E.164). Useful for counting prior attempts to the same lead within a retry window. |
 | `caller` | string | — | filter by caller phone (E.164) |
@@ -1469,7 +1575,7 @@ Get full details of a single call, including resolved lead and disposition objec
   "from": "+972...",
   "to": "+972...",
   "direction": "inbound" | "outbound" | "web_call",
-  "status": "ringing" | "in-progress" | "completed" | "failed",
+  "status": "ringing" | "in_progress" | "completed" | "failed",
   "failure": { "code": "string", "reason": "string", "stage": "dialing|connecting|conversation|null", "at": "ISO8601 | null" },
   "started_at": "ISO8601 | null",
   "ended_at": "ISO8601 | null",
@@ -3362,16 +3468,27 @@ on the workflow side with no legacy equivalent at all:
 | `transfer.accepted`, `transfer.answered`, `transfer.failed` | *(new)* | A transfer's own lifecycle. |
 | `ai_session.ended` | *(new)* | The AI portion of the call ending, distinct from the call itself ending. |
 
-**WARNING — Webhook payloads are minimal.** The `call.analyzed` payload does NOT include:
+**WARNING — a webhook carries the call, not its context.** This applies to the legacy
+shape only — before an agent moves to the workflow engine. The `call.analyzed` payload
+includes `direction`, `status`, `from_number`, `to_number`, `duration_seconds`, the
+disposition **label**, `summary`, `transcript` and `extracted_data` — everything the
+conversation produced. It does NOT include:
 - The lead object (name, phone, tags, history)
 - `metadata` from call creation
 - Cost data
-- The full disposition object (only the label string is included, and it may be `null` if classification failed)
+- The full disposition object — only the label string, and it is absent if classification failed
 
 To get the complete call record including resolved lead + disposition object: `GET /calls/:id`.
 
+**After the move to the workflow engine, this warning no longer applies.** The `call`
+object in a workflow's own trigger is the same **call package** a workflow tool
+receives — see the table above — and already carries the lead, `metadata`, per-call
+variables, billing, the recording URL and the full disposition object. There is nothing
+to fetch back for those.
+
 **Pattern for getting lead name or CRM IDs in post-call automation:**
-- Event webhooks (`call.analyzed` etc.) do NOT include metadata — fetch `GET /calls/:id` after receiving the event to pull the full record including the `metadata` dict you passed at call creation.
+- On the legacy shape, fetch `GET /calls/:id` after receiving `call.analyzed` to pull the full record including the `metadata` dict you passed at call creation.
+- On a workflow agent's After trigger, the package already has it — no follow-up fetch.
 - If you need the data in real-time (during the call, not after), use a **tool webhook** instead: it fires synchronously when the agent invokes a tool, and `call_metadata` + `call_variables` are both in the payload (see [Tool Webhook Payload](#tool-webhook-payload)).
 
 ---

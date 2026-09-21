@@ -366,6 +366,13 @@ const contact = await crm.createContact({ email: "customer@example.com", phone: 
 | HR | `hibob` |
 | Enrichment | `clearbit` |
 
+The slugs above are integration client module names in this directory, not Yappr
+connected-app slugs. When you connect an app through Yappr (`POST /tool-connections`),
+use the slug exactly as `GET /tool-apps/connection-options` returns it — Google Calendar
+is `googlecalendar`, with no hyphen. A slug from this table, or from `GET /tool-apps`,
+is a different list and fails at `POST /tool-connections` with
+`409 CONNECTION_APP_UNAVAILABLE`.
+
 **Client constructor patterns** — each client takes credentials + an optional `fetchFn` for testing:
 
 ```typescript
@@ -1071,7 +1078,7 @@ Two critical fields for multi-tenant / CRM-integrated setups:
 - **`call_metadata`** — forwards in real-time whatever you passed as `metadata` when creating the call. This is the right place for CRM IDs (appointment_id, contact_id, calendar_id) that the tool receiver needs to route updates back to the correct record. The agent NEVER sees these (they don't go into the prompt).
 - **`call_variables`** — the same `{{VariableName}}` values that were injected into the agent's instructions. Useful when the tool receiver wants to echo the lead's name into a Slack alert, an outbound WhatsApp, etc. — without re-fetching the call.
 
-**Tool webhooks are synchronous and real-time.** No `GET /calls/:id` round-trip required — everything the receiver needs arrives in one payload. This is what separates tool webhooks from event webhooks (`call.analyzed` etc.) which are minimal and require a follow-up fetch.
+**Tool webhooks are synchronous and real-time.** No `GET /calls/:id` round-trip required — everything the receiver needs arrives in one payload. This is what separates tool webhooks, fired mid-call, from event webhooks fired after it: a legacy `call.analyzed` payload carries the call's content (transcript, summary, disposition label, extracted values) but not its context — no lead, metadata or cost — and needs `GET /calls/:id` for those. A workflow's own After triggers do not have that gap; see [The trigger's payload is not minimal](#the-triggers-payload-is-not-minimal) below.
 
 See [yappr-api.md — Tool Webhook Payload](yappr-api.md) for the full field reference.
 
