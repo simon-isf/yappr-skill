@@ -332,8 +332,42 @@ empty. Read the canonical document, not those legacy slots.
 | `POST /agents/:id/workflow/validate` | `agents:update` | `{expected_version}`; check the saved draft without saving or publishing. |
 | `POST /agents/:id/workflow/publish` | `agents:update` | `{expected_version}`; explicit publication after the canonical validator and freshness checks. |
 | `GET /agents/:id/workflow/versions` | `agents:read` | Immutable publication summaries, with optional numeric cursor. |
+| `POST /agents/:id/workflow/rebind` | `agents:update` | `{expected_version, bindings: {binding_id: tool_id}}`; moves one or more existing bindings to another tool's current revision. Edits the draft only. |
 | `GET /tools/workflow-catalog` | `tools:read` | Safe versioned builder choices, full typed input/output schemas; limit 1–50, opaque cursor, up to 10 exact revision_ids. |
 | `GET /agents/:id/settings` | `agents:read` | Ordinary settings and original updated_at; no native secret configuration or document. |
+
+**Point a binding at another tool.** Use `rebind` when one agent should call a
+different endpoint from the others — the usual case being an agent you duplicated
+for a second client, whose bindings still point at the first client's tool.
+
+    POST /agents/{agent_id}/workflow/rebind
+    { "expected_version": 7, "bindings": { "notify": "<tool_id>" } }
+
+`expected_version` is `draft.version` from `GET /agents/{id}/workflow`; a stale one
+answers `409 WORKFLOW_CONFLICT` and writes nothing. Each key is a `bindings[].id`
+already in the draft. The named bindings move to that tool's current revision —
+`inputs`, the other bindings and every step are untouched — and a binding already on
+that tool is left alone. The answer is the authoring state, as a save returns it.
+Rebinding edits the draft only: `validate`, then `publish`, before callers hear it.
+
+Which call you need:
+- new URL for **every** agent using the tool → `PATCH /tools/{id}` with
+  `configuration.url`. Bindings follow the new revision; no workflow edit.
+- different endpoint for **one** agent → `POST /tools` for its own endpoint, poll
+  `GET /tools/{id}` until `workflow.status` is `current`, then rebind.
+- stay on an older revision forever → `PUT …/workflow` with
+  `tool_revision_policy: "pinned"` on that binding.
+
+Errors: `409 WORKFLOW_CONFLICT` (re-read the draft), `409 WORKFLOW_TOOL_NOT_READY`
+(the tool has no current revision yet — keep polling), `422 WORKFLOW_BINDING_NOT_FOUND`
+(the message names the id).
+
+**Re-sending a save is safe.** `PUT /agents/:id/workflow` is safe to repeat: if the
+answer never arrived and the save had landed, sending the same document with the
+same `expected_version` answers `200` with the draft it produced, not `409` — as
+long as nothing has been saved since; the replay is recognised only at
+`expected_version + 1`. A `409` never writes anything, so on one, re-read the draft:
+your change may already be in it.
 
 The public OpenAPI `WorkflowDocument` schema is the complete canonical v1 document;
 do not invent node or mapping shapes. The JSON request budget is 600000 UTF-8 bytes,
@@ -656,6 +690,30 @@ constant `url_replacement_required: true`. That constant is a rule, not a flag: 
 revision that changes the URL must send the whole URL again, query string included;
 omit the field to keep the saved one. Never echo `url_display` back as the replacement
 URL.
+
+**Headers on a workflow-owned HTTP tool are updated per header, not as a whole map.**
+Stored values are never returned, so on `PATCH /tools/{id}`:
+
+| What you send | What happens |
+| --- | --- |
+| no `workflow.configuration.headers` key | every stored header is kept |
+| `"headers": {}` | every header is cleared |
+| `"X-Client": "client-42"` | that header is set |
+| `"Authorization": null` | the value already stored under that exact name is kept |
+| a stored name you leave out | that header is removed |
+
+`null` is refused outright on `POST /tools`, as `WORKFLOW_TOOL_REQUEST_INVALID` pointing
+at `/workflow/configuration/headers/<name>`. On `PATCH` the request is accepted and the
+check happens while the revision is built, so a `null` under a name with no stored value
+comes back as `422` carrying the tool with `workflow.status: "failed"` and
+`workflow.error_code: "tool_contract_invalid"` — no `issues[]`. The names to use are the
+ones `GET /tools/{id}` returns in `configuration.configured_header_names`; matching is
+exact, so renaming a header means sending its value again.
+
+A duplicated agent shares the original's tools by the same `tool_revision_id` pin — see
+**POST /agents/:id/duplicate** above. To give a copy its own endpoint instead of moving
+both, create a new tool and rebind the copy's step to it (see **Point a binding at
+another tool** above).
 
 #### Standalone saved-tool tests
 
@@ -2210,6 +2268,58 @@ Remove from the list. Future outbound calls to this number proceed normally.
 
 ---
 
+## Call Windows
+
+**Windows gate phone calls only.** No specific scope is required — any authenticated key
+for the workspace can read or write this.
+
+### GET /call-windows · PUT /call-windows
+
+**Response / PUT body:**
+```json
+{
+  "timezone": "Asia/Jerusalem",
+  "inbound_enabled": false,
+  "outbound_enabled": true,
+  "closed_message": null,
+  "windows": [
+    { "day_of_week": 0, "start_time": "09:00", "end_time": "19:00" }
+  ]
+}
+```
+
+`day_of_week` is `0`–`6` (`0` = Sunday). `start_time`/`end_time` are `HH:MM`, 24-hour,
+evaluated in the workspace timezone; `start_time` must be strictly before `end_time` — no
+overnight wrap, express a midnight-crossing window as two entries on consecutive days.
+`PUT` replaces the configuration: omitting `windows` leaves the existing schedule
+unchanged, sending it (even `[]`) overwrites every day. Outbound calls placed outside an
+enabled window are queued (`202`, `status: "scheduled"`, with `scheduled_for`); inbound
+calls outside an enabled window are ended before being answered — no `call_logs` row, no
+charge.
+
+**`closed_message`** (string, nullable, ≤ 500 chars) — what an inbound caller will hear
+when the window is closed, spoken before the call ends. `null` (the default) ends the
+call without saying anything. Omit the key on `PUT` to leave it unchanged; send `null` or
+a blank string to clear it. It only reaches anyone while `inbound_enabled` is `true`.
+Stored and returned today; calls do not speak it yet, so an out-of-hours call is still
+ended in silence until the voice release that picks it up.
+
+**Windows gate phone calls only.** A browser session minted with `POST /calls
+{"type":"web"}` is a rehearsal and is never gated: the mint returns `201` immediately
+even with every window closed and both toggles on. To hold a browser call to opening
+hours, read `GET /call-windows` and decide in your own page before minting.
+
+**Hours live in one place.** If you are writing an agent's instructions, do not have it
+recite opening hours as if they were a setting — the schedule is what decides whether a
+call connects, and a second copy in the prompt drifts. Set the schedule with
+`PUT /call-windows`.
+
+**Errors:** `400 INVALID_CALL_WINDOWS` (two ranges on the same day overlap, or
+`start_time` is not strictly before `end_time`); `400` (`day_of_week` outside `0..6`, a
+time not `HH:MM`, or `closed_message` not a string/`null`/too long).
+
+---
+
 ## Dispositions
 
 Disposition labels are applied to calls as outcomes (e.g. "Interested", "Appointment Set"). Protected dispositions cannot be deleted.
@@ -2983,15 +3093,46 @@ Create a tag.
 
 ### PATCH /lead-tags/:id
 
-Update a tag.
+Update a tag. The tag keeps its id, so every lead carrying it keeps carrying it —
+renaming is the safe way to relabel a segment. Send only the fields you are changing; a
+body with none of them is `400`.
 
 **Scopes:** `lead_tags:manage`
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string | no | Unique in the workspace. A taken name is `409 DUPLICATE_NAME`. |
+| `color` | string | no | Hex, or `null` for the dashboard's default grey. |
+| `description` | string | no | Free text, or `null` to clear. |
+| `sort_order` | int | no | Reorder the tag. Nothing renumbers the others. |
+
+**Response:** `200` — the whole tag as it now stands. There is no `updated_at`.
 
 ---
 
 ### DELETE /lead-tags/:id
 
-Delete a tag.
+Delete a tag, taking it off every lead that carries it. **A tag leads still carry is
+refused**, so this is never a quiet operation:
+
+```
+DELETE /lead-tags/{id}            -> 409 {"error":"5 leads still carry \"renewal-due\". …",
+                                          "code":"LEAD_TAG_IN_USE","leads_tagged":5}
+DELETE /lead-tags/{id}?force=true -> 200 {"success":true}
+```
+
+Read `leads_tagged` before deciding: those leads stop matching `GET /leads?tag=…` and
+stop being enrolled by any campaign built on that segment, and there is no undo —
+recreating the tag gives a new id with nothing attached. Retag them with
+`PATCH /leads/{id}` first, or repeat with `?force=true`.
+
+`force` takes only `true` or `false`. `1`, `yes`, an empty value, or any other query
+parameter is `400 LEAD_TAG_DELETE_INVALID` rather than being read as "no". A tag no lead
+carries deletes on the first call either way.
+
+The count has to succeed before anything is deleted: if it cannot be taken the call
+answers `503 LEAD_TAG_COUNT_UNAVAILABLE` and the tag is still there. Retry, or send
+`?force=true` to delete without the count.
 
 **Scopes:** `lead_tags:manage`
 
