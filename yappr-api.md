@@ -51,7 +51,11 @@ curl -s -X POST "https://api.goyappr.com/resource" \
 
 ## Rate Limits
 
-- 60 requests per minute per API key
+- 60 requests per minute per API key, counted atomically — every request counts once,
+  including 4xx responses and requests sent in parallel; firing a batch concurrently no
+  longer slips past the cap. The two refusals that take no slot are the ones decided
+  before the key has a window at all: `401` and `403 WORKSPACE_MISMATCH`. Two keys are
+  two windows.
 - 10 concurrent active calls per company
 
 ---
@@ -95,6 +99,29 @@ anything else `REQUEST_FAILED`. `401` never falls back to a generic code — it 
   `webhook_url`, `webhook_events`, `webhook_headers`).
 - `422 WORKFLOW_TOOL_REQUEST_INVALID` / `422 WORKFLOW_TOOL_TEST_INVALID` — carry
   `issues[0].path`, a JSON pointer at the offending field.
+- `409 WORKFLOW_AGENT_INACTIVE` — `POST /call-requests` (and `POST /calls`) on an agent
+  that exists and may well be published, but is switched off. `POST /agents/{id}/duplicate`
+  returns a copy with `is_active:false`, so on the duplicate → publish → call path this is
+  the answer, not `404 WORKFLOW_AGENT_UNAVAILABLE`. Send
+  `PATCH /agents/{id} {"is_active": true}` and retry.
+- `404 WORKFLOW_AGENT_UNAVAILABLE` — no agent with that id is available in this workspace
+  (archived, switched off, or the pinned workflow version is not this agent's own).
+- `422 INVALID_AGENT` vs `422 INVALID_SPLIT` — `INVALID_SPLIT` is only ever about the
+  second agent of an A/B test (`split.agent_id`, `inbound_split`, `outbound_split`). A
+  primary agent from another workspace, or one that no longer exists, is `INVALID_AGENT`
+  and the message names the field (`agent_id`, `inbound_agent_id`, `outbound_agent_id`).
+- `422 WORKFLOW_VALIDATION_FAILED` with `binding_phase_unsupported` — a tool bound into a
+  phase its contract excludes (a transfer in a Before or After step). Publish refuses; the
+  issue carries `node_id` and `label`. A transfer on an agent that also answers on `web` is
+  a *warning* (`binding_channel_unsupported`, also carrying `node_id`/`label` where a step
+  uses it) and still publishes — web callers reaching that step simply cannot use it.
+- `400 CALLS_QUERY_INVALID` — `GET /calls` with an unrecognised `status` or `direction`
+  (`scheduled` is not a status), or any unknown query parameter. Used to answer `500`.
+- `400 SHARED_LINK_EXPIRY_INVALID` — `POST /shared-links` with an `expires_at` that does
+  not parse as a date. Used to answer `500`.
+- `400 AGENT_IDEMPOTENCY_DUPLICATED` — two `Idempotency-Key` headers arrived on the same
+  request (a client or proxy bug). Naming how many arrived and whether they agreed — not
+  `AGENT_IDEMPOTENCY_REQUIRED`, which is for a key that is genuinely missing or malformed.
 
 ### Agent object
 
@@ -112,6 +139,14 @@ Publishing writes the agent row, so an `updated_at` read before it is stale afte
 Send `settings_updated_at` as `expected_updated_at` on the next `PATCH /agents/{id}`;
 without it the documented create → save → check → publish → PATCH sequence answers
 `409 WORKFLOW_SETTINGS_CONFLICT` with nobody else involved.
+
+**Environments.** Every published revision carries `environment` — the deployment plane
+that stored it, returned on `POST /agents/{id}/workflow/publish` (`revision.environment`)
+and on `GET /agents/{id}/workflow/versions`. You never send it. The hosted API stores as
+`testing`, and a call placed through the same API runs on the same plane, so
+publish-then-call always matches — do not treat `testing` as a failure. The one real
+failure case is a version published through a *different* deployment; see
+`artifact_unavailable` in the errors reference.
 
 ### Leads
 
@@ -278,6 +313,22 @@ The eight expressive voices (`Keren`, `Eitan`, `Hila`, `Ido`, `Boaz`, `Tali`,
 `vad_*` fields are rejected with `400` on an agent using one. They are
 interrupted exactly like every other agent.
 
+**Extraction parameters have a kind.** Each entry in `extraction_parameters` may carry
+`type`: `number`, `yes_no` or `date`. Send no `type` for text — that is what text has
+always meant, and it is the spelling the dashboard and the stored call settings both use;
+`"text"` is accepted too and means the same thing. The kind decides what comes back in
+the call's `extracted_data`: a string, a JSON number, a JSON boolean, or a `YYYY-MM-DD`
+string. A value the conversation never supplied is `null` whatever the kind, and so is a
+value that cannot be read as the declared kind — never a string that only looks like one.
+Any other value is rejected: `422 WORKFLOW_SETTINGS_REQUEST_INVALID` on a workflow agent
+(naming the entry and the kinds allowed), `400 BAD_REQUEST` on a prompt or flow agent.
+
+Adding, removing or retyping an extraction parameter on a published agent queues a
+settings promotion. An agent that asks for a kind the running analyzer does not yet
+accept answers `422 WORKFLOW_VALIDATION_FAILED` on publish (`extra_forbidden` at
+`/settings_snapshot/postcall/…/type`) — that is a deployment-skew condition, not a bad
+request; the same body succeeds once the workflow services are current.
+
 ---
 
 ### POST /agents
@@ -441,6 +492,28 @@ A legacy agent's PATCH response still carries them as real values, unchanged.
 | `POST /agents/:id/workflow/rebind` | `agents:update` | `{expected_version, bindings: {binding_id: tool_id}}`; moves one or more existing bindings to another tool's current revision. Edits the draft only. |
 | `GET /tools/workflow-catalog` | `tools:read` | Safe versioned builder choices, full typed input/output schemas; limit 1–50, opaque cursor, up to 10 exact revision_ids. |
 | `GET /agents/:id/settings` | `agents:read` | Ordinary settings and original updated_at; no native secret configuration or document. |
+
+**Giving an agent a tool.** `POST /tools/attach` does not work here — every agent this
+API creates is a workflow agent, so it answers `409 WORKFLOW_TOOL_OWNER_REQUIRED`. The
+read half misleads the same way: `GET /tools?agent_id={id}` lists legacy attachments
+only, so an agent with tools bound and published still answers `{"data":[]}`. The four
+calls that work:
+
+1. `GET /tools/workflow-catalog?limit=20` — each row's `id` is the `tool_revision_id` a
+   binding points at; `input_schema` names the fields the binding must map;
+   `allowed_channels`/`allowed_phases` say where it may sit.
+2. `GET /agents/{id}/workflow` — `draft.version` is the next `expected_version`;
+   `draft.document` is what you edit and send back whole.
+3. `PUT /agents/{id}/workflow` — add one entry to `document.bindings`
+   (`{"id","tool_revision_id","inputs"}`) and put that `id` in the conversation node's
+   `available_binding_ids` (or the step's `binding_id`, for an `action` node).
+4. `POST /agents/{id}/workflow/validate`, then `.../publish`.
+
+An input mapped `{"kind":"model","path":"/field"}` works only inside the conversation. A
+before-call step, a follow-up or a sequence child using one is `model_input_unavailable`
+— stage the value in `stored_schema`/`request_schema` and read it with
+`{"kind":"stored"}`/`{"kind":"request"}`, or read a produced result with
+`{"kind":"step"}`/`{"kind":"artifact"}`.
 
 **Point a binding at another tool.** Use `rebind` when one agent should call a
 different endpoint from the others — the usual case being an agent you duplicated
@@ -656,12 +729,17 @@ without it — and offer the fix: fallback text after the `|`, or `|` with nothi
 to declare the empty string deliberately.
 
 Validation warnings are safe codes: `strict_off_guidance`, `during_output_advisory`,
-`sequence_branch_advisory`, `before_reference_missing_fallback`, or the generic
-`workflow_warning`. Never discard an unknown warning or treat advisory ordering as
-enforced execution. Explain a Strict change before publishing; accepted runs keep
-their exact published artifacts. A 409 means review the saved version/dependency
-changes, not blindly fetch a fresh token and resend. `WORKFLOW_SETTINGS_TOO_LARGE`
-(413) leaves saved data intact and blocks publication until technical settings fit.
+`sequence_branch_advisory`, `before_reference_missing_fallback`, `binding_channel_unsupported`
+(a tool bound where the agent's channels outrun its contract — e.g. a phone-only transfer
+on an agent that also takes web calls; still publishes), or the generic `workflow_warning`.
+Never discard an unknown warning or treat advisory ordering as enforced execution. A tool
+bound into a **phase** its contract excludes (`binding_phase_unsupported`) is not a
+warning — it is a refusal in `issues[]` and blocks Check/Publish, because no picker ever
+offers that combination and no published agent has that shape. Explain a Strict change
+before publishing; accepted runs keep their exact published artifacts. A 409 means review
+the saved version/dependency changes, not blindly fetch a fresh token and resend.
+`WORKFLOW_SETTINGS_TOO_LARGE` (413) leaves saved data intact and blocks publication until
+technical settings fit.
 No authoring endpoint starts a real call.
 
 ---
@@ -903,7 +981,7 @@ Fetch full config of a single tool.
   "config": {
     "url": "https://...",
     "method": "POST",
-    "headers": {},
+    "configured_header_names": ["Authorization"],
     "payload_config": {
       "include_standard_metadata": true,
       "static_parameters": [
@@ -919,6 +997,26 @@ Fetch full config of a single tool.
   "updated_at": "ISO8601"
 }
 ```
+
+**A legacy tool's request header values are never returned.** `GET /tools`,
+`GET /tools/:id`, `GET /tools?agent_id=`, the tools embedded in `GET /agents`, and the
+objects `POST`/`PATCH /tools` echo back all report `config.configured_header_names` — the
+names, sorted — and carry no `config.headers` at all.
+
+Writing them is per header, not as a whole map:
+
+| What you send in `config` | What happens |
+| --- | --- |
+| no `headers` key | every stored header is kept |
+| `"headers": {}` | every header is cleared |
+| `"X-Client": "client-42"` | that header is set |
+| `"X-Yappr-Webhook-Secret": null` | the value already stored under that exact name is kept |
+| a stored name you leave out | that header is removed |
+
+So reading a tool and sending its `config` straight back to `PATCH /tools/{id}` is safe:
+`configured_header_names` is dropped on the way in and every stored header survives. A
+`null` under a name with nothing stored is a plain `400` naming `configured_header_names`
+— on `POST /tools` always, since nothing is stored yet.
 
 ---
 
@@ -987,7 +1085,10 @@ Deactivate (soft-delete) a tool.
 
 ### POST /tools/attach
 
-Attach a tool to an agent.
+Attach a tool to an agent. **Legacy attachment only — this does not work for an agent
+this API creates.** Every such agent is a workflow agent, so this endpoint answers
+`409 WORKFLOW_TOOL_OWNER_REQUIRED`. Give a workflow agent a tool through its document
+instead — see **Giving an agent a tool** under *Canonical workflow authoring* above.
 
 **Scopes:** `tools:update`
 
@@ -1351,7 +1452,8 @@ SIP endpoints carry no split at all.
 | Status | Code | When |
 |---|---|---|
 | 404 | — | No such number in this workspace |
-| 422 | `INVALID_SPLIT` | `percent` outside 1–99, the second agent is the one already bound, the agent belongs to another workspace, or the split is neither an object nor `null` |
+| 422 | `INVALID_SPLIT` | `percent` outside 1–99, the split's second agent is the one already bound, belongs to another workspace, or the split is neither an object nor `null` |
+| 422 | `INVALID_AGENT` | `inbound_agent_id` / `outbound_agent_id` names an agent from another workspace or one that no longer exists — `message` names the field |
 | 400 | — | A field this endpoint does not update, or the number is still `pending_requirements` |
 
 ---
@@ -1521,6 +1623,10 @@ List calls with optional filters and pagination.
 | `from` | ISO8601 | — | `created_at` lower bound |
 | `to` | ISO8601 | — | `created_at` upper bound |
 
+An unrecognised `status` or `direction`, or any parameter not in this table, is
+`400 CALLS_QUERY_INVALID` naming the value and the allowed set — not a 500. `scheduled`
+is not a status.
+
 **Common pattern — "has this lead already been tried today?"**
 
 ```
@@ -1580,6 +1686,7 @@ Get full details of a single call, including resolved lead and disposition objec
   "started_at": "ISO8601 | null",
   "ended_at": "ISO8601 | null",
   "duration_seconds": 0,
+  "cost_cents": 12,
   "transcript": [ { "role": "agent|user", "text": "string", "start": 0, "end": 0 } ],
   "transcript_live": [ { "role": "agent|user", "text": "string", "start_ms": 0, "end_ms": 0, "source": "gemini|openai", "interrupted": true } ],
   "usage": {
@@ -1592,6 +1699,7 @@ Get full details of a single call, including resolved lead and disposition objec
                 "recorded_at": "ISO8601" } ]
   },
   "summary": "string | null",
+  "extracted_data": { /* present only when extraction ran — see note below */ },
   "recording_url": "string | null",
   "ended_by": "caller" | "agent" | "system" | "operator" | "unknown" | null,
   "disconnect_reason": "string | null",
@@ -1696,6 +1804,15 @@ Get full details of a single call, including resolved lead and disposition objec
 
 **`metadata`** — The metadata object you attached at `POST /calls`. Empty object `{}` if no metadata was provided at call creation.
 
+**`extracted_data`** — Present **only when extraction ran**: an agent with no
+`extraction_parameters`, a call too short to analyse, or an analysis that failed all
+leave the member absent. Read it with a presence check, not a truthiness one. When it is
+there, every configured parameter is a key; `null` means the conversation never supplied
+that value (or supplied something unreadable as the declared kind) — never that the
+parameter is missing. An object of nothing but nulls is a real answer: extraction ran and
+the call said none of it. See **Extraction parameters have a kind** above for what each
+value looks like per kind.
+
 **`failure`** — Present only on a call whose `status` is `failed` or `no_answer`. A call
 that completed has **no** `failure` member at all — check for the member, not for a value
 in it.
@@ -1748,6 +1865,11 @@ In practice: `Completed`, `No answer`, `Busy`, `Call rejected`, `Cancelled`,
 handoff that did connect leaves the reason to the call's own ending. Also first-write-wins,
 and `null` for short or atypical hangups.
 
+**`cost_cents`** — What the call took out of your workspace's credits, `null` (never `0`)
+while unsettled. This is a **different number** from `usage.cost_usd` below: `cost_cents`
+is what Yappr billed you, `usage.cost_usd` is what Yappr paid the model provider. Totals
+across calls: `GET /billing/consumption`.
+
 **`usage`** — *Present only when a reading exists.* What the call consumed on the voice model that ran it, reported by the provider and priced at published rates. One entry in `legs` per engine, summed across every provider session the call spanned — a call whose connection dropped and was rebuilt mid-call is still one entry carrying the whole call.
 
 The two engines report in different units and the leg says which: a Gemini voice bills tokens split by modality (`audio_input_tokens`, `text_input_tokens`, `audio_output_tokens`, `cached_input_tokens`), a GPT voice bills seconds of live audio (`audio_seconds`, with the token fields `null`). `backend_unpriced: true` means the reasoning model's tokens were counted but have no published rate yet, so `cost_usd` is the voice model alone.
@@ -1782,7 +1904,7 @@ Every row carries `kind` and `at`. The rest depends on the kind:
 | `message` | A turn in the conversation | `role` (`agent` / `user` / `voicemail`), `text`, `offset_ms` |
 | `phase` | A stage of the call | `lane` (`before` / `during`), `status`, `error` |
 | `transition` | The conversation moving | `from_node`, `from_label`, `to_node`, `to_label`, `edge_id`, `edge_condition`, `edge_scope` (`direct` / `global`), `strict` |
-| `tool` | One tool invocation | `tool_type`, `name`, `step_id`, `lane`, `status`, `duration_ms`, `attempt_count`, `error` |
+| `tool` | One tool invocation | `tool_type`, `name`, `step_id`, `lane`, `status`, `duration_ms`, `attempt_count`, `error`, `failure` |
 | `trigger` | An after-call follow-up the workspace authored | `event`, `steps`, `status`, `error` |
 | `delivery` | One row of the webhook delivery ledger | `event`, `status`, `response_status`, `attempt_count`, `error_message`, `delivered_at`, `tool_name` |
 
@@ -1810,6 +1932,15 @@ these rows — `tool_calls` and `events` on the same response still return them,
 what they are for and why they are superseded. A failure is one sentence in `error` (or
 `error_message` on a delivery), written for a person to act on — never an internal code.
 Do not branch on its wording; branch on `status`.
+
+**A tool row that did not work out** carries `error`, the sentence above, and `failure`,
+the code behind it: `tool_timeout` (the tool did not answer inside its own limit, which
+comes back as `failure.limit_seconds`), `tool_unreachable` (nothing answered at the
+address), `tool_rejected` (it answered and refused — an `http` row also has
+`response_status`), `transfer_failed`, `tool_failed`. Branch on `failure.code`, never on
+the sentence. A timed-out tool keeps `status: "pending"` on purpose: nothing answered, so
+whether the action happened is unknown and may need reconciling. A row that worked, or is
+still running, has no `failure` member.
 
 **`status` is one of three words** on every row that has one — `succeeded`, `failed`, or
 `pending` (it has not settled yet) — except a `delivery`, which carries the delivery
@@ -2038,6 +2169,12 @@ Workflow admission rejects any property outside `agent_id`, `to`, `from`, `varia
 is optional and its only accepted value is `"phone"`. `409 WORKFLOW_UNPUBLISHED` means
 publish the agent first. `503 WORKFLOW_ADMISSION_UNAVAILABLE` means **no call was placed**
 — retry the same body with the same key.
+
+A missing `to` or `from` is also `422 WORKFLOW_REQUEST_INVALID`, naming which field; an
+`agent_id` that names no agent in this workspace is `404 WORKFLOW_AGENT_UNAVAILABLE`; an
+agent that exists but is switched off (`is_active: false` — including a fresh
+`POST /agents/:id/duplicate` copy, which always starts off) is `409 WORKFLOW_AGENT_INACTIVE`
+— see the errors reference above for both.
 
 **`from` is a per-call override, not a fixed binding.** Any active number in the company can be paired with any agent on any outbound call. The `outbound_agent_id` configured on a phone number (via `POST /phone-numbers/configure`) only sets the dashboard's default and does not constrain the API — callers choose `agent_id` + `from` independently per request. This means one number can serve many agents; purchasing a separate number per agent is unnecessary for outbound.
 
@@ -2376,8 +2513,11 @@ Remove from the list. Future outbound calls to this number proceed normally.
 
 ## Call Windows
 
-**Windows gate phone calls only.** No specific scope is required — any authenticated key
-for the workspace can read or write this.
+**Windows gate phone calls only.** `GET /call-windows` needs no specific scope — any
+authenticated key for the workspace can read the schedule. `PUT /call-windows` requires
+`call_windows:manage`, refused `403 INSUFFICIENT_SCOPE` with nothing written if the key
+lacks it. **Breaking for older keys:** a key minted before this scope existed does not
+hold it — mint a new key if your integration sets calling hours through the API.
 
 ### GET /call-windows · PUT /call-windows
 
@@ -2428,7 +2568,11 @@ time not `HH:MM`, or `closed_message` not a string/`null`/too long).
 
 ## Dispositions
 
-Disposition labels are applied to calls as outcomes (e.g. "Interested", "Appointment Set"). Protected dispositions cannot be deleted.
+Disposition labels are the outcomes a call is sorted into (e.g. "Interested", "Appointment Set").
+
+**The label is the matching rule.** A disposition has no description, prompt or criteria field. After each call the post-call model reads the transcript and copies exactly one label out of this list, so the words you choose are all it has to go on — "Booked a viewing" earns the right calls where "Outcome A" is a guess. Create the labels first, then the calls classify themselves.
+
+Dispositions marked `is_protected: true` cannot be deleted — Yappr seeds a workspace with these protected by default: `Voicemail`, `Do Not Call`, `Transferred to a Person`, `Unclassified`, `No Answer`, `Failed`. They *can* be renamed, and the platform finds four of them **by name** when it sets them without asking the model — `No Answer` and `Failed` when a call never connected, `Voicemail` when nobody really spoke, `Unclassified` when the analysis itself failed — so renaming one of those four stops that classification from happening at all.
 
 ### GET /dispositions
 
@@ -2471,9 +2615,11 @@ Create a disposition.
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `label` | string | yes | Display name |
-| `color` | string | no | Hex color e.g. `"#22c55e"` |
+| `color` | string | no | Hex color e.g. `"#22c55e"`. Omitted, `null` or blank stores grey (`#6b7280`) — the column cannot hold nothing. Not validated. |
 
 **Response:** `201` — full disposition object
+
+**Errors:** `409 DUPLICATE_LABEL` if the workspace already uses that label (nothing is created).
 
 ---
 
@@ -2489,6 +2635,8 @@ Update a disposition.
 | `color` | string | no |
 
 **Response:** `200` — full updated disposition object
+
+**Errors:** `409 DUPLICATE_LABEL` if the workspace already uses that label (nothing is changed).
 
 ---
 
@@ -2660,6 +2808,12 @@ List campaigns for the authenticated workspace, newest first. Archived (soft-del
 **Scopes:** `campaigns:read`
 
 Foreign keys are expanded to **full objects**, per the API's FK convention — `agent`, `from_phone_number`, and `stop_dispositions` (one full disposition object per id in `stop_disposition_ids`).
+
+The expanded `agent` is the same object `GET /agents/{id}` returns for that agent,
+projected the same way: `type` reads `workflow`, the voice is named rather than given as
+an internal enum, and the retired prompt-agent fields (`system_prompt`, `flow_config`,
+`webhook_*`) are absent. A workflow agent's live script is its workflow document —
+`GET /agents/{id}/workflow` — not anything on the campaign.
 
 ```jsonc
 {
@@ -3158,6 +3312,7 @@ Rules that matter:
 | 409 | `ALREADY_IN_ACTIVE_CAMPAIGN` | A number is live in another active campaign |
 | 422 | `CAMPAIGN_NOT_READY` | Launch preflight failed; `message` names the single blocking cause |
 | 422 | `INVALID_SPLIT` | A malformed or out-of-range `split` on create/update — see [Testing two agents on a campaign](#testing-two-agents-on-a-campaign) |
+| 422 | `INVALID_AGENT` | `agent_id` names an agent from another workspace or one that no longer exists — `message` names the field |
 
 > **Envelope note — campaigns invert the usual error shape on 409/422.** The three coded errors above return `{ "error": "<CODE>", "message": "<human text>" }` — the machine code is in `error`, not in `code`. Plain `400`/`404`/`500` responses use the standard `{ "error": "<human text>" }`. So parse defensively: read `code` first, then fall back to `error` when it matches `^[A-Z_]+$`.
 
@@ -3328,9 +3483,47 @@ Get billing status and balance.
 {
   "balance_cents": 2500,
   "has_payment_method": true,
-  "subscription_status": "active" | "inactive" | null
+  "subscription_status": "active" | "inactive" | null,
+  "billing_email": "s***@domain.com" | null,
+  "monthly_budget_cents": 5000 | null,
+  "monthly_spend_cents": 1240,
+  "monthly_budget_remaining_cents": 3760 | null,
+  "monthly_budget_reached": false,
+  "monthly_period_start": "ISO8601"
 }
 ```
+
+`billing_email` is masked (`s***@domain`), never the full address, and `null` when
+unset. `monthly_spend_cents` is reported **whether or not a limit is set** — it is
+month-to-date spend for every workspace, read from the same place `PATCH /billing`
+writes. The other four spend fields are documented under `PATCH /billing` below.
+
+---
+
+### PATCH /billing — set the monthly spending limit
+
+An opt-in safeguard, off by default. It does not replace the billing gate (whether a
+call can start at all) — it answers a different question: does this workspace still
+*want* to keep spending this month.
+
+**Scopes:** `billing:manage`
+
+**Request body:** `{"monthly_budget_cents": 5000}` — whole cents, `0` for "place nothing
+this month", `null` to turn the limit off. Anything else is `400 SPEND_BUDGET_INVALID`
+and the previous limit stands.
+
+**Response:** `200` — the same five fields `GET /billing` carries: `monthly_budget_cents`,
+`monthly_spend_cents`, `monthly_budget_remaining_cents`, `monthly_budget_reached`,
+`monthly_period_start`. One read answers both "can it pay?" and "does it still want to?".
+
+While `monthly_budget_reached` is `true`, `POST /calls` answers `402 SPEND_BUDGET_REACHED`
+and queued outbound calls — campaigns included — are failed with the same sentence. A
+browser rehearsal (`"type": "web"`) is still minted, and **calls coming in are never
+refused for a spending limit.** The limit lifts by itself at 00:00 UTC on the first of
+the next month. Nothing is emailed when it is reached.
+
+Spending is every completed charge since the first of the month: calls, phone numbers,
+evaluation runs. Top-ups and refunds are not spending.
 
 ---
 
@@ -3528,6 +3721,29 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 
 ---
 
+## Not in the API
+
+Four dashboard surfaces have no endpoint — carry your own equivalent rather than looking
+for one:
+
+- **No `GET /agent-templates`.** The four starter agents offered on agent creation are
+  dashboard copy in two languages. Carry your own starter text as
+  `workflow.global_instructions` on `POST /agents`, or duplicate a tuned agent with
+  `POST /agents/:id/duplicate`.
+- **No `GET /changelog`.** The dashboard's What's new page is TS modules shipped with
+  the dashboard build. Link customers to the dashboard page itself.
+- **No `POST /chat`.** The dashboard's builder chat is not a public endpoint — build
+  the agent yourself with `POST /agents` and the workflow endpoints, which is what the
+  chat calls underneath.
+- **No `GET /stats`.** The dashboard KPI page reads its own aggregate RPC directly, not
+  a documented endpoint. Count from `GET /calls` over a date range and
+  `GET /billing/consumption`.
+
+Those four are the gaps we know about — not a claim that everything else a workspace
+member can reach in the dashboard has a public endpoint behind it.
+
+---
+
 ## Scope Map
 
 | Resource + Action | Required Scope |
@@ -3550,8 +3766,11 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 | POST /phone-numbers/purchase | `phone_numbers:purchase` |
 | POST /phone-numbers/configure | `phone_numbers:configure` |
 | GET /billing | `billing:read` |
+| PATCH /billing (spending limit) | `billing:manage` |
 | POST /billing/setup | `billing:manage` |
 | POST /billing/topup | `billing:manage` |
+| GET /call-windows | none — any authenticated key for the workspace |
+| PUT /call-windows | `call_windows:manage` |
 | GET /calls (list/get) | `calls:read` |
 | POST /calls | `calls:create` |
 | GET /call-requests/:id | `calls:read` |

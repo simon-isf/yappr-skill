@@ -883,6 +883,12 @@ authorization they started, right where the connect flow left them; there is no 
 API route for that yet. `POST /tool-connections/{id}/reconnect {"mode":"replace"}` issues
 a fresh link when you need to replace the account instead.
 
+**Connecting an app opens one authorization at a time.** Starting another one calls off
+the one that was left open; if the one in the way was opened in a different browser or
+by another member, the handoff page says so and offers to call those off and carry on. A
+link that cannot be used says which it is — expired, called off, already finished,
+already opened, or one this workspace cannot open.
+
 **The native OAuth integrations are retired.** `GET /integrations` and `DELETE /integrations/{id}` answer `410` with `code: endpoint_retired` — they listed and revoked credentials that no longer exist. There is nothing to fall back to when a connection fails — retry the connection, never reach for the old path. Connect the calendar or mailbox as a connected account, then call it from a `sequence` step or an `action` node bound to that connection.
 
 ### Step 1B.4 — Build the graph
@@ -1275,6 +1281,15 @@ sent, it is on their side to log. (The same response's older `tool_calls` and `e
 members do still carry them, and are superseded — do not build new work on them.)
 
 Field-by-field reference: `yappr-api.md` → **GET /calls/:id** → `timeline`.
+
+**Finding it in the dashboard.** The Call Logs page answers at `/call-logs` (and at
+`/calls`, which redirects there). Its filters live in the address — `from`, `to` (both
+`YYYY-MM-DD`, read as whole days in the workspace timezone), `outcome` (comma-separated
+disposition ids, or `none` for calls with no outcome) and `q` (a phone number) — so a
+filtered view can be linked, bookmarked or built by hand. Either end of the window may be
+given on its own: `from` alone runs to today, `to` alone runs back 30 days. "Export CSV"
+writes every call the filters match — including the agent and A/B dropdowns on the page,
+which are not part of the address — not only the page on screen.
 
 ### The trigger's payload is not minimal
 
