@@ -56,7 +56,18 @@ curl -s -X POST "https://api.goyappr.com/resource" \
   longer slips past the cap. The two refusals that take no slot are the ones decided
   before the key has a window at all: `401` and `403 WORKSPACE_MISMATCH`. Two keys are
   two windows.
-- 10 concurrent active calls per company
+- Every response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
+  `X-RateLimit-Reset` (Unix timestamp). Inside one window a key never hands back the same
+  `Remaining` twice — a burst's answers race back out of order, but sorted they are
+  consecutive. A repeated `Remaining` almost always means the burst went over more than
+  one key, not a miscount; group by `X-RateLimit-Reset` to see the split (it is a whole
+  second, so two keys whose windows opened in the same second share it).
+- Over the limit: `429 RATE_LIMIT` with `Retry-After` — whole seconds, never zero.
+  Nothing in a `429` was acted on: wait it out, then resend the same request, with the
+  same `Idempotency-Key` where one was used. There is nothing to add on top of the wait.
+- Up to your company's `max_concurrent_calls` (default 10) active calls. Capacity
+  pressure returns `202` with `status: "queued"` (or `"scheduled"` for a call-window
+  defer), not `429` — check both the HTTP status and the response `status`.
 
 ---
 
@@ -130,7 +141,9 @@ A workflow agent answers `type: "workflow"` and has **no** `system_prompt`, `flo
 null. Its instructions, graph and tool bindings are its workflow document:
 `GET /agents/{id}/workflow`, whose `bindings` are the tools it can call. Agents created
 before the workflow engine keep `type: "prompt"` / `"flow"` and their old shape — these
-still exist and still take calls; branch on `execution_version`, not on `type`.
+still exist and still take calls; branch on `execution_version`, not on `type`. A legacy
+agent's workspace behaves exactly as it always did — placing and reading its calls is
+unaffected by anything on the workflow plane, so nothing here requires moving one over.
 
 ### Publish → settings
 
@@ -214,7 +227,6 @@ its response, not `null`.
       "background_sound_volume": 0.3,
       "type": "workflow",
       "extraction_parameters": [{"name": "camelCaseName", "description": "AI instruction for what to extract from the call"}],
-      "idempotency_key": "string | null",
       "execution_version": "workflow_v1",
       "published_workflow_revision_id": "uuid | null",
       "created_at": "ISO8601",
@@ -225,13 +237,19 @@ its response, not `null`.
 }
 ```
 
-A `legacy` row carries the same twenty-six fields plus `type: "prompt" | "flow"`,
-`system_prompt`, `flow_config`, `webhook_url`, `webhook_events`, `webhook_headers` and
-`tools` — real values, not empties: `system_prompt` is the prompt driving the call,
-`flow_config` the graph on a `flow` agent. Branch on `execution_version`, never on
-field count or on `type` alone — `"prompt"` and `"flow"` are a closing set (no agent is
-created into them any more), not a growing one, and existing agents in them still take
-calls.
+A `legacy` row carries the same twenty-five fields plus `type: "prompt" | "flow"`,
+`system_prompt`, `flow_config`, `webhook_url`, `webhook_events`, `webhook_headers`,
+`tools` and `idempotency_key`, real values, not empties: `system_prompt` is the prompt
+driving the call, `flow_config` the graph on a `flow` agent, and `idempotency_key` is
+whatever the retired create path wrote (often `null`). Branch on `execution_version`,
+never on field count or on `type` alone — `"prompt"` and `"flow"` are a closing set (no
+agent is created into them any more), not a growing one, and existing agents in them
+still take calls.
+
+**`idempotency_key` belongs to the request, not to the agent.** A `workflow_v1` row
+never carries it — the key is echoed once, on the response that created the agent (see
+**POST /agents** and **POST /agents/:id/duplicate** below), and a later read of that
+same agent has no such field at all.
 
 ---
 
@@ -266,7 +284,6 @@ Fetch complete config of a single agent. Same two shapes as `GET /agents` above 
   "background_sound_volume": 0.3,
   "type": "workflow",
   "extraction_parameters": [{"name": "camelCaseName", "description": "AI instruction for what to extract from the call"}],
-  "idempotency_key": "string | null",
   "execution_version": "workflow_v1",
   "published_workflow_revision_id": "uuid | null",
   "created_at": "ISO8601",
@@ -275,16 +292,19 @@ Fetch complete config of a single agent. Same two shapes as `GET /agents` above 
 ```
 
 It **omits** `system_prompt`, `flow_config`, `webhook_url`, `webhook_events`,
-`webhook_headers` and `tools` — it has none of those things, so the keys are absent
-rather than `null` or `[]`. Its instructions, its graph and its tool bindings are all in
-its workflow document: `GET /agents/{id}/workflow` returns them, and the document's
-`bindings` are the tools the agent can call. A `null` `published_workflow_revision_id`
-means draft-only, not call-ready.
+`webhook_headers`, `tools` and `idempotency_key` — it has none of those things, so the
+keys are absent rather than `null` or `[]`. Its instructions, its graph and its tool
+bindings are all in its workflow document: `GET /agents/{id}/workflow` returns them, and
+the document's `bindings` are the tools the agent can call. A `null`
+`published_workflow_revision_id` means draft-only, not call-ready. `idempotency_key` is
+echoed once, on the response that created this agent — see **POST /agents** below — and
+never on a read.
 
 An agent created before the workflow engine keeps `type: "prompt"` or `"flow"` and every
 field it has always returned — `system_prompt`, `flow_config`, `webhook_url`,
-`webhook_events`, `webhook_headers`, `tools` — real values, unchanged. `voice` is the
-voice name a caller hears; the engine behind it is never set directly.
+`webhook_events`, `webhook_headers`, `tools`, and `idempotency_key` (whatever the retired
+create path wrote for it, often `null`) — real values, unchanged. `voice` is the voice
+name a caller hears; the engine behind it is never set directly.
 
 **Turn-taking and interruption.** An agent stops the instant the caller starts
 talking — queued audio is dropped, on phone calls and browser calls alike — and
@@ -392,7 +412,10 @@ Moving an integration off the old body:
 `workflow.global_instructions`. Nothing else is accepted.
 
 **Response:** `201` — the agent object, as an unpublished draft. `200` on an idempotent
-replay.
+replay. Both echo the `Idempotency-Key` you sent as `idempotency_key`, so the response
+confirms which key produced this agent, and on the `200` replay that the same key
+produced the same one. The field belongs to the request, not to the agent: `GET /agents`
+and `GET /agents/:id` carry no key at all.
 
 
 ---
@@ -445,7 +468,8 @@ read-only key cannot do it.
 accepted.
 
 **Response:** `201` — the copy, in the same shape `POST /agents` returns. `200` on
-an idempotent replay.
+an idempotent replay. Same rule as create: the response echoes `idempotency_key`, a
+read of the copy never carries it.
 
 ---
 
@@ -472,11 +496,69 @@ with `system_prompt`, `flow_config`, `webhook_url`, `webhook_events`,
 `GET /agents/:id`. Read the canonical workflow document, not those legacy fields.
 A legacy agent's PATCH response still carries them as real values, unchanged.
 
+**A refused field is named.** Sending `webhook_url`, `webhook_events`,
+`webhook_headers`, `system_prompt`, `flow_config` or `tools` to a workflow agent is
+`422 WORKFLOW_SETTINGS_REQUEST_INVALID` with an `issues[]` entry per field, each
+carrying a JSON pointer and a note on where that field moved (see **Moving an
+integration off the old body** above). Nothing is written.
+
+`greeting_message` is PATCH-able on every agent kind: it is the opening line used when
+`agent_speaks_first` is `true`, and `null` clears it.
+
 **Scopes:** `agents:update`
 
 **Request body:** Any subset of POST fields above.
 
 **Response:** `200` — full updated agent object
+
+---
+
+### POST /agents/:id/extraction/dry-run
+
+Read a transcript you supply for the values this agent collects, and get them back.
+Nothing is called, nothing is written, and the agent is unchanged — the assertable half
+of a rehearsal, for CI: a browser session (`POST /calls {"type":"web"}`) writes no call
+row until a browser actually connects it, so without one there was no `extracted_data` to
+check before a real caller met the parameters.
+
+**Scopes:** `agents:read` — the only read scope that spends anything: each call runs one
+model read of the transcript you send, and it is billed (logged against the workspace,
+not free because the scope is read-only).
+
+**Request body:**
+
+| Field | Notes |
+|---|---|
+| `transcript` | Required. Either an array of `{"role","text"}` turns (`role` is `agent`, `user` or `voicemail`; anything else reads as the caller) or the whole conversation as one string. Max 400 turns / 40,000 characters. |
+| `extraction_parameters` | Optional. A set to try **instead of** the agent's own saved ones — same shape as on the agent: `name`, `description`, optional `type` (`text` default, `number`, `yes_no`, `date`). |
+
+**Response:**
+```json
+{
+  "agent_id": "uuid",
+  "transcript_turns": 2,
+  "extraction_parameters": [{ "name": "seats", "type": "number" }],
+  "extracted_data": { "seats": 12 }
+}
+```
+
+`extracted_data` is keyed by your parameters and nothing else: a key the model invented
+is dropped, a parameter it left out is still a key with `null` — meaning the conversation
+never said it, never that the parameter is missing. Each value is coerced to the kind its
+parameter declared, the same coercion a real call's `extracted_data` goes through.
+
+It reads the agent's extraction parameters as saved right now, not as published, and
+writes no call, so it never appears in `GET /calls`.
+
+**Errors:** `400 EXTRACTION_DRY_RUN_INVALID` — no `transcript`, an empty one, a turn with
+no `text`, a transcript over the size limits, an `extraction_parameters` entry missing
+`name` or `description`, an empty `extraction_parameters` array, or any field this
+endpoint does not take. `404 WORKFLOW_NOT_FOUND` — no such agent, or archived.
+`422 EXTRACTION_NOT_CONFIGURED` — the agent has no extraction parameters and the request
+sent none either, so there is nothing to read the transcript for (a bad entry in
+parameters you *did* send is the `400` above, not this). `503
+EXTRACTION_DRY_RUN_UNAVAILABLE` — the reader could not be reached; nothing was read or
+changed, retry.
 
 ---
 
@@ -848,6 +930,12 @@ writes nothing. Only tools that call your own endpoint or transfer a call can ta
 revision — anything else is `422 WORKFLOW_TOOL_IMPORT_REQUIRED`. Revisions are additive:
 a workflow that already pinned an earlier revision keeps it until it is published again.
 
+**Names are not unique.** Two tools in one workspace may share a name; a create whose
+name is already taken is not refused — it answers `201`/`202` with the tool plus
+`warnings: [{ code: "tool_name_in_use", message, tools: [{id, name}] }]`. Treat
+`warnings` as optional and never as a refusal — the tool in the same response was
+created either way; match tools by `id`, not by name.
+
 Keys contain 16–128 letters, digits, `_` or `-`. Preserve the identical accepted body
 and key after a lost response; reusing a key with changed content is
 `409 WORKFLOW_TOOL_IDEMPOTENCY_CONFLICT`. A stale `expected_head_revision_id` /
@@ -940,14 +1028,26 @@ immutable through testing. Tool tests and call tests are separate authorization 
 
 ### GET /tools
 
-List all tools. Optionally filter to a specific agent.
+List all tools. Optionally filter to a specific agent. `GET /tools` and
+`GET /tools?workflow=true` answer every row in the same shape that row's own
+`GET /tools/{id}` answers with — a workflow-owned tool carries `workflow_version:
+"workflow_v1"` and its `workflow` object (see **GET /tools/:id** below) and has no
+`type`/`config`; a legacy row carries `type`/`config` as shown below, and never
+`workflow`.
 
 **Scopes:** `tools:read`
 
 **Query params:**
 - `agent_id` (uuid, optional) — filter to tools attached to this agent
+- `status` (optional) — a create that is accepted but cannot be built stays in the
+  workspace at `workflow.status: "failed"` (reason in `workflow.error_code`,
+  `workflow.current: null`); those rows, and only those, are left out of the default
+  list. `status=failed` finds one, `status=all` keeps the page whole. Any other value is
+  `422 WORKFLOW_TOOL_REQUEST_INVALID`. A tool whose later *edit* failed also reads
+  `status: "failed"` but keeps its promoted head (`workflow.current` set), is still
+  bindable, and stays on the default list.
 
-**Response:**
+**Response (legacy row shape):**
 ```json
 {
   "data": [
@@ -998,6 +1098,13 @@ Fetch full config of a single tool.
 }
 ```
 
+**A workflow-owned tool has no `type` and no `config`.** It carries
+`workflow_version: "workflow_v1"` and a `workflow` object instead: `current`,
+`candidate`, `head_revision_id`, `head_generation`, and the current revision's
+`configuration.configured_header_names`. See **Unified versioned Tools** above for the
+full contract, and **the two revision tokens** paragraph there for
+`head_revision_id`/`head_generation`.
+
 **A legacy tool's request header values are never returned.** `GET /tools`,
 `GET /tools/:id`, `GET /tools?agent_id=`, the tools embedded in `GET /agents`, and the
 objects `POST`/`PATCH /tools` echo back all report `config.configured_header_names` — the
@@ -1017,6 +1124,56 @@ So reading a tool and sending its `config` straight back to `PATCH /tools/{id}` 
 `configured_header_names` is dropped on the way in and every stored header survives. A
 `null` under a name with nothing stored is a plain `400` naming `configured_header_names`
 — on `POST /tools` always, since nothing is stored yet.
+
+---
+
+### GET /tools/:id/bindings
+
+Answers the one question a credential rotation depends on: which agents reference this
+tool, and does the new revision reach them.
+
+**Scopes:** `tools:read`
+
+**Response:**
+```json
+{
+  "tool_id": "uuid",
+  "head_revision_id": "uuid | null",
+  "total": 2,
+  "has_more": false,
+  "data": [
+    {
+      "agent_id": "uuid",
+      "agent_name": "string",
+      "environment": "testing",
+      "binding_id": "string",
+      "tool_revision_policy": "follow_current" | "pinned",
+      "tool_revision_id": "uuid",
+      "effective_revision_id": "uuid",
+      "rotation_reaches": true,
+      "published": true,
+      "draft": true
+    }
+  ]
+}
+```
+
+Each row is one binding: the agent, the binding id inside its workflow document,
+`tool_revision_id` (the revision the binding names) and `effective_revision_id` (the
+revision calls actually use). `published: true` means the binding is in the revision
+that agent is taking calls from right now; `draft: true` means it is in the draft an
+author is editing — a binding can be both.
+
+**Rotating a credential:** `PATCH /tools/{id}` with the new header values, then read this
+route. Rows with `rotation_reaches: true` need nothing — the binding moves with the tool.
+Rows with `rotation_reaches: false` (always `tool_revision_policy: "pinned"`) are held on
+the revision they name, which still carries the **old** header value: save that binding
+back to `follow_current` (a whole-document save) or `POST /agents/:id/workflow/rebind`,
+then publish that agent. Header values are never returned here, or anywhere.
+
+`total` counts every binding referencing the tool, including any beyond the page;
+`has_more` says whether the page was cut. `head_revision_id` is `null` only while a
+brand-new tool is still being built.
 
 ---
 
@@ -1620,12 +1777,14 @@ List calls with optional filters and pagination.
 | `callee` | string | — | filter by callee phone (E.164). Useful for counting prior attempts to the same lead within a retry window. |
 | `caller` | string | — | filter by caller phone (E.164) |
 | `ab_variant` | `a` \| `b` | — | Only calls answered/placed by one side of a number's split — `a` the number's own agent, `b` the second one. Calls on a number with no split carry no variant and are excluded by either value. |
+| `source` | string | — | Where the call came from: `test`, `shared_link`, `api`, `phone_inbound`, `phone_outbound`. `unknown` (a call recorded before this existed) is not a filter value. |
 | `from` | ISO8601 | — | `created_at` lower bound |
 | `to` | ISO8601 | — | `created_at` upper bound |
 
-An unrecognised `status` or `direction`, or any parameter not in this table, is
+An unrecognised `status`, `direction` or `source`, or any parameter not in this table, is
 `400 CALLS_QUERY_INVALID` naming the value and the allowed set — not a 500. `scheduled`
-is not a status.
+is not a status. A known filter sent with no value (`?agent_id=`) is refused the same
+way rather than returning every call in the workspace — leave the parameter out instead.
 
 **Common pattern — "has this lead already been tried today?"**
 
@@ -1651,6 +1810,9 @@ Response's `data.length` gives you the prior-attempt count. Use in retry-throttl
       "created_at": "ISO8601",
       "tool_calls_count": 2,
       "ab_variant": "a" | "b" | null,
+      "source": "test" | "shared_link" | "api" | "phone_inbound" | "phone_outbound" | "unknown",
+      "cost_cents": 12,
+      "analysis": { "status": "done" | "pending" | "skipped" | "failed", "reason": "string | null", "completed_at": "ISO8601 | null" },
       "recording_url": "string | null",
       "disposition": { "id": "uuid", "label": "string", "color": "#hex" },
       "lead": { "...full lead object with tags..." }
@@ -1663,6 +1825,50 @@ Response's `data.length` gives you the prior-attempt count. Use in retry-throttl
     "has_more": true
   }
 }
+```
+
+**The list row now carries the same `cost_cents`, `failure`, `source`, `shared_link_id`
+and `analysis` that `GET /calls/:id` returns** — see that endpoint below for the full
+semantics of each. All five (plus `recording_url`, `disposition`, `lead` and
+`ab_variant`) are **omitted**, not `null`, on a row that has none — `analysis` is the one
+exception and is on every row. A month's spend or a failure report is this list summed,
+not one `GET /calls/:id` per call; a sync can page this list and decide what to do with
+each call — `analysis.status: "done"` means the values are ready on the detail read,
+`"pending"` means come back later, `"skipped"`/`"failed"` mean nothing more is coming.
+
+---
+
+### GET /calls/export
+
+The call log as a CSV file, filtered exactly the way `GET /calls` above is filtered —
+same query params, `?limit`/`?offset` **refused** here (`400 CALLS_QUERY_INVALID`): an
+export is the whole window at once, not a page. This is the dashboard's own **Export
+CSV**, addressable.
+
+**Scopes:** `calls:read`
+
+**Columns:** `Started` (ISO 8601 UTC), `Agent` (empty when the call has no agent — match
+on empty, not on a translated word), `A/B`, `Direction`, `Status`, `Disposition`, `From`,
+`To`, `Duration` (seconds), `Cost (USD)` (a bare decimal; **empty**, never `0`, on a call
+that has not settled), `Source`, `Shared link ID` (only on a `shared_link` call). The
+last line is `Total` with the summed cost over calls in the file that have settled. The
+file opens with a UTF-8 BOM, so Hebrew names open correctly in a spreadsheet.
+
+**The row limit.** One export carries at most **10000** calls; a window holding more is
+`400 CALLS_EXPORT_TOO_LARGE`, naming the count — never truncated. Page a larger export by
+splitting the window with `from`/`to`, ending each window on the **first of the next
+month** (`to=2026-10-01T00:00:00Z`) rather than a guessed last day. `to` is inclusive, so
+consecutive windows **meet and overlap by one instant**: a call started exactly at that
+boundary is written into both files. Concatenating files means dropping the duplicate
+boundary row from one of the two, and each file's own `Total` still counts it once.
+
+`X-Total-Rows` (exposed to browser `fetch()`, alongside `Content-Disposition`) carries the
+row count before the `Total` line. The file is the calls that existed the moment you
+asked — one still streaming never lands half-written.
+
+```bash
+curl -L "https://api.goyappr.com/calls/export?agent_id=$AGENT_ID&from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" -o september.csv
 ```
 
 ---
@@ -1686,7 +1892,10 @@ Get full details of a single call, including resolved lead and disposition objec
   "started_at": "ISO8601 | null",
   "ended_at": "ISO8601 | null",
   "duration_seconds": 0,
+  "source": "test" | "shared_link" | "api" | "phone_inbound" | "phone_outbound" | "unknown",
+  "shared_link_id": "uuid",
   "cost_cents": 12,
+  "analysis": { "status": "pending" | "done" | "skipped" | "failed", "reason": "string | null", "completed_at": "ISO8601 | null" },
   "transcript": [ { "role": "agent|user", "text": "string", "start": 0, "end": 0 } ],
   "transcript_live": [ { "role": "agent|user", "text": "string", "start_ms": 0, "end_ms": 0, "source": "gemini|openai", "interrupted": true } ],
   "usage": {
@@ -1812,6 +2021,32 @@ that value (or supplied something unreadable as the declared kind) — never tha
 parameter is missing. An object of nothing but nulls is a real answer: extraction ran and
 the call said none of it. See **Extraction parameters have a kind** above for what each
 value looks like per kind.
+
+**`source`** — Where the call came from, the answer to "what did my own testing cost,
+versus the link I sent out." `test` is a rehearsal you started yourself — the agent's
+Test tab, or a test phone call from the dashboard. `shared_link` is a call placed through
+a [shared link](#shared-links); those calls also carry **`shared_link_id`**, so spend can
+be attributed to the link you handed out. `api` is a browser session this API minted.
+`phone_inbound` and `phone_outbound` are the two real phone legs — a test call you dial
+from the dashboard reads `test`, not `phone_outbound`, which is the separation
+`?source=` on `GET /calls` exists for. A call recorded before any of this was written
+reads `unknown`, which `?source=` will not accept as a filter value. `shared_link_id` is
+absent on every call that is not `shared_link`.
+
+**`analysis`** — Where the call's post-call pass stands: `{ "status": "pending" | "done"
+| "skipped" | "failed", "reason": <code|null>, "completed_at": <iso|null> }`, present on
+**every** call, list rows included. `summary`, `disposition` and `extracted_data` are
+written by that one pass and are **absent, not null**, until it lands — poll
+`analysis.status`, never the absence of those keys. `pending` means come back; `done`
+means read them (and `done` with no `extracted_data` is a real answer — the pass ran and
+the call said none of it, which is what every call made before its parameters existed
+will say); `skipped` means nothing is coming and nothing is wrong
+(`call_too_short` — under 3 seconds — `call_did_not_complete`, `no_transcript`); `failed`
+means nothing is coming and something is wrong (`analysis_failed`, `analysis_unavailable`
+— worth an alert). A call handed to a human reads `pending` / `call_in_progress` until
+that leg ends; the pass runs after. Expect the values within a minute or two of the call
+ending; anything still `pending` after 10 minutes is stuck. Prefer the `call.analyzed`
+webhook to polling.
 
 **`failure`** — Present only on a call whose `status` is `failed` or `no_answer`. A call
 that completed has **no** `failure` member at all — check for the member, not for a value
@@ -2291,6 +2526,7 @@ Mint a short-lived, single-use token for an **in-browser** voice call via the [`
   "agent_name": "…",
   "protocol": "offer",
   "connection": {
+    "host": "…",
     "base_url": "…",
     "web_call_url": "…",
     "call_requests_url": "…",
@@ -2299,6 +2535,21 @@ Mint a short-lived, single-use token for an **in-browser** voice call via the [`
   }
 }
 ```
+
+**`connection.host` is not the API host.** It is the origin the other three URLs live
+on — named rather than left for you to parse out of them, so you can pin it, proxy it or
+allow it through a content policy deliberately. `https://api.goyappr.com` is the
+secret-key API (`recording_url` on a call is published there, one of that API's own
+routes); the browser data plane carries live SDP and ICE straight from the visitor's
+browser, so it is a different service and its URLs would not answer on the API host. Read
+`host` and the three URLs from this block rather than assembling them from the API base.
+
+**Refused before any token is spent.** A mint on a switched-off agent (`is_active:
+false` — including a fresh `POST /agents/:id/duplicate` copy) is
+`409 WORKFLOW_AGENT_INACTIVE`; on a workflow agent whose workflow has never been
+published it is `409 WORKFLOW_UNPUBLISHED`. Both are refused before the session row is
+written, so neither spends a token. An agent of the retired prompt kind has no
+publication and is never asked for one.
 
 **The key in `connection` is publishable, and only ever publishable** — the same class
 as a Stripe publishable key. It identifies the data plane, grants nothing on its own, and
@@ -2515,9 +2766,12 @@ Remove from the list. Future outbound calls to this number proceed normally.
 
 **Windows gate phone calls only.** `GET /call-windows` needs no specific scope — any
 authenticated key for the workspace can read the schedule. `PUT /call-windows` requires
-`call_windows:manage`, refused `403 INSUFFICIENT_SCOPE` with nothing written if the key
-lacks it. **Breaking for older keys:** a key minted before this scope existed does not
-hold it — mint a new key if your integration sets calling hours through the API.
+`call_windows:manage`: this one setting takes every agent in the workspace on or off the
+phone, which is why it is scoped separately from ordinary agent management. Refused
+`403 INSUFFICIENT_SCOPE` with nothing written if the key lacks it. **Breaking for older
+keys:** a key minted before this scope existed does not hold it. You do not need a new
+secret — in Settings → API keys, a key that predates a scope lists it with a one-press
+**Add to this key**; the same key then works.
 
 ### GET /call-windows · PUT /call-windows
 
@@ -2528,6 +2782,7 @@ hold it — mint a new key if your integration sets calling hours through the AP
   "inbound_enabled": false,
   "outbound_enabled": true,
   "closed_message": null,
+  "updated_at": "ISO8601",
   "windows": [
     { "day_of_week": 0, "start_time": "09:00", "end_time": "19:00" }
   ]
@@ -2560,9 +2815,20 @@ recite opening hours as if they were a setting — the schedule is what decides 
 call connects, and a second copy in the prompt drifts. Set the schedule with
 `PUT /call-windows`.
 
+**Not overwriting someone else.** These settings are one record for the whole
+workspace, with no per-agent copy — your integration, a colleague's dashboard tab and a
+scheduled job all write the same hours. Without a version, the last write wins in
+silence. `GET /call-windows` returns `updated_at`; send it back as `expected_updated_at`
+on `PUT` and the write only goes through if the record is still the one you read. If
+someone changed the hours in between, the response is `409 CALL_WINDOWS_CONFLICT`,
+**nothing is written**, and the message carries the version to re-read against. The field
+is optional — omit it and the write is unconditional, exactly as before it existed.
+
 **Errors:** `400 INVALID_CALL_WINDOWS` (two ranges on the same day overlap, or
 `start_time` is not strictly before `end_time`); `400` (`day_of_week` outside `0..6`, a
-time not `HH:MM`, or `closed_message` not a string/`null`/too long).
+time not `HH:MM`, `closed_message` not a string/`null`/too long, or `expected_updated_at`
+present but not a timestamp); `409 CALL_WINDOWS_CONFLICT` (the `expected_updated_at` you
+sent is not the current version).
 
 ---
 
@@ -3470,6 +3736,112 @@ Revoke a shared link.
 
 ---
 
+## API Keys
+
+Issue narrow keys from code instead of the dashboard: how an integration gives a job
+less authority than it has itself — a nightly export that only reads leads gets a key
+that can only read leads, so a mistake in that job cannot place a call or spend a
+shekel.
+
+**`api_keys:manage` only starts with a person.** It is off by default and can only be
+ticked when a person creates a key in the dashboard's Settings → API keys, under **API
+keys → Manage**. A key issued through this API can never receive it, however wide the
+issuing key's own scopes are, so key issuance stays one generation deep.
+
+### GET /api-keys · GET /api-keys/:id
+
+Every active key in the workspace, newest first (revoked keys are not listed), or one key
+by id (`404` once revoked).
+
+**Scopes:** `api_keys:manage`
+
+**Response (list):**
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "name": "string",
+      "prefix": "ypr_live_9f2c41a",
+      "scopes": ["leads:read", "leads:manage"],
+      "created_at": "ISO8601",
+      "last_used_at": "ISO8601 | null"
+    }
+  ]
+}
+```
+
+The secret is never returned here — `prefix` (first 16 characters) is enough to tell two
+keys apart and to match a key against the dashboard list. `last_used_at` is when the key
+last authenticated a request, `null` if it never has — the quickest way to find a key
+nothing uses.
+
+### POST /api-keys
+
+Issues a key and returns its secret **once**. No later request returns it — it is stored
+only as a hash. Save it before doing anything else; if you lose it, revoke it and issue
+another.
+
+**Scopes:** `api_keys:manage`
+
+**Request body:** `{"name": "Nightly lead sync", "scopes": ["leads:read", "leads:manage"]}`
+— `scopes` is required and has no default: a key is issued with exactly what you ask for.
+
+**Two rules decide what a new key may hold:**
+- **Subset** — you can only grant scopes the calling key itself holds. Anything more is
+  `403 API_KEY_SCOPE_ESCALATION`, naming each scope that went beyond.
+- **`api_keys:manage` is never granted here** — `403 API_KEY_MANAGE_NOT_DELEGABLE`.
+  Create that key in the dashboard.
+
+**Response:** `201`
+```json
+{
+  "id": "uuid",
+  "name": "Nightly lead sync",
+  "prefix": "ypr_live_9f2c41a",
+  "scopes": ["leads:read", "leads:manage"],
+  "created_at": "ISO8601",
+  "last_used_at": null,
+  "key": "ypr_live_9f2c41a7b0e3…"
+}
+```
+`key` appears in this response and no other.
+
+**Testing a scope boundary** — issue a narrow key, then watch the endpoint that needs the
+missing scope refuse it:
+```bash
+NARROW=$(curl -sX POST "https://api.goyappr.com/api-keys" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"scope probe","scopes":["calls:read"]}' | jq -r .key)
+curl -i -X PUT "https://api.goyappr.com/call-windows" -H "Authorization: Bearer $NARROW" \
+  -H "Content-Type: application/json" -d '{"windows":[]}'   # 403 INSUFFICIENT_SCOPE
+```
+Revoke the probe key with `DELETE /api-keys/{id}` when done.
+
+### DELETE /api-keys/:id
+
+Revokes a key immediately — irreversible. Every request made with it from then on is
+refused, and it drops off `GET /api-keys` and the dashboard list.
+
+**Scopes:** `api_keys:manage`
+
+**Response:** `200` — `{ "success": true, "id": "uuid" }`
+
+A key cannot revoke itself: `409 API_KEY_SELF_REVOKE`, pointing at the dashboard, where a
+person can do it deliberately — it would otherwise leave nothing able to issue or revoke
+keys for the workspace. Rotation is therefore: issue the replacement, move your
+integration onto it, then revoke the old one.
+
+**Errors** (all three endpoints): `400 API_KEY_REQUEST_INVALID` (`name` missing/over 100
+characters, or `scopes` missing/empty/not an array of strings); `400
+API_KEY_SCOPE_UNKNOWN` (a requested scope does not exist — check it against the Scope
+Map); `401 INSUFFICIENT_SCOPE`; `403 API_KEY_SCOPE_ESCALATION` /
+`403 API_KEY_MANAGE_NOT_DELEGABLE`; `404 NOT_FOUND`; `409 API_KEY_NAME_TAKEN` /
+`409 API_KEY_SELF_REVOKE`; `503 API_KEY_STORAGE_UNAVAILABLE` (nothing was
+created/revoked — retry).
+
+---
+
 ## Billing
 
 ### GET /billing
@@ -3517,13 +3889,34 @@ and the previous limit stands.
 `monthly_period_start`. One read answers both "can it pay?" and "does it still want to?".
 
 While `monthly_budget_reached` is `true`, `POST /calls` answers `402 SPEND_BUDGET_REACHED`
-and queued outbound calls — campaigns included — are failed with the same sentence. A
-browser rehearsal (`"type": "web"`) is still minted, and **calls coming in are never
-refused for a spending limit.** The limit lifts by itself at 00:00 UTC on the first of
-the next month. Nothing is emailed when it is reached.
+and queued outbound calls — campaigns included, paused as `paused_budget` — are failed
+with the same sentence rather than held, so nothing is re-dialled. A workflow agent's
+call, and a call request already accepted and waiting for its call window, are paused the
+same way. Three things keep working and are not oversights: calls coming **in**, a
+browser rehearsal (`"type": "web"`, which is what the dashboard's Test Call places), and
+the calls a shared link places, which mint the same browser session. Tell your own
+users this — a coordinator who reads "outbound calls are paused" and then watches a test
+call connect will report it as a bug. The limit lifts by itself at 00:00 UTC on the first
+of the next month.
+
+**The workspace owner is emailed once per calendar month** — the first time the limit
+actually refuses a call. Every refusal after that is silent: one stopped campaign must
+not become a hundred messages. The dashboard also carries a banner on every page while
+the limit is reached.
 
 Spending is every completed charge since the first of the month: calls, phone numbers,
 evaluation runs. Top-ups and refunds are not spending.
+
+**Two different budgets.** `monthly_budget_cents` here is the **workspace's** own
+calendar-month limit — every outbound call in the workspace, campaigns included. A
+campaign's own `budget_cents` (`POST /campaigns`, see **Campaigns** below) is a
+**different** number: that one campaign's lifetime budget, spent down once and never
+reset. Either can pause a campaign, and both report `paused_budget` — read both before
+raising one, since raising the campaign's budget does nothing if it was the workspace
+limit that fired. One window, everywhere: `monthly_period_start` here is the same instant
+the dashboard's Spent-this-month tile and pause banner measure; a Call Logs total or a
+`GET /billing/consumption` range is a *different* window of the same money and will not
+match unless you ask for the same days.
 
 ---
 
@@ -3686,6 +4079,70 @@ to fetch back for those.
 
 ---
 
+## Deliveries
+
+### GET /deliveries
+
+Every settled webhook delivery in your workspace, newest first, across calls — how you
+confirm a configured webhook actually fired, for one call, for one tool across a week, or
+for everything that failed last night. A row here is the `delivery` row of a call's
+`timeline` (`GET /calls/:id`), field for field, plus `call_id`. Before this endpoint,
+checking delivery health across many calls meant paging `GET /calls` and opening each
+one.
+
+**Scopes:** `tools:read`
+
+**Query params:** `tool_id`, `agent_id`, `call_id`, `status` (`delivered` \| `failed` \|
+`pending`), `from`, `to`, `limit` (≤ 200), `cursor`. Every filter here is refused with no
+value, same as `GET /calls` — send `cursor` only once you have one.
+
+**Response:**
+```json
+{
+  "data": [
+    {
+      "kind": "delivery",
+      "id": "uuid",
+      "call_id": "uuid",
+      "at": "ISO8601",
+      "delivered_at": "ISO8601 | null",
+      "event": "call.answered",
+      "status": "delivered" | "failed" | "pending",
+      "response_status": 200,
+      "attempt_count": 1,
+      "error_message": "string | null",
+      "tool_name": "string"
+    }
+  ],
+  "pagination": { "limit": 50, "has_more": true, "next_cursor": "opaque string" }
+}
+```
+
+`status` is the field to branch on. `response_status` is what your endpoint answered
+with, `null` when nothing answered at all. `attempt_count` includes the attempt that
+settled it. `error_message` is one sentence for a person, only on a failure — wording may
+change, so branch on `status`/`response_status`, never on the text. `tool_name` is the
+tool whose step sent the delivery, or, for an agent not yet on the workflow engine, the
+agent itself.
+
+`agent_id` filters both eras of an agent: deliveries it sent itself, and deliveries its
+tools sent on its calls (a workflow-engine agent sends through its tools). Summaries
+only — the request body your endpoint received is stored but never returned, and no URL,
+header or credential leaves the platform.
+
+**Paging is by cursor, not offset** — this log grows while you read it, so an offset
+would silently skip or repeat rows. Follow `pagination.next_cursor` until `has_more` is
+`false`. A cursor this endpoint did not issue is `400 DELIVERY_CURSOR_INVALID` rather
+than a silent first page.
+
+```bash
+# Everything that failed yesterday
+curl "https://api.goyappr.com/deliveries?status=failed&from=2026-09-21T00:00:00Z&to=2026-09-22T00:00:00Z" \
+  -H "Authorization: Bearer $YAPPR_API_KEY"
+```
+
+---
+
 ## Voice Catalog (30 voices)
 
 Use the friendly name in API calls (e.g. `"voice": "Maya"`). The platform resolves internally — never use raw voice IDs.
@@ -3758,9 +4215,15 @@ member can reach in the dashboard has a public endpoint behind it.
 | DELETE /tools/:id | `tools:update` |
 | GET /tools/:id/workflow-revisions | `tools:read` |
 | POST /tools/:id/workflow-revisions | `tools:update` |
+| GET /tools/:id/bindings | `tools:read` |
 | POST /tools/attach | `tools:update` |
 | POST /tools/detach | `tools:update` |
 | POST /tools/:id/test | `tools:update` |
+| GET /deliveries | `tools:read` |
+| GET /api-keys, GET /api-keys/:id | `api_keys:manage` |
+| POST /api-keys | `api_keys:manage` |
+| DELETE /api-keys/:id | `api_keys:manage` |
+| POST /agents/:id/extraction/dry-run | `agents:read` |
 | GET /phone-numbers (list) | `phone_numbers:search` |
 | POST /phone-numbers/search | `phone_numbers:search` |
 | POST /phone-numbers/purchase | `phone_numbers:purchase` |
@@ -3769,9 +4232,11 @@ member can reach in the dashboard has a public endpoint behind it.
 | PATCH /billing (spending limit) | `billing:manage` |
 | POST /billing/setup | `billing:manage` |
 | POST /billing/topup | `billing:manage` |
+| GET /billing/consumption | `billing:read` |
 | GET /call-windows | none — any authenticated key for the workspace |
 | PUT /call-windows | `call_windows:manage` |
 | GET /calls (list/get) | `calls:read` |
+| GET /calls/export | `calls:read` |
 | POST /calls | `calls:create` |
 | GET /call-requests/:id | `calls:read` |
 | POST /call-requests/:id/cancel | `calls:create` |
@@ -3797,6 +4262,7 @@ member can reach in the dashboard has a public endpoint behind it.
 | GET /tool-connections, /tool-connection-auth-attempts/:id | `tool-connections:read` |
 | POST /tool-connections, /tool-connections/:id/reconnect | `tool-connections:manage` |
 | DELETE /tool-connections/:id | `tool-connections:manage` |
+| POST /tool-connections/attempts/:id/cancel | `tool-connections:manage` |
 | GET /do-not-call (list/get) | `do_not_call:read` |
 | POST /do-not-call | `do_not_call:manage` |
 | PATCH /do-not-call/:id | `do_not_call:manage` |
@@ -3884,6 +4350,7 @@ Connection control is available on deployments that enable the workspace connect
 | `GET /tool-connection-auth-attempts/{id}` | `tool-connections:read` | Exact local attempt plus safe connection state. Never infer success from list differences or browser messages. |
 | `POST /tool-connections/{id}/reconnect` | `tool-connections:manage` | Body `{ "mode": "replace", "locale": "en" }`; returns a fresh one-time human handoff. Same-account reauthorization is not yet exposed. |
 | `DELETE /tool-connections/{id}` | `tool-connections:manage` | Returns `202 {connection}` after immediate local denial; removal at the connected-app service and manual revocation in the provider account may still be outstanding. Repeated requests do not advance the authorization epoch again. |
+| `POST /tool-connections/attempts/{id}/cancel` | `tool-connections:manage` | Cancels an authorization attempt nobody is going to open. Use the `attempt.id` a create or reconnect returned, not the connection id. |
 
 `POST /tool-connections` requires both `toolkit` and `label` — omitting `label` is
 `400 CONNECTION_INVALID`. `toolkit` must be a `slug` from
@@ -3892,13 +4359,29 @@ Connection control is available on deployments that enable the workspace connect
 options returns `{"data": []}`, nothing can be connected in that workspace yet and every
 create will `409`.
 
-Give the handoff privately to the intended authorized human, who signs in to Yappr, reviews the target workspace and label, and explicitly claims the browser-bound attempt before receiving the app authorization link. The API key initiator and consenting human are separate identities. Treat the URL fragment as a temporary capability: present it only for this consent step; do not log it, persist it in workflow/call data, or include it in voice-agent prompts. Account records belong to the company, not the human who completed consent. Several labeled accounts per app are supported.
+Give the handoff privately to the intended authorized human, who signs in to Yappr, reviews the target workspace and label, and explicitly claims the browser-bound attempt before receiving the app authorization link. The API key initiator and consenting human are separate identities — a key-started handoff may be claimed by any member of the workspace it is scoped to; a dashboard-started one stays with whoever started it. Treat the URL fragment as a temporary capability: present it only for this consent step; do not log it, persist it in workflow/call data, or include it in voice-agent prompts. Account records belong to the company, not the human who completed consent. Several labeled accounts per app are supported.
 
 Poll the exact attempt with increasing intervals, bounded by `expires_at`. Stop on `completed`, `failed`, `expired`, `cancelled`, or `reconciliation_required`. An ambiguous/lost callback exchange must never be redeemed again automatically. `completed` refers to authorization processing; `connection.state` must independently be `ready` before actions can use it. Other states are `disconnected`, `connecting`, `verifying`, `reconnect_required`, and `degraded`.
 
-Safe read DTOs expose only local Yappr IDs, toolkit, label, verified provider identity when available, readiness, decimal-string `binding_revision`/`authorization_epoch`, disconnect progress and timestamps. Replacement increments immutable identity and authorization generations for future bindings; pinned work never silently changes accounts. Disconnect blocks new actions immediately, while already sent actions may finish. `manual_revocation_required` means a human should remove access in the provider account settings. Connection deletion is not proof that a grant was revoked.
+**Cancelling a stuck attempt.** `POST /tool-connections/attempts/{id}/cancel` frees the
+slot an unfinished attempt holds against the ten-open-attempts-per-key limit below —
+already cancelled, completed, failed and expired attempts answer `200` with the attempt
+unchanged, so a retry (or cancelling one you are no longer sure about) is safe. It does
+**not** delete the connection record (that stays, waiting for an authorization that will
+never come — `DELETE /tool-connections/{id}` is what removes it) and it does not touch
+any provider grant: if consent never completed there was never one to revoke; if it did,
+disconnect and then revoke Yappr's access in the provider's own account settings.
 
-`400` covers malformed/foreign cursors and invalid fields, `401` invalid or insufficiently scoped API keys, `404` missing/cross-company resources, `409` active/closed/ambiguous authorization state, `429` bounded start limits, and `503` unavailable control/storage. These routes pass the connection service's body and status through unchanged, so besides the `CONNECTION_*` codes a code this reference does not list can arrive, at one of the statuses above. Treat it by its status, never by its name: on `503`, retry the same request, and if it persists start a fresh connection rather than looping. The forwarded names are not a contract. Error messages never echo submitted credentials.
+**Rate limit.** `429 CONNECTION_RATE_LIMIT` means ten authorizations started *by this API
+key* are still open — attempts that expired, were cancelled or completed do not count,
+and neither do attempts started by anyone else in the workspace. Finish one, cancel one,
+or wait: an attempt nobody finishes is closed server-side ten minutes after it started.
+The workspace also has a ceiling of 120 starts in ten minutes, counted whatever became of
+them, so connecting and cancelling in a loop is refused the same way.
+
+Safe read DTOs expose only local Yappr IDs, toolkit, label, verified provider identity when available, readiness, decimal-string `binding_revision`/`authorization_epoch`, disconnect progress and timestamps. Replacement increments immutable identity and authorization generations for future bindings; pinned work never silently changes accounts. Disconnect blocks new actions immediately, while already sent actions may finish. Three `disconnect_progress` values: `record_deleted` — nothing was ever bound to this connection, so there is nothing left to take back (the usual outcome for an authorization that was never finished); `manual_revocation_required` — an account was bound, so a human should remove Yappr's access in the provider account's own app-access settings too; `unknown` — that step needs reconciliation, read the connection again. Connection deletion is not proof that a grant was revoked.
+
+`400` covers malformed/foreign cursors and invalid fields, `401` invalid or insufficiently scoped API keys, `404` missing/cross-company resources, `409` active/closed/ambiguous authorization state, `429 CONNECTION_RATE_LIMIT` bounded start limits, and `503` unavailable control/storage. These routes pass the connection service's body and status through unchanged, so besides the `CONNECTION_*` codes a code this reference does not list can arrive, at one of the statuses above. Treat it by its status, never by its name: on `503`, retry the same request, and if it persists start a fresh connection rather than looping. The forwarded names are not a contract. Error messages never echo submitted credentials.
 
 ---
 
@@ -4346,7 +4829,7 @@ Aggregated debits from your credit account, bucketed by date and product.
 |---|---|---|---|
 | `from` | ISO8601 | now - 30d | Start of window |
 | `to` | ISO8601 | now | End of window (exclusive) |
-| `group_by` | "day" \| "month" \| "total" \| "agent" | "day" | Bucket granularity |
+| `group_by` | "day" \| "month" \| "total" \| "agent" \| "product" \| "disposition" \| "agent,disposition" | "day" | Bucket granularity |
 | `product` | enum | (all) | `voice_call` \| `eval_run` \| `phone_number` \| `topup` \| `refund` |
 | `include_topups` | bool | false | Include positive credit purchases |
 
@@ -4365,6 +4848,21 @@ Aggregated debits from your credit account, bucketed by date and product.
 ```
 
 When `group_by=agent`, each row carries an `agent_id` field. Agent grouping currently only populates for `voice_call`.
+
+**`group_by=agent,disposition`** — cost *and* outcomes in one read: one row per agent per
+outcome, each with its own `count` and `total_amount_cents`.
+```jsonc
+{
+  "data": [
+    { "agent_id": "a1…", "disposition_id": "d1…", "disposition": "Booked", "product": "voice_call", "total_amount_cents": 1420, "count": 63 },
+    { "agent_id": "a1…", "disposition_id": null,   "disposition": null,    "product": "voice_call", "total_amount_cents": 0,    "count": 2 }
+  ]
+}
+```
+`group_by=disposition` gives the same breakdown for the workspace as a whole. A charge
+with no call behind it (number rent, top-up, eval run) and an undispositioned call both
+read `disposition: null` — the row's own `agent_id` tells the two apart. This plus
+`GET /calls/export` replaces joining `GET /calls` and `GET /dispositions` by hand.
 
 ---
 

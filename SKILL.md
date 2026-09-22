@@ -879,9 +879,17 @@ so take its path and fragment and keep your own origin if the two ever differ. P
 `completed`, `failed`, `expired`, `cancelled` or `reconciliation_required` — `completed`
 is not the same as the connection being ready, which is `connection.state: ready`. The
 dashboard's own handoff page offers **Cancel request** so a person can call off an
-authorization they started, right where the connect flow left them; there is no public
-API route for that yet. `POST /tool-connections/{id}/reconnect {"mode":"replace"}` issues
-a fresh link when you need to replace the account instead.
+authorization they started, right where the connect flow left them, and the same action
+is now public: `POST /tool-connections/attempts/{id}/cancel` — the exact `attempt.id`
+`POST /tool-connections` or `reconnect` returned, never the connection id. It frees the
+slot the attempt held against the ten-open-per-key ceiling immediately, rather than
+waiting the ten minutes an ignored attempt takes to expire on its own; already
+cancelled, completed, failed or expired attempts answer `200` unchanged, so calling it
+again is always safe. It only calls off the authorization — the connection record stays,
+and a provider grant that already completed still needs `DELETE /tool-connections/{id}`
+plus revoking Yappr in the provider's own account settings.
+`POST /tool-connections/{id}/reconnect {"mode":"replace"}` issues a fresh link when you
+need to replace the account instead.
 
 **Connecting an app opens one authorization at a time.** Starting another one calls off
 the one that was left open; if the one in the way was opened in a different browser or
@@ -1289,7 +1297,64 @@ disposition ids, or `none` for calls with no outcome) and `q` (a phone number) �
 filtered view can be linked, bookmarked or built by hand. Either end of the window may be
 given on its own: `from` alone runs to today, `to` alone runs back 30 days. "Export CSV"
 writes every call the filters match — including the agent and A/B dropdowns on the page,
-which are not part of the address — not only the page on screen.
+which are not part of the address — not only the page on screen. `GET /calls/export`
+below is the same button, addressable.
+
+### Journey — export a month of calls as a file
+
+When the user wants to hand a client, a bookkeeper or themselves a month of calls as one
+file — not read through the API one page at a time — reach for the export endpoint
+instead of paging `GET /calls` and building a CSV yourself:
+
+```
+GET /calls/export?agent_id=...&from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z
+```
+
+It takes the same filters `GET /calls` does, and writes the same columns and `Total`
+line the dashboard's own **Export CSV** button does — the file you build here and the
+one a person downloads from the screen are the same file. That is also why it replaces
+joining `GET /calls`, [`GET /billing/consumption`](yappr-api.md) and
+`GET /dispositions` by hand: one file already has the cost and the outcome together.
+
+1. `limit` and `offset` are refused, not ignored — an export is the whole window at
+   once. To read a page of rows as JSON instead of a file, that is what `GET /calls` is
+   for.
+2. One export tops out at **10000 rows** (`400 CALLS_EXPORT_TOO_LARGE`, naming the
+   count) rather than being truncated — a file cut short would carry a wrong `Total`
+   that says nothing about it. Split a bigger one by month.
+3. End each window on the **first of the next month** (`to=2026-10-01T00:00:00Z`)
+   rather than guessing a last day. `to` is inclusive, so a call started at exactly that
+   boundary lands in **both** neighbouring files — drop the duplicate on `Started`
+   before adding two files' `Total` lines together, or end a window a second earlier and
+   accept the opposite risk instead.
+4. `Cost (USD)` reads blank, never `0`, on a call that has not settled yet — the same
+   rule `cost_cents` follows everywhere else.
+
+Field-by-field reference: `yappr-api.md` → **GET /calls/export**.
+
+### Journey — reading webhook deliveries across many calls
+
+When the user asks "did my webhook actually fire this week" or "which calls' webhooks
+failed last night" — across many calls, not one — `GET /deliveries` is the endpoint,
+not paging `GET /calls/:id` and filtering each call's `timeline` yourself:
+
+```
+GET /deliveries?status=failed&from=2026-09-21T00:00:00Z&to=2026-09-22T00:00:00Z
+```
+
+Each row is the same `delivery` row a call's own `timeline` carries, field for field,
+plus the `call_id` it happened on — the same parser reads both. Filter by `tool_id`, by
+`agent_id` (deliveries the agent sent itself, **and** deliveries its tools sent on its
+calls — a workflow agent sends through its tools, so both count), by `call_id` to
+confirm one call's webhook fired, or by `status` (`delivered` / `failed` / `pending`;
+`failed` is the delivery-health query). Page with `pagination.next_cursor` until
+`has_more` is `false` — cursor, not offset, because the log keeps growing while a long
+read is in flight, and an offset would silently skip or repeat rows. Send `cursor` only
+once you actually have one — like every filter here, an empty value is refused, and a
+cursor this endpoint did not issue is `400 DELIVERY_CURSOR_INVALID` rather than a silent
+restart from the top.
+
+Field-by-field reference: `yappr-api.md` → **GET /deliveries**.
 
 ### The trigger's payload is not minimal
 
@@ -1981,6 +2046,37 @@ Gotchas worth flagging to the user:
 - Re-adding an existing number is idempotent (returns the existing row with HTTP 200), so a sync script can be written naively.
 - `expires_at` in the past returns 400. Omit (or `null`) for a permanent block.
 - A DNC-blocked call still writes a `call_logs` row and fires a `call.dnc_blocked` webhook — useful for analytics, but do not double-count it as a real attempt.
+
+---
+
+## API Keys
+
+**Bootstrapping needs a human first.** `api_keys:manage` — the scope that lists, issues
+and revokes keys — can only be granted in the dashboard, by a person, under Settings →
+API keys. A key issued through `POST /api-keys` can never carry it, however much
+authority the key minting it has, so there is no way to bootstrap key management purely
+from code: ask the user to create one key with that scope checked, hand you its secret,
+and every key after that you can mint yourself.
+
+Once you hold a key with `api_keys:manage`, mint narrower ones from code instead of
+sending the user back to the dashboard for every integration:
+
+```bash
+curl -s -X POST "https://api.goyappr.com/api-keys" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Nightly lead sync", "scopes": ["leads:read", "leads:manage"]}'
+```
+
+The secret comes back **once**, in `key` — save it before doing anything else; no later
+read returns it, only `prefix` (its first 16 characters, enough to tell keys apart in a
+list). `scopes` is required and has no default: a key gets exactly what you ask for, and
+only a **subset** of what the calling key already holds — asking for more is
+`403 API_KEY_SCOPE_ESCALATION`, naming each scope that went beyond. A key cannot revoke
+itself (`409 API_KEY_SELF_REVOKE`); rotate by issuing the replacement, moving the
+integration onto it, then revoking the old one with `DELETE /api-keys/{id}`.
+
+Field-by-field reference: `yappr-api.md` → **API Keys**.
 
 ---
 
