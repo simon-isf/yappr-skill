@@ -4389,6 +4389,13 @@ to fetch back for those.
 
 ## Deliveries
 
+Did it fire, why not, send it again: `GET /deliveries` lists them, `GET /deliveries/{id}`
+shows what was sent and what came back, `POST /deliveries/{id}/retry` sends a failed one
+again. In the dashboard: **Tools → Deliveries** — searchable Tool / Agent, Result,
+Triggered by, Period or a date range; the address holds the view
+(`?tool=&agent=&status=&source=&days=|from=&to=&page=&delivery=`), and a row's drawer shows
+what was sent and what came back, with **Send again** on a failure.
+
 ### GET /deliveries
 
 Every webhook delivery in your workspace — settled, or still `pending` — newest first,
@@ -4398,7 +4405,7 @@ row of a call's `timeline` (`GET /calls/:id`), field for field, plus `call_id` a
 `source`. Before this endpoint, checking delivery health across many calls meant paging
 `GET /calls` and opening each one.
 
-**Scopes:** `tools:read`
+**Scopes:** `calls:read` **or** `tools:read` — either one.
 
 **Query params:** `tool_id`, `agent_id`, `call_id`, `status` (`delivered` \| `failed` \|
 `pending`), `source` (`live` \| `test`), `from`, `to` (a real ISO 8601 timestamp — a
@@ -4414,6 +4421,8 @@ you have one.
     {
       "kind": "delivery",
       "id": "uuid",
+      "tool_id": "uuid | null",
+      "agent_id": "uuid | null",
       "call_id": "uuid | null",
       "at": "ISO8601",
       "delivered_at": "ISO8601",
@@ -4438,34 +4447,71 @@ with, `null` when nothing answered at all. `attempt_count` includes the attempt 
 settled it. `error_message` is one sentence for a person, only on a failure — wording may
 change, so branch on `status`/`response_status`, never on the text. `tool_name` is the
 tool whose step sent the delivery, or, for an agent not yet on the workflow engine, the
-agent itself.
+agent itself. `id`, `tool_id` and `agent_id` (the agent whose call it was, for a tool's
+step) are on this row and on the call timeline's `delivery` row alike, so one can be
+found from the other.
 
 **Real traffic and rehearsals — `source`.** `live` is real traffic: a call, or a lead
 event (`lead.created`, `lead.updated`), which can belong to no call and then has
 `call_id: null`. `test` is a `POST /tools/{id}/test` that actually reached your endpoint — a
 legacy webhook tool's test at once, a workflow tool's **real** test (`"policy":
 "allowlist"`, `"allowed_binding_ids": ["test_tool"]`, an `http` tool) once its request
-settles. A mock test sends nothing and writes no row, and neither does a connected-app
-action, which is not a webhook. A rehearsal happens on no call, so its `call_id` is `null`
-and its `event` carries a `test:` prefix — branch on `source`, not on the event's spelling.
+settles — **or** anything sent on a call the dashboard opened to rehearse an agent (its
+Test tab or a test dial). A mock test sends nothing and writes no row, and neither does a connected-app
+action, which is not a webhook. A tool test happens on no call, so its `call_id` is `null`
+and its `event` carries a `test:` prefix; a dashboard test call's rows carry that call's id
+and ordinary events — branch on `source`, not on the event's spelling.
 Left out, `?source=` returns both; `?source=live` keeps rehearsals out of a delivery-health
 report, and `?source=test&tool_id=…` answers "did my test reach the endpoint?".
 
 `agent_id` filters both eras of an agent: deliveries it sent itself, and deliveries its
-tools sent on its calls (a workflow-engine agent sends through its tools). Summaries
-only — the request body your endpoint received is stored but never returned, and no URL,
-header or credential leaves the platform.
+tools sent on its calls (a workflow-engine agent sends through its tools). The list is
+summaries; open one with `GET /deliveries/{id}` for what was sent and what came back. No
+URL, header value or credential ever leaves the platform.
 
 **Paging is by cursor, not offset** — this log grows while you read it, so an offset
 would silently skip or repeat rows. Follow `pagination.next_cursor` until `has_more` is
-`false`. A cursor this endpoint did not issue is `400 DELIVERY_CURSOR_INVALID` rather
-than a silent first page.
+`false`, passing it back unchanged. A cursor that does not read as one of this endpoint's
+is `400 DELIVERY_CURSOR_INVALID` rather than a silent first page; a `GET /calls` cursor is
+not one.
 
 ```bash
 # Everything that failed yesterday
 curl "https://api.goyappr.com/deliveries?status=failed&from=2026-09-21T00:00:00Z&to=2026-09-22T00:00:00Z" \
   -H "Authorization: Bearer $YAPPR_API_KEY"
 ```
+
+### GET /deliveries/:id
+
+One delivery — the list row, field for field (`404 DELIVERY_NOT_FOUND` for an id that is
+not a delivery here, never the list) — plus:
+
+| Field | What it is |
+|---|---|
+| `request.body` | The body as it was sent. A retry re-sends exactly this. For a `GET` tool these fields went as query parameters. |
+| `request.method`, `request.header_names` | How the sender is configured **now**. Header values are never returned. |
+| `response.status` | What your endpoint answered; `null` when nothing answered. |
+| `response.body` | What your endpoint answered, as text, at most 2,000 characters. |
+| `retry_of` / `retried_by` | The delivery this one re-sent / the retry that re-sent this one. |
+| `retryable` | `true` when `POST /deliveries/{id}/retry` would send it. |
+| `bodies_withheld` | `true` when the key lacks `calls:read`: both bodies are then `null`. |
+
+**Scopes:** `calls:read` or `tools:read`; the two bodies need `calls:read`.
+
+Every configured header value is replaced by `[REDACTED]` wherever it appears in either
+body, and no URL is returned. `response.body` is `null` when nothing answered, for
+deliveries made before 2026-09-23, and for a workflow step's refusal (the status is kept,
+not the text) — a retry always keeps the answer.
+
+### POST /deliveries/:id/retry
+
+Re-sends the stored body once, to where the tool points **now**. `201` with the new
+delivery (`retry_of` = the original). Only a `failed` delivery, and only once per delivery
+— two racing retries send once. Nothing is sent on a refusal: `409 DELIVERY_NOT_RETRYABLE`
+(it was accepted, or has not settled), `409 DELIVERY_ALREADY_RETRIED` (with `retried_by`),
+`409 DELIVERY_SENDER_UNAVAILABLE`. If the retry fails too, retry the retry.
+
+**Scopes:** `tools:update` — the scope that already sends a tool's request on demand.
 
 ---
 
@@ -4545,7 +4591,8 @@ member can reach in the dashboard has a public endpoint behind it.
 | POST /tools/attach | `tools:update` |
 | POST /tools/detach | `tools:update` |
 | POST /tools/:id/test | `tools:update` |
-| GET /deliveries | `tools:read` |
+| GET /deliveries, GET /deliveries/:id | `calls:read` or `tools:read` (bodies need `calls:read`) |
+| POST /deliveries/:id/retry | `tools:update` |
 | GET /api-keys, GET /api-keys/:id | `api_keys:read` or `api_keys:manage` |
 | POST /api-keys | `api_keys:manage` |
 | DELETE /api-keys/:id | `api_keys:manage` |

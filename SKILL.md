@@ -1442,16 +1442,22 @@ confirm one call's webhook fired, by `status` (`delivered` / `failed` / `pending
 still `pending` are listed too; `failed` is the delivery-health query), or by `source`:
 `live` is real traffic (a call, or a lead event, which can have `call_id: null`), `test` is
 a tool test you ran that actually reached the endpoint — a legacy webhook tool's test at
-once, a workflow tool's real `allowlist` test once it settles; a mock test writes nothing.
+once, a workflow tool's real `allowlist` test once it settles; a mock test writes nothing
+— or anything sent on a call the dashboard opened to rehearse an agent.
 Use `?source=live` for a delivery-health report, and `?source=test&tool_id=…` to answer
 "did my test reach the endpoint?". Page with `pagination.next_cursor` until
 `has_more` is `false` — cursor, not offset, because the log keeps growing while a long
 read is in flight, and an offset would silently skip or repeat rows. Send `cursor` only
 once you actually have one — like every filter here, an empty value is refused, and a
-cursor this endpoint did not issue is `400 DELIVERY_CURSOR_INVALID` rather than a silent
-restart from the top.
+cursor that does not read as one of this endpoint's is `400 DELIVERY_CURSOR_INVALID` rather
+than a silent restart from the top. A key with `calls:read` or `tools:read` can read them.
 
-Field-by-field reference: `yappr-api.md` → **GET /deliveries**.
+To see why one failed, open it: `GET /deliveries/{id}` returns the body that was sent and
+what the endpoint answered (header values `[REDACTED]`; bodies need `calls:read`). Once
+the endpoint is fixed, `POST /deliveries/{id}/retry` (`tools:update`) sends that same body
+once more to where the tool points now — only a `failed` delivery, once.
+
+Field-by-field reference: `yappr-api.md` → **Deliveries**.
 
 ### The trigger's payload is not minimal
 
