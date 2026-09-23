@@ -1304,7 +1304,7 @@ complete list with every value. The ones that matter most here:
 
 **Recommended default trigger set:** `call.no_answer`, `call.failed`, `analysis.ready`.
 
-**Who ended the call (`ended_by`)** — `GET /calls/:id` returns an `ended_by` field that distinguishes hang-up causality: `"caller"` (the human picked up and ended it), `"agent"` (the bot ended it — e.g. timed out or chose to hang up), `"system"` (the platform ended it — e.g. voicemail detection, max duration), or `"unknown"`. Useful for retry and analytics logic so you don't auto-retry calls the user intentionally ended. First-write-wins — once set, it isn't overwritten.
+**Who ended the call (`ended_by`)** — `GET /calls/:id` returns an `ended_by` field that distinguishes hang-up causality: `"caller"` (the human hung up, or the browser closed), `"agent"` (the bot chose to hang up), `"system"` (the platform ended it — e.g. voicemail detection, max duration, a fault, a browser session that expired unused), `"operator"` (a dashboard phone test call's End, or Yappr stopping a stuck call), `"unknown"`, or `null` while the call is live. Useful for retry and analytics logic so you don't auto-retry calls the user intentionally ended. First-write-wins — once set, it isn't overwritten.
 
 ### Journey — read what happened on a call
 
@@ -1369,7 +1369,8 @@ joining `GET /calls`, [`GET /billing/consumption`](yappr-api.md) and
 1. `limit`, `offset`, `cursor` and `updated_since` are refused, not ignored — an export
    is one whole window of call starts, not a page of it and not "what changed since". To
    read pages as JSON, or the calls that changed since your last run, use `GET /calls`
-   (`cursor`, `updated_since`) — which also carries each call's `id`; the file does not.
+   (`cursor`, `updated_since`). The file carries each call's `Call ID`, so its rows join
+   back to `GET /calls/{id}`.
 2. One export tops out at **10000 rows** (`400 CALLS_EXPORT_TOO_LARGE`, naming the
    count) rather than being truncated — a file cut short would carry a wrong `Total`
    that says nothing about it. Split a bigger one by month.
@@ -1378,8 +1379,14 @@ joining `GET /calls`, [`GET /billing/consumption`](yappr-api.md) and
    boundary lands in **both** neighbouring files — drop the duplicate on `Started`
    before adding two files' `Total` lines together, or end a window a second earlier and
    accept the opposite risk instead.
-4. `Cost (USD)` reads blank, never `0`, on a call that has not settled yet — the same
-   rule `cost_cents` follows everywhere else.
+4. `Cost (USD)` reads blank, never `0`, when no charge is recorded on the call — one still
+   settling, or one never charged (failed, unanswered, blocked). `cost_status` on
+   `GET /calls/{id}` (joined by `Call ID`) tells the two apart: `pending` is worth waiting
+   for, `not_charged` is final at `0`.
+5. Columns come in a fixed order, then one `Extracted: <field>` column per collected field
+   in the window — read those by heading. The dashboard's own Export CSV has the same
+   fields in the same order but translated headings and an extra local-time `Started`
+   column, so read a dashboard file by position.
 
 Field-by-field reference: `yappr-api.md` → **GET /calls/export**.
 

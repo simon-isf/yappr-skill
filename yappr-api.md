@@ -563,9 +563,9 @@ integration off the old body** above). Nothing is written.
 
 Read a transcript you supply for the values this agent collects, and get them back.
 Nothing is called, nothing is written, and the agent is unchanged — the assertable half
-of a rehearsal, for CI: a browser session (`POST /calls {"type":"web"}`) writes no call
-row until a browser actually connects it, so without one there was no `extracted_data` to
-check before a real caller met the parameters.
+of a rehearsal, for CI: a browser session (`POST /calls {"type":"web"}`) that nobody
+connects ends `no_answer` with no transcript, so without this there was no
+`extracted_data` to check before a real caller met the parameters.
 
 **Scopes:** `agents:read` — the only read scope that spends anything: each call runs one
 model read of the transcript you send, and it is billed (logged against the workspace,
@@ -575,8 +575,9 @@ not free because the scope is read-only).
 
 | Field | Notes |
 |---|---|
-| `transcript` | Required. Either an array of `{"role","text"}` turns (`role` is `agent`, `user` or `voicemail`; anything else reads as the caller) or the whole conversation as one string. Max 400 turns / 40,000 characters. |
-| `extraction_parameters` | Optional. A set to try **instead of** the agent's own saved ones — same shape as on the agent: `name`, `description`, optional `type` (`text` default, `number`, `yes_no`, `date`). |
+| `transcript` | Required. Either an array of `{"role","text"}` turns (`role` is `agent`, `user` or `voicemail`; anything else reads as the caller) or the whole conversation as one string. As a string it is one turn per line behind a speaker label: `Agent:`, `User:`, `Caller:`, `Customer:`, `Voicemail:`, `סוכן:`, `משתמש:`, `מתקשר:`, `לקוח:`, `תא קולי:` — any other line is `400 EXTRACTION_DRY_RUN_TRANSCRIPT_UNLABELLED`, naming the line. Max 400 turns / 40,000 characters. |
+| `extraction_parameters` | Optional. A set to try **instead of** the agent's own saved ones — same shape as on the agent: `name`, `description`, optional `type` (`text` default, `number`, `yes_no`, `date`). Validated exactly like `PATCH /agents` (e.g. `"type":"bool"` is `400 EXTRACTION_DRY_RUN_INVALID` with PATCH's message). |
+| `reference_time` | Optional. The day the conversation happened: `"YYYY-MM-DD"` (that day) or a zoned timestamp (read in the workspace time zone). Default: today. |
 
 **Response:**
 ```json
@@ -584,9 +585,18 @@ not free because the scope is read-only).
   "agent_id": "uuid",
   "transcript_turns": 2,
   "extraction_parameters": [{ "name": "seats", "type": "number" }],
+  "reference_date": "2026-09-23",
+  "timezone": "Asia/Jerusalem",
   "extracted_data": { "seats": 12 }
 }
 ```
+
+**Extracted dates.** A `date` parameter is read from the day the call started, in the
+workspace time zone — on a real call and here (`reference_time`, echoed as
+`reference_date` and `timezone`). A day and month with no year → the next time it comes
+round (never the past); "today" / "tomorrow" / "in a week" → counted from the call day;
+"next Sunday" / "on Tuesday" → the first such day after the call day; a year the caller
+said is kept; "after the holidays" → `null`.
 
 `extracted_data` is keyed by your parameters and nothing else: a key the model invented
 is dropped, a parameter it left out is still a key with `null` — meaning the conversation
@@ -598,8 +608,10 @@ writes no call, so it never appears in `GET /calls`.
 
 **Errors:** `400 EXTRACTION_DRY_RUN_INVALID` — no `transcript`, an empty one, a turn with
 no `text`, a transcript over the size limits, an `extraction_parameters` entry missing
-`name` or `description`, an empty `extraction_parameters` array, or any field this
-endpoint does not take. `404 WORKFLOW_NOT_FOUND` — no such agent, or archived.
+`name` or `description`, an empty `extraction_parameters` array, a malformed
+`reference_time`, or any field this endpoint does not take.
+`400 EXTRACTION_DRY_RUN_TRANSCRIPT_UNLABELLED` — a text transcript line with no speaker
+label. `404 AGENT_NOT_FOUND` — no such agent, or archived.
 `422 EXTRACTION_NOT_CONFIGURED` — the agent has no extraction parameters and the request
 sent none either, so there is nothing to read the transcript for (a bad entry in
 parameters you *did* send is the `400` above, not this). `503
@@ -764,7 +776,17 @@ The pointer resolves, so a `fallback` on that source never fires — an input re
 single extracted field needs a type that accepts null (`"type": ["string", "null"]`) or the
 step fails on any call that did not cover it. `/extracted_data` as a whole avoids that, but
 only into an input declared `"type": "object"`. The same artifact carries `/summary` and
-`/disposition_id`. Saving checks none of this; `validate` and `publish` do.
+`/disposition_id`. Saving checks none of this; `validate` and `publish` do: an input
+`{kind:"artifact", artifact:"analysis", path:"/extracted_data/<name>"}` is refused
+(validate `valid: false`, publish `422 WORKFLOW_VALIDATION_FAILED`, `path` =
+`/bindings/<n>/inputs/<field>`) with
+- `extracted_field_unknown` — the agent collects nothing called `<name>`;
+- `extracted_field_type_mismatch` — the input's type cannot take that kind of value
+  (text/date → string, number → number or integer, yes_no → boolean, `/extracted_data` →
+  object).
+
+A `date` value is read from the day the call started, in the workspace time zone — see
+**Extracted dates** under **POST /agents/:id/extraction/dry-run**.
 
 **Branching inside a sequence.** A sequence step may carry a `when` condition and
 route its outcome with `on_succeeded` / `on_failed`. Conditions are declarative data;
@@ -1865,9 +1887,9 @@ List calls with optional filters and pagination.
 |-------|------|---------|-------|
 | `limit` | int | 20 | max 100 |
 | `offset` | int | 0 | counts from the top of a list that grows while you read it. Send this or `cursor`, not both |
-| `cursor` | string | — | continue exactly where the last page stopped: `pagination.next_cursor`, opaque, on every page. This is the one to build a job on — an offset silently repeats or skips rows when calls arrive mid-walk. A cursor this endpoint did not issue is `400 CALLS_CURSOR_INVALID`, never a silent first page |
-| `agent_id` | uuid | — | filter by agent; anything that is not a uuid is `400 CALLS_QUERY_INVALID` |
-| `status` | string | — | `ringing`, `in_progress`, `completed`, `failed`, `no_answer`, `transferred`, `dnc_blocked` (destination on the company DNC list — no carrier leg, no charge) |
+| `cursor` | string | — | continue exactly where the last page stopped: `pagination.next_cursor`, opaque, on every page. This is the one to build a job on — an offset silently repeats or skips rows when calls arrive mid-walk. Cursors are signed: only a `pagination.next_cursor` from this endpoint works — a hand-built one, or one from `/deliveries`, is `400 CALLS_CURSOR_INVALID`, never a silent first page |
+| `agent_id` | uuid | — | filter by agent; anything that is not a uuid is `400 CALLS_QUERY_INVALID`, and an agent that is not in this workspace is `404 CALL_AGENT_UNKNOWN` |
+| `status` | string | — | `pending_connection` (a browser session nobody has connected yet), `ringing`, `in_progress`, `completed`, `failed`, `no_answer`, `transferred`, `dnc_blocked` (destination on the company DNC list — no carrier leg, no charge) |
 | `direction` | string | — | `inbound`, `outbound`, `web_call` |
 | `callee` | string | — | filter by callee phone (E.164). Useful for counting prior attempts to the same lead within a retry window. |
 | `caller` | string | — | filter by caller phone (E.164) |
@@ -1876,8 +1898,8 @@ List calls with optional filters and pagination.
 | `disposition` | string | — | Only calls that ended with this outcome, by its label exactly as `GET /dispositions` returns it. A label this workspace does not have is `404 CALL_DISPOSITION_UNKNOWN`, not an empty page |
 | `disposition_id` | uuid | — | The same outcome filter by id. Send this or `disposition`, not both |
 | `from` | ISO8601 | — | `created_at` lower bound |
-| `to` | ISO8601 | — | `created_at` upper bound |
-| `updated_since` | ISO8601 | — | every call **changed** at or after this time, whatever its `created_at`. The filter an incremental sync wants; `from`/`to` are not |
+| `to` | ISO8601 | — | `created_at` upper bound, inclusive; a date-only `to` covers that whole day (UTC) |
+| `updated_since` | ISO8601 | — | every call **changed** at or after this time, whatever its `created_at`. The filter an incremental sync wants; `from`/`to` are not. Send a `+03:00` offset URL-encoded as `%2B03:00` — a bare `+` reads as a space |
 
 An unrecognised `status`, `direction` or `source`, any parameter not in this table, an
 `agent_id` that is not a uuid, a `from`/`to`/`updated_since` that is not an ISO 8601
@@ -1900,6 +1922,9 @@ before a run starts; ask the next run for `?updated_since=<that time minus 5 min
 page it by `cursor` to exhaustion; upsert each call by `id`, keeping whichever copy has the
 newer `updated_at` (the overlap hands you some calls twice, by design). A call you stored
 while its `analysis.status` was still `pending` is worth re-reading by id until it settles.
+`updated_at` moves on every analysis change, including a `failed` / `analysis_unavailable`
+outcome, which is written within about 5 minutes of the 10-minute mark — so an analysis
+that never finishes still reaches a sync windowed on `updated_since`.
 While paging by cursor, `pagination.total` counts the calls still ahead of the cursor, not
 the whole list.
 
@@ -1932,6 +1957,8 @@ number. Use in retry-throttle logic (automation platforms like Make.com/n8n get 
       "ab_variant": "a" | "b" | null,
       "source": "test" | "shared_link" | "api" | "phone_inbound" | "phone_outbound" | "unknown",
       "cost_cents": 12,
+      "cost_status": "charged" | "not_charged" | "pending",
+      "metadata": { "...": "your keys" },
       "analysis": { "status": "done" | "pending" | "skipped" | "failed", "reason": "string | null", "completed_at": "ISO8601 | null" },
       "recording_url": "string | null",
       "disposition": { "id": "uuid", "label": "string", "color": "#hex" },
@@ -1958,6 +1985,16 @@ each call — `analysis.status: "done"` means the values are ready on the detail
 `"pending"` means come back later, `"skipped"`/`"failed"` mean nothing more is coming.
 `updated_at` is on every row, and `GET /calls/:id` carries the same value.
 
+**`cost_status`** is on every row, beside `cost_cents`: `charged` (the recorded charge;
+final), `not_charged` (`cost_cents: 0`, final — the call failed, went unanswered, was
+blocked, or had no connected time) or `pending` (`cost_cents: null` — still settling).
+Only `pending` is worth polling.
+
+**`metadata`** on a row is your keys, with internal bookkeeping removed. A few platform keys
+stay: `ab_variant` / `ab_variant_fallback`, `share_link_id`, `agent_id` on a dashboard test
+call, `queued` / `queue_id` / `queue_wait_seconds`, `workflow_request_id` — name your own
+keys so they cannot collide.
+
 ---
 
 ### GET /calls/export
@@ -1971,14 +2008,31 @@ changed. This is the dashboard's own **Export CSV**, addressable.
 
 **Scopes:** `calls:read`
 
-**Columns:** `Started` (ISO 8601 UTC), `Agent` (empty when the call has no agent — match
-on empty, not on a translated word), `A/B`, `Direction`, `Status`, `Disposition`, `From`,
-`To`, `Duration` (seconds), `Cost (USD)` (a bare decimal; **empty**, never `0`, on a call
-that has not settled), `Source`, `Shared link ID` (only on a `shared_link` call). The
-last line is `Total` with the summed cost over calls in the file that have settled. The
-file opens with a UTF-8 BOM, so Hebrew names open correctly in a spreadsheet. There is
-no call-id column, so the file cannot be joined back to calls row by row — to join calls to
-your own records, page `GET /calls` (JSON, with `id`) over the same window instead.
+**Columns, in this fixed order:** `Started` (ISO 8601, `+00:00`), `Agent` (empty when the
+call has no agent — match on empty, not on a translated word), `A/B`, `Direction`,
+`Status` (`pending_connection` is a filter value here too), `Disposition`, `From`, `To`,
+`Duration (seconds)`, `Cost (USD)` (a bare decimal, see below), `Source`, `Shared link ID`
+(only on a `shared_link` call), `Call ID` (the join key to `GET /calls/{id}`), `Lead name`
+(empty when there is no lead, or it was deleted), `Summary`, then one
+`Extracted: <field>` column per `extracted_data` key found in the window — read those by
+heading, not position. The last line is `Total` under `Cost (USD)`. `X-Total-Rows` counts
+the call rows. The file opens with a UTF-8 BOM, so Hebrew names open correctly in a
+spreadsheet.
+
+**`Cost (USD)` is empty when no charge is recorded on the call** — one that has not settled
+yet, and also one that is never charged: failed, unanswered, blocked. Neither is written
+as `0`. Tell the two apart with `cost_status` on `GET /calls/{id}`
+(joined by `Call ID`).
+
+**Formula guard.** A `Lead name`, `Summary` or `Extracted:` value that opens with `=`, `+`,
+`-`, `@` or a tab is written with a leading `'`, so a spreadsheet does not run it; strip one
+leading `'` when reading the file as data. Phone numbers and plain numbers are never
+prefixed.
+
+**The dashboard's Export CSV is the same fields in the same order, written for people:**
+headings, labels, `Total` and Yes/No in the reader's language, `Started (ISO 8601)` plus an
+extra `Started (<zone>)` second column. Read a dashboard file by position; do not match its
+headings against this endpoint's.
 
 **The row limit.** One export carries at most **10000** calls; a window holding more is
 `400 CALLS_EXPORT_TOO_LARGE`, naming the count — never truncated. Page a larger export by
@@ -1989,7 +2043,7 @@ boundary is written into both files. Concatenating files means dropping the dupl
 boundary row from one of the two, and each file's own `Total` still counts it once.
 
 `X-Total-Rows` (exposed to browser `fetch()`, alongside `Content-Disposition`) carries the
-row count before the `Total` line. The file is the calls that existed the moment you
+call-row count, before the `Total` line. The file is the calls that existed the moment you
 asked — one still streaming never lands half-written.
 
 ```bash
@@ -2013,7 +2067,7 @@ Get full details of a single call, including resolved lead and disposition objec
   "from": "+972...",
   "to": "+972...",
   "direction": "inbound" | "outbound" | "web_call",
-  "status": "ringing" | "in_progress" | "completed" | "failed",
+  "status": "pending_connection" | "ringing" | "in_progress" | "completed" | "failed" | "no_answer" | "transferred" | "dnc_blocked",
   "failure": { "code": "string", "reason": "string", "stage": "dialing|connecting|conversation|null", "at": "ISO8601 | null" },
   "started_at": "ISO8601 | null",
   "ended_at": "ISO8601 | null",
@@ -2021,6 +2075,7 @@ Get full details of a single call, including resolved lead and disposition objec
   "source": "test" | "shared_link" | "api" | "phone_inbound" | "phone_outbound" | "unknown",
   "shared_link_id": "uuid",
   "cost_cents": 12,
+  "cost_status": "charged" | "not_charged" | "pending",
   "updated_at": "ISO8601",
   "analysis": { "status": "pending" | "done" | "skipped" | "failed", "reason": "string | null", "completed_at": "ISO8601 | null" },
   "transcript": [ { "role": "agent|user", "text": "string", "start": 0, "end": 0 } ],
@@ -2142,7 +2197,9 @@ Get full details of a single call, including resolved lead and disposition objec
 sync that pages `GET /calls?updated_since=` and then reads a call by id for its transcript
 and analysis keeps the timestamp its loop windows on.
 
-**`metadata`** — The metadata object you attached at `POST /calls`. Empty object `{}` if no metadata was provided at call creation.
+**`metadata`** — The metadata object you attached at `POST /calls` (or at a browser-session
+mint). Empty object `{}` if none was provided. Internal bookkeeping is removed; the few
+platform keys that stay are listed under **GET /calls** above.
 
 **`extracted_data`** — Present **only when extraction ran**: an agent with no
 `extraction_parameters`, a call too short to analyse, or an analysis that failed all
@@ -2206,10 +2263,10 @@ error class, and it is ours, not yours to read.
 
 | Value | Meaning |
 |-------|---------|
-| `"caller"` | The far end went away first — the human on the line hung up, or the browser closed the connection. |
+| `"caller"` | The far end went away first — the human on the line hung up, or the browser closed the connection (a browser test call's End button included). |
 | `"agent"` | The agent chose to end the call: its end-call tool, the End step of its flow, or its closing line followed by a hangup. |
-| `"system"` | Yappr ended it — the silence timeout, the maximum-duration cap, an answering machine, or a fault that took the call down. |
-| `"operator"` | A Yappr operator ended it from the platform side — a call found still open after its conversation had ended. Its `disconnect_reason` reads `Ended by operator`. |
+| `"system"` | Yappr ended it — the silence timeout, the maximum-duration cap, an answering machine, a fault that took the call down, the watchdog, or a browser session that expired unused. |
+| `"operator"` | Ended from the platform side by a person: the End button on a dashboard **phone** test call, or Yappr stopping a call found still open after its conversation had ended (`disconnect_reason` `Ended by operator`). |
 | `"unknown"` | The carrier reported the ending but did not say which side dropped the call. |
 | `null` | Call has not yet ended, or nothing could attribute it. |
 
@@ -2232,8 +2289,11 @@ In practice: `Completed`, `No answer`, `Busy`, `Call rejected`, `Cancelled`,
 handoff that did connect leaves the reason to the call's own ending. Also first-write-wins,
 and `null` for short or atypical hangups.
 
-**`cost_cents`** — What the call took out of your workspace's credits, `null` (never `0`)
-while unsettled. This is a **different number** from `usage.cost_usd` below: `cost_cents`
+**`cost_cents`** — What the call took out of your workspace's credits. Read it with
+**`cost_status`**: `charged` (the recorded charge; final), `not_charged` (`0`, final — the
+call failed, went unanswered, was blocked, or had no connected time) or `pending` (`null` —
+still settling; the only state worth polling). This is a **different number** from
+`usage.cost_usd` below: `cost_cents`
 is what Yappr billed you, `usage.cost_usd` is what Yappr paid the model provider. Totals
 across calls: `GET /billing/consumption`.
 
@@ -2644,14 +2704,18 @@ Mint a short-lived, single-use token for an **in-browser** voice call via the [`
 | `type` | string | yes | `"web"`. Omit (or `"phone"`) for a normal outbound phone call — fully backward compatible. |
 | `agent_id` | uuid | yes | Agent the web caller talks to. |
 | `variables` | object | no | `{{Variable}}` values injected into the prompt. |
-| `metadata` | object | no | Arbitrary data attached to the resulting call log. |
+| `metadata` | object | no | Attached to the call. Same rules as `POST /calls` — reserved keys are `400 INVALID_METADATA_RESERVED_KEY`. |
+| `lead_id` | uuid | no | Attaches the call to that lead; the post-call pass writes to it. Not an id → `400`; not a lead here, or deleted → `404`. |
 | `allowed_origins` | string[] | no | Optional browser-origin allow-list for the session. |
+
+Any other field is `400 WEB_CALL_REQUEST_INVALID`, naming it.
 
 **Response 201**
 
 ```json
 {
   "type": "web",
+  "call_id": "uuid | null",
   "token": "wcs_…",
   "expires_at": "ISO8601",
   "agent_id": "…",
@@ -2667,6 +2731,16 @@ Mint a short-lived, single-use token for an **in-browser** voice call via the [`
   }
 }
 ```
+
+**The call exists at once.** `call_id` is readable with `GET /calls/{call_id}` straight
+away, with status `pending_connection` until the browser connects; then the same id runs
+the call. Unused, it settles `no_answer` (`failure.code: "session_expired"`,
+`ended_by: "system"`, `cost_cents: 0`) about a minute after the token expires — mint on
+click, not on page load. A `pending_connection` row holds no line and costs nothing until a browser connects.
+
+With `protocol: "call_request"` the mint answers `call_id: null`: the call request reports
+the call's id once it starts. Such an agent cannot take `lead_id` — `422
+WEB_LEAD_UNSUPPORTED`, and nothing is minted.
 
 **`connection.host` is not the API host.** It is the origin the other three URLs live
 on — named rather than left for you to parse out of them, so you can pin it, proxy it or
@@ -2708,10 +2782,18 @@ start it, the same way an outgoing call is placed on a preparing agent.
 
 **`protocol` says which exchange this agent needs.** `"offer"` is the one-shot
 connect every version of the SDK speaks. `"call_request"` means the agent's
-published workflow runs steps before it answers, so the browser must create the
-call, poll it and start it — see **Web calls on an agent that prepares** below.
+published workflow runs before-call steps **or has follow-ups (After steps)**, so the
+browser must create the call, poll it and start it — see **Web calls on an agent that
+prepares** below. A one-shot offer places a call with no workflow run, so a follow-up
+on it would never start. Always follow `protocol`; do not infer it from the workflow.
 A `call_request` token also lives 15 minutes rather than 5, because it has to
 outlast the steps it waits for.
+
+**Rehearsing an extracted-data follow-up.** A browser test call of an agent whose After
+step reads `/extracted_data/<name>` runs that step once analysis is ready: the call's
+`timeline` carries the `trigger` row, the tool row and the `delivery` row. If
+`execution.owner` is `legacy` on a call, the call had no workflow run and none of the
+agent's follow-ups ran on it.
 
 **Two-plane model.** Your server holds the secret API key and calls this endpoint to mint the token (control plane). The browser receives only `token` + `connection` and runs the WebRTC call (data plane) — your secret key never reaches the client. Every web call is metered and billed to the key's company exactly like any other call.
 
@@ -2744,8 +2826,8 @@ await call.endSession();
 
 ### Web calls on an agent that prepares
 
-An agent whose published workflow declares before-call steps cannot be started
-in one shot — a single SDP exchange has nowhere for that work to run. Such an
+An agent whose published workflow declares before-call steps, or follow-ups, cannot be
+started in one shot — a single SDP exchange has nowhere for that work to run. Such an
 agent's mint answers `protocol: "call_request"`, and the browser takes a
 three-step exchange instead. `@goyappr/client` does all of it when you pass
 `session.protocol` through; the endpoints are here for anyone writing their own
@@ -2798,7 +2880,8 @@ still good — wait and start again. `POST {cancel_url}` stops a request nobody 
 going to start.
 
 **The old one-shot connect still works**, unchanged, for every agent whose mint
-says `protocol: "offer"` — which is every agent with no before-call steps. An
+says `protocol: "offer"` — which is every agent with no before-call steps and no
+follow-ups. An
 older client that sends a one-shot offer to an agent that prepares gets
 `409 workflow_preparation_required`, and that refusal costs nothing: the token
 is not spent and no line is taken, so the same token can create a request
