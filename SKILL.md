@@ -243,9 +243,12 @@ An unpublished copy is not "receiving less traffic"; it is receiving none.
 
 Never re-POST `/agents/{id}/duplicate` without reusing the same `Idempotency-Key`
 across a retry: a new key makes a second, independent copy, not a fixed version
-of the first. And a copy is not isolated from its source's tools — its bindings
-pin the exact tool revisions the source uses, so archiving one affects both
-agents.
+of the first. And by default a copy is not isolated from its source's tools — its
+bindings pin the exact tool revisions the source uses, so editing or archiving one
+affects both agents. For a copy that goes to a second client, send `fork_tools: true`
+(needs `tools:create` too): each shared tool is copied as `"<tool> (copy)"` and the copy's
+bindings move to it. Header values are never copied, so `PATCH` each forked tool that
+reports `needs_values` before publishing the copy.
 
 Full field-by-field detail — what is copied, what is deliberately skipped, the
 tool-reference-invalid case, idempotency scoping — is in

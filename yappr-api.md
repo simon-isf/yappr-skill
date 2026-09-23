@@ -238,8 +238,14 @@ List all agents for the authenticated company, newest first.
 
 **Scopes:** `agents:read`
 
-**Query params:** `limit` (1–100, default 20), `offset`. No name search and no status
-filter — page and filter client-side. Archived agents are never listed.
+**Query params:** `limit` (1–100, default 20), `offset`, `name`. No status filter.
+Archived agents are never listed.
+
+**Find agents by name — `?name=<text>`.** Case-insensitive, anywhere in the name, and
+literal (`%`, `_` and `*` are not wildcards); newest first; `pagination.total` counts the
+matches. Names are not unique — match on `id` afterwards. An empty, repeated or
+over-200-character `name` is `400 AGENTS_QUERY_INVALID`, and so is any parameter this list
+does not read.
 
 **Response:** each row is the **whole agent object** — the same shape `GET /agents/:id`
 returns, not a summary — with a `pagination` envelope (`total`, `limit`, `offset`,
@@ -473,7 +479,7 @@ and `GET /agents/:id` carry no key at all.
 Copy an existing agent: its ordinary settings (voice, engine and engine_voice
 together, VAD, timeouts, background sound, extraction parameters, and the rest) and
 its current **draft** workflow document — bindings, positions, everything — become
-one new agent. The body, or no body at all, is optional; `{"name":"...","description":"...","language":"he"}`
+one new agent. The body, or no body at all, is optional; `{"name":"...","description":"...","language":"he","fork_tools":true}`
 are the only fields accepted, all optional. `name` defaults to `"<source name> (copy)"`,
 or the Hebrew equivalent when the copy's language is `he`; omitting `description` or
 `language` copies the source's own value, and sending `description: null` clears it on
@@ -485,10 +491,31 @@ The copy is created **unpublished** (`published_workflow_revision_id: null`) and
 moment it exists. Publish it yourself with the workflow endpoints, same as any other
 new agent; duplicating never publishes.
 
-The copy's workflow bindings keep the source's exact `tool_revision_id` pins, so the
-copy shares its source's tools rather than getting new ones. This is deliberate, and
-it has a consequence worth knowing: archiving a tool later breaks both agents
-together, not just the one you meant to change.
+**Without `fork_tools` the copy shares the source's tools.** Its workflow bindings keep
+the source's exact `tool_revision_id` pins, so a `PATCH /tools/{id}` changes both agents,
+and archiving a tool later breaks both together, not just the one you meant to change.
+
+**`fork_tools: true` gives the copy a separate tool for every shared tool**, in the same
+call, and repoints its bindings. It needs `tools:create` as well as `agents:create` —
+without it the request is `403 INSUFFICIENT_SCOPE` and nothing is copied. The response
+adds `tool_fork`:
+
+```json
+"tool_fork": {
+  "status": "complete" | "partial" | "failed",
+  "forked": [{ "tool_id": "uuid", "name": "Book slot (copy)", "source_tool_id": "uuid",
+               "source_name": "Book slot", "header_names": ["Authorization"],
+               "url_private_part_removed": true, "needs_values": true }],
+  "kept": [], "shared": []
+}
+```
+
+Forked names are `"<tool> (copy)"`, then `"(copy 2)"`. Header **values** and a URL's
+private query are never copied: a forked HTTP tool keeps its header names with empty values.
+For each forked tool with `needs_values`, `PATCH /tools/{tool_id}` with the values before
+publishing or activating the copy. On `partial` or `failed`, repeat the **same** request
+with the **same** `Idempotency-Key` and `fork_tools: true` — the copy and any tools
+already made are replayed, and the rest are forked.
 
 **Not copied — the phone side.** No phone number or SIP endpoint is repointed at the
 copy, and no shared web-call link is minted for it. A copy answers nothing until you
@@ -510,10 +537,10 @@ producing a copy nobody can publish: `409 WORKFLOW_REFERENCE_INVALID`, nothing
 written. Restore or remove the tool on the **source**, then duplicate again.
 
 **Scopes:** `agents:create` — duplicating adds an agent to the workspace, so a
-read-only key cannot do it.
+read-only key cannot do it. With `fork_tools: true`, also `tools:create`.
 
-**Request body:** Optional `name`, `description`, `language`. Nothing else is
-accepted.
+**Request body:** Optional `name`, `description`, `language` (`he` \| `en`),
+`fork_tools` (boolean). Nothing else is accepted.
 
 **Response:** `201` — the copy, in the same shape `POST /agents` returns. `200` on
 an idempotent replay. Same rule as create: the response echoes `idempotency_key`, a
@@ -660,7 +687,8 @@ call and `validate` answers `stored_context_has_no_writer`.
 
 **Point a binding at another tool.** Use `rebind` when one agent should call a
 different endpoint from the others — the usual case being an agent you duplicated
-for a second client, whose bindings still point at the first client's tool.
+for a second client without `fork_tools`, whose bindings still point at the first
+client's tool.
 
     POST /agents/{agent_id}/workflow/rebind
     { "expected_version": 7, "bindings": { "notify": "<tool_id>" } }
@@ -957,7 +985,7 @@ keys remain company-scoped. IDs, revision numbers and head generations are serve
 | `POST /tools/{id}/workflow-revisions` | `tools:update` | `{expected_revision, contract}` only; `201` with the new revision. Compare-and-swap on `expected_revision` (`null` when the tool has none). |
 | `GET /tool-apps` | `tools:read` | Curated discovery page, not account readiness. Toolkit-list versions may be absent. |
 | `GET /tool-apps/{slug}` | `tools:read` | App detail and available dated versions. |
-| `GET /tool-apps/{slug}/actions?version=YYYYMMDD_NN` | `tools:read` | Version-specific action page; pass opaque cursors unchanged. |
+| `GET /tool-apps/{slug}/actions?version=YYYYMMDD_NN` | `tools:read` | Version-specific action page, up to 50 rows; pass opaque cursors unchanged. `&search=` filters it (below). |
 | `GET /tool-apps/{slug}/actions/{action}?version=YYYYMMDD_NN` | `tools:read` | Full authoritative input/output schemas, local metadata ID, scope alternatives and reviewed eligibility/fixed-field policy. `latest` is not a pin. |
 
 **Discovery.** An app whose publisher has not dated it comes back on `GET /tool-apps`
@@ -970,6 +998,12 @@ you will not find documented elsewhere — `WORKFLOW_DATED_VERSION_REQUIRED` abo
 one named exception — always carried as `422` or `503`. Branch on the status, not the
 code — retry a `503` unchanged; a `422` means the catalog rejected the request itself, so
 re-read the app or action and correct the query.
+
+**Finding an action.** `GET /tool-apps/{slug}/actions?version=<dated>&search=free%20slots`
+filters by name, slug and description in the catalogue itself (1–100 characters, one line,
+up to 50 matches per page) and echoes `search`; a page without `search` was not filtered.
+An empty, over-100-character or multi-line `search` is `422 WORKFLOW_CATALOG_SEARCH_INVALID`. Action names are
+English.
 
 **Connected-app slugs.** The `{slug}` in `/tool-apps/{slug}` and its action routes matches
 `^[a-z0-9_]{1,100}$` — lowercase letters, digits and underscores. Google Calendar is
@@ -1033,6 +1067,23 @@ name is already taken is not refused — it answers `201`/`202` with the tool pl
 `warnings` as optional and never as a refusal — the tool in the same response was
 created either way; match tools by `id`, not by name.
 
+**A tool whose creation failed** (`workflow.status: "failed"`, `workflow.current: null`,
+e.g. `connection_unavailable`) is not a dead end. `GET /tools/{id}` shows what it asked
+for under `workflow.requested` (an app tool's `metadata_id`, `connection_id`, `toolkit`,
+`action`, `version`, `fixed_inputs`; a transfer tool's destination and announcement). Fix
+the cause (connect the account), then `PATCH /tools/{id}` with the **whole** tool, **no**
+`expected_head_*` fields and a **new** `Idempotency-Key`: it is built under the same id
+(`200` once current, `202` while building, `422` if it fails again) and needs
+`tools:create` as well as `tools:update`. An expected-head field on that retry is `422`;
+a creation still being built is `409 WORKFLOW_TOOL_CONFLICT`. Or `DELETE /tools/{id}` to
+remove it (a repeat answers `200`). Testing it first answers `409 WORKFLOW_TOOL_NOT_READY`.
+
+**Ids that name nothing.** An app tool whose `metadata_id` is not an action from
+`GET /tool-apps/{app}/actions/{action}`, or whose `connection_id` is not one of this
+workspace's `GET /tool-connections` rows, is `400 WORKFLOW_TOOL_REFERENCE_INVALID` with
+`issues[].path`, and nothing is written. An account that exists but is not ready is still
+`422` with the failed tool — fix it with the `PATCH` above.
+
 Keys contain 16–128 letters, digits, `_` or `-`. Preserve the identical accepted body
 and key after a lost response; reusing a key with changed content is
 `409 WORKFLOW_TOOL_IDEMPOTENCY_CONFLICT`. A stale `expected_head_revision_id` /
@@ -1095,10 +1146,10 @@ comes back as `422` carrying the tool with `workflow.status: "failed"` and
 ones `GET /tools/{id}` returns in `configuration.configured_header_names`; matching is
 exact, so renaming a header means sending its value again.
 
-A duplicated agent shares the original's tools by the same `tool_revision_id` pin — see
-**POST /agents/:id/duplicate** above. To give a copy its own endpoint instead of moving
-both, create a new tool and rebind the copy's step to it (see **Point a binding at
-another tool** above).
+A duplicated agent shares the original's tools by the same `tool_revision_id` pin unless it
+was duplicated with `fork_tools: true` — see **POST /agents/:id/duplicate** above. To give
+an existing copy its own endpoint instead of moving both, create a new tool and rebind the
+copy's step to it (see **Point a binding at another tool** above).
 
 #### Standalone saved-tool tests
 
@@ -1152,6 +1203,12 @@ List all tools. Optionally filter to a specific agent. `GET /tools` and
 
 **Query params:**
 - `agent_id` (uuid, optional) — filter to tools attached to this agent
+- `name` (optional) — case-insensitive, anywhere in the name, literal (`%`, `_` and `*`
+  are not wildcards); newest first; `pagination.total` counts the matches. Names are not
+  unique — match on `id` afterwards. An empty, repeated or over-200-character `name` is
+  `400 TOOLS_QUERY_INVALID`. `name` is not a filter on `GET /tools?workflow=true` (the
+  revision catalog): sending it there is `400 TOOLS_QUERY_INVALID` — use the default
+  `GET /tools?name=`, whose workflow rows carry the same `workflow` object.
 - `status` (optional) — a create that is accepted but cannot be built stays in the
   workspace at `workflow.status: "failed"` (reason in `workflow.error_code`,
   `workflow.current: null`); those rows, and only those, are left out of the default
