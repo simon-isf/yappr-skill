@@ -56,8 +56,10 @@ failed — and `stop_admission`, the default, refuses the call outright: the inb
 never answered, and an outbound request ends `failed` without dialling.
 Keep Before to what the agent must know in order to open its mouth; chaining several
 tools that may each take the full tool timeout will not fit an inbound window. Publication
-refuses a chain that fits neither window, and a document with before-call steps cannot
-offer the web channel at all — a one-shot browser connection has nowhere to run them.
+refuses a chain that fits neither window. A document with before-call steps may still offer
+the web channel: the browser call is created, prepared and then started by the caller, the
+same way an outgoing call is — the mint's `protocol` reads `call_request` instead of
+`offer` (see PHASE 3B).
 
 A before-call step can also **refuse the call itself**: route `on_succeeded` or
 `on_failed` to `"#decline"` (on failure the step must also continue on failure). An
@@ -101,6 +103,13 @@ Create with an Idempotency-Key, then poll the returned tool until materializatio
 finishes. Updates create immutable candidates: preserve the old head until all affected
 follow-current workflows validate. Explicit pins and accepted runs stay fixed. Omit
 private URL/headers to retain them; never save a sanitized display URL as an endpoint.
+An update changes only what it sends: every field you leave out — `description`, `effect`,
+`timeout_ms`, `method`, the call package — keeps its value, while a stored header left out
+of a `headers` object you *did* send is removed (that is the delete syntax; `null` keeps a
+stored value you cannot see). A create whose name another tool already carries still
+succeeds and answers `warnings[]` with `tool_name_in_use` — match tools by `id`. Before
+rotating a credential, `GET /tools/{id}/bindings` lists every agent that uses the tool and
+whether the new revision reaches it.
 
 A tool that already exists from the earlier `type`/`config` bodies carries no contract.
 Add one with `POST /tools/{id}/workflow-revisions` before a workflow can use it: read
@@ -120,10 +129,15 @@ authorize a legacy fallback or a real call; observe the deployment's readiness g
 
 **New journey — where a tool's arguments come from.** `bindings[].inputs` maps each
 field of a tool's `input_schema` to one source: `{"kind":"model","path":"/field"}` (the
-agent collects it; conversation only, one top-level name), `literal`, `request` /
-`stored` (the document's own schemas), `sequence` (inside a sequence), `step` (another
-step's output, `scope` `local` / `before` / `during`) and `artifact` (After only). Every
-source except `model` and `literal` takes `{"fallback":{"value":…}}`. Never write
+agent collects it; conversation only, one top-level name), `literal`, `request` (a value
+sent in `variables` on `POST /calls`, declared in the document's `request_schema`),
+`sequence` (inside a sequence), `step` (another step's output, `scope` `local` / `before` /
+`during`) and `artifact` (After only). `artifact` is also how what the agent extracted
+reaches a tool — `{"kind":"artifact","artifact":"analysis","path":"/extracted_data/<parameter>"}`,
+with `"requires": ["analysis"]` on the step; there is no separate "extracted" kind (see
+PHASE 4). Do not use `stored`: nothing writes saved context, so it is empty on every call
+and `validate` answers `stored_context_has_no_writer`. Every source except `model` and
+`literal` takes `{"fallback":{"value":…}}`. Never write
 `ai_extract` in a document — it is a runtime label. Full prose and a complete validated
 document: `/concepts/tool-inputs` and `/examples/complete-workflow.json` in the docs
 repo.
@@ -897,11 +911,17 @@ by another member, the handoff page says so and offers to call those off and car
 link that cannot be used says which it is — expired, called off, already finished,
 already opened, or one this workspace cannot open.
 
+**Cleaning up abandoned connections.** `GET /tool-connections?state=disconnected&toolkit=<slug>`
+lists them (`?state=` takes one state at a time; a filtered page can be short and still
+carry `next_cursor`). `POST /tool-connections/{id}/remove` takes an already-disconnected
+record off the list — `?state=removed` still reads it back — and each row's `created_by.id`
+tells your own key's records from a person's. See **Connected accounts** in `yappr-api.md`.
+
 **The native OAuth integrations are retired.** `GET /integrations` and `DELETE /integrations/{id}` answer `410` with `code: endpoint_retired` — they listed and revoked credentials that no longer exist. There is nothing to fall back to when a connection fails — retry the connection, never reach for the old path. Connect the calendar or mailbox as a connected account, then call it from a `sequence` step or an `action` node bound to that connection.
 
 ### Step 1B.4 — Build the graph
 
-Read the draft with `GET /agents/:id/workflow`, add your nodes/edges to `document.conversation` and your tool bindings to `document.bindings[]`, then save with `PUT /agents/:id/workflow` carrying the `expected_version` you just read. `POST /agents/:id/workflow/validate` checks the draft without saving; `POST /agents/:id/workflow/publish` makes it live. See *Canonical workflow authoring* in `yappr-api.md` for the exact request/response shapes and every `issues[]` code.
+Read the draft with `GET /agents/:id/workflow`, add your nodes/edges to `document.conversation` and your tool bindings to `document.bindings[]`, then save with `PUT /agents/:id/workflow` carrying the `expected_version` you just read. `POST /agents/:id/workflow/validate`, sent the `draft.version` the save answered with, checks that **saved** draft — it cannot check a document you have not saved, so save first — and neither saves nor publishes; `POST /agents/:id/workflow/publish` makes it live. See *Canonical workflow authoring* in `yappr-api.md` for the exact request/response shapes and every `issues[]` code.
 
 ### Step 1B.5 — Tools come from the same registry as Phase 2
 
@@ -1047,15 +1067,27 @@ Invoke only when:
 Before invoking, say: "One moment, let me check availability."
 Pass dates and times in natural language exactly as the caller said them ("Tuesday at three", not "2026-04-08T15:00").
 
-## endCall
-Invoke immediately when:
+</tools>
+
+<ending>
+End the call as soon as:
 - The caller says goodbye, bye, talk later, or similar
 - The call goal has been achieved and farewell has been said
-After your farewell words, invoke immediately — do not wait.
-</tools>
+After your farewell words, end the call — do not wait.
+</ending>
 ```
 
+Ending the call is not a tool (Rule 4 above): write *when* to end it as plain instructions,
+as in `<ending>`, and never describe an `endCall` tool the agent does not have.
+
 ### Step 2.3 — Test the Tool Webhook
+
+A tool created in Step 2.1 is a workflow tool: its test takes `{phase, channel, inputs,
+policy}` and an `Idempotency-Key`, answers `202` with a `test_id` to poll, and is mock by
+default — see **Standalone saved-tool tests** in `yappr-api.md`. Only a real test
+(`"policy": "allowlist"`, `"allowed_binding_ids": ["test_tool"]`) reaches the endpoint, and
+once it settles it shows up in `GET /deliveries?source=test&tool_id=…`. The shape below is
+the legacy `type`/`config` tool's, which delivers at once.
 
 After creating each tool, test delivery:
 
@@ -1189,7 +1221,7 @@ When the user wants voice **on their own website** (not a phone call), use the b
 
 Billing, voice, and language come from the agent config — same as any call. Audio-only in preview (no live transcript yet).
 
-A workflow agent whose published workflow runs before-call steps cannot serve a browser call: the mint succeeds, and the browser's connect is refused with `409 workflow_preparation_required` before the token is spent. Do not retry it — republish that workflow without the web channel, or without its before-call steps.
+A workflow agent whose published workflow runs before-call steps serves browser calls through a different exchange: the mint succeeds with `protocol: "call_request"` instead of `"offer"`, and the browser must create a call request, poll it, then start it (see **Web calls on an agent that prepares** in `yappr-api.md`). A browser that tries the one-shot `offer` connection on such an agent is refused with `409 workflow_preparation_required` before the token is spent — nothing is lost; switch to the exchange `protocol` names rather than republishing.
 
 ## PHASE 4: Post-Call Automation
 
@@ -1199,28 +1231,24 @@ What happens after a call ends. Configure this based on per-disposition routing 
 
 There is no agent-level `webhook_url` / `webhook_events` to configure — every agent this
 skill creates is a workflow agent (Phase 1), so "notify my system when X happens" is two
-ordinary API calls: give the tool an After-phase contract, then bind it into the workflow
-document's `after` array, one trigger per event.
+ordinary API calls: create the HTTP tool, then bind it into the workflow document's
+`after` array, one trigger per event.
 
-1. Create the tool once (Step 2.1), then add a workflow contract restricted to `after`:
-   ```bash
-   curl -s -X POST "https://api.goyappr.com/tools/TOOL_ID/workflow-revisions" \
-     -H "Authorization: Bearer $YAPPR_API_KEY" -H "x-company-id: $COMPANY_ID" \
-     -H "Content-Type: application/json" -d '{
-       "expected_revision": null,
-       "contract": {
-         "input_schema": {"type":"object","properties":{}},
-         "output_schema": {"type":"object","properties":{}},
-         "allowed_phases": ["after"]
-       }
-     }'
-   ```
+1. Create the tool once (Step 2.1). There is nothing to restrict: `POST /tools` takes no
+   `allowed_phases` (sending one is refused as a field the `http` variant does not take),
+   and a tool becomes an after-call step by being bound there. Read it back with
+   `GET /tools/{id}`: confirm `after` is in `workflow.current.allowed_phases`, and take the
+   **revision id**, `workflow.head_revision_id` (the matching row's `id` on
+   `GET /tools/workflow-catalog` is the same value). `POST /tools/{id}/workflow-revisions`
+   is only for importing a tool made with the old `type`/`config` body — it is not how a new
+   tool gets a phase.
 2. In the same `PUT /agents/:id/workflow` document you already have open (Phase 1), add a
-   `bindings` entry naming that revision and one `after` trigger per event:
+   `bindings` entry naming that **revision id** — never the tool id, which is refused as
+   `422 WORKFLOW_REFERENCE_INVALID` — and one `after` trigger per event:
    ```json
    {
      "bindings": [
-       { "id": "notify-endpoint", "tool_revision_id": "TOOL_ID" }
+       { "id": "notify-endpoint", "tool_revision_id": "TOOL_REVISION_ID" }
      ],
      "after": [
        { "id": "on-analyzed", "event": "analysis.ready",
@@ -1234,6 +1262,28 @@ document's `after` array, one trigger per event.
    refused, and the refusal does not name the field.
 3. Publish. A trigger step is validated the same as any other step —
    `POST /agents/:id/workflow/validate` returns the exact JSON pointer to fix.
+
+**Sending what the call collected.** The agent's extraction values are the `analysis`
+artifact's `extracted_data`, and they reach a tool through the binding's `inputs` with an
+ordinary artifact source — the step needs `"requires": ["analysis"]`:
+
+```json
+"inputs": {
+  "preferred_day": { "kind": "artifact", "artifact": "analysis", "path": "/extracted_data/preferred_day" },
+  "collected":     { "kind": "artifact", "artifact": "analysis", "path": "/extracted_data" }
+}
+```
+
+Every parameter is a key on every call, and one the conversation never covered is `null`,
+so a `fallback` never fires: declare a single-field input nullable
+(`"type": ["string", "null"]`), or send the whole `/extracted_data` into one input declared
+`"type": "object"`. Before publishing, `validate` warns `input_constant_placeholder` when a
+**required** input is frozen to a stand-in such as `n/a` or `TBD`, and
+`stored_context_has_no_writer` when an input reads `stored`, which nothing fills. Each
+parameter may carry a `type` — `text` (the default), `number`, `yes_no` or `date` — and
+`POST /agents/{id}/extraction/dry-run` reads a transcript you supply for them without a
+call, so a parameter set can be checked in CI. The same values also land on the lead,
+read-only, as `lead.extracted` (merged across that person's calls).
 
 **Where a call's results go, in the dashboard.** Extraction parameters on an agent only
 decide *what* is pulled out of the call; they do not decide where it lands — that is the
@@ -1316,9 +1366,10 @@ one a person downloads from the screen are the same file. That is also why it re
 joining `GET /calls`, [`GET /billing/consumption`](yappr-api.md) and
 `GET /dispositions` by hand: one file already has the cost and the outcome together.
 
-1. `limit` and `offset` are refused, not ignored — an export is the whole window at
-   once. To read a page of rows as JSON instead of a file, that is what `GET /calls` is
-   for.
+1. `limit`, `offset`, `cursor` and `updated_since` are refused, not ignored — an export
+   is one whole window of call starts, not a page of it and not "what changed since". To
+   read pages as JSON, or the calls that changed since your last run, use `GET /calls`
+   (`cursor`, `updated_since`) — which also carries each call's `id`; the file does not.
 2. One export tops out at **10000 rows** (`400 CALLS_EXPORT_TOO_LARGE`, naming the
    count) rather than being truncated — a file cut short would carry a wrong `Total`
    that says nothing about it. Split a bigger one by month.
@@ -1331,6 +1382,36 @@ joining `GET /calls`, [`GET /billing/consumption`](yappr-api.md) and
    rule `cost_cents` follows everywhere else.
 
 Field-by-field reference: `yappr-api.md` → **GET /calls/export**.
+
+### Journey — a monthly report from export + consumption
+
+When the user wants last month's report — what the calls were and what they cost — read
+two things for the same window, with a key that holds only `calls:read` and
+`billing:read`:
+
+```
+GET /calls/export?from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z
+GET /billing/consumption?from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z&group_by=agent,source
+```
+
+1. **The file is the call list**: one row per call with its agent, outcome, duration,
+   `Cost (USD)` and `Source`, closed by a `Total` line. Filter it the way `GET /calls` is
+   filtered — `?agent_id=` for one client's agent, `?source=` for one origin.
+2. **Consumption is the money**: `group_by=agent,source` gives one row per agent per
+   origin — `test` (the workspace's own rehearsals), `shared_link`, `api`, `phone_inbound`,
+   `phone_outbound` — so rehearsal spend is separated from the calls that were paid for
+   without exporting once per source. `group_by=agent,disposition` gives cost and outcomes
+   on the same row instead. Charges with no call behind them (a number's monthly rent, an
+   eval run) come back with `source: null`.
+3. **The two totals will not match to the cent, and that is not an error.** The export
+   windows on when calls *started* and its `to` is inclusive; consumption windows on when
+   charges were *debited* (a call is debited when it ends) and its `to` is exclusive. Calls
+   that straddle midnight on the 1st, and charges with no call, make the difference. Say so
+   in the report rather than forcing the two to agree.
+4. **Month to date** is `monthly_spend_cents` on `GET /billing` — reported whether or not a
+   spending limit is set, measured from `monthly_period_start` (the 1st, 00:00 UTC).
+5. Over 10000 calls in the month, the export refuses (`400 CALLS_EXPORT_TOO_LARGE`) —
+   split the window, and de-duplicate on `Started` where two windows meet.
 
 ### Journey — reading webhook deliveries across many calls
 
@@ -1346,8 +1427,13 @@ Each row is the same `delivery` row a call's own `timeline` carries, field for f
 plus the `call_id` it happened on — the same parser reads both. Filter by `tool_id`, by
 `agent_id` (deliveries the agent sent itself, **and** deliveries its tools sent on its
 calls — a workflow agent sends through its tools, so both count), by `call_id` to
-confirm one call's webhook fired, or by `status` (`delivered` / `failed` / `pending`;
-`failed` is the delivery-health query). Page with `pagination.next_cursor` until
+confirm one call's webhook fired, by `status` (`delivered` / `failed` / `pending` — rows
+still `pending` are listed too; `failed` is the delivery-health query), or by `source`:
+`live` is real traffic (a call, or a lead event, which can have `call_id: null`), `test` is
+a tool test you ran that actually reached the endpoint — a legacy webhook tool's test at
+once, a workflow tool's real `allowlist` test once it settles; a mock test writes nothing.
+Use `?source=live` for a delivery-health report, and `?source=test&tool_id=…` to answer
+"did my test reach the endpoint?". Page with `pagination.next_cursor` until
 `has_more` is `false` — cursor, not offset, because the log keeps growing while a long
 read is in flight, and an offset would silently skip or repeat rows. Send `cursor` only
 once you actually have one — like every filter here, an empty value is refused, and a
@@ -1539,8 +1625,9 @@ Concrete example pastes for common platforms:
 Before telling the user they're live, verify each item:
 
 - [ ] Agent exists and `is_active: true` (GET /agents/:id)
-- [ ] `end_call` system tool is attached to every agent
-- [ ] All webhook tools created, attached, and tested (POST /tools/:id/test)
+- [ ] The workflow is published (`published_workflow_revision_id` is set). There is no `end_call` tool to attach — ending the call is intrinsic (Step 1.8)
+- [ ] All tools created, bound in the workflow document, and tested (`POST /tools/:id/test`; a real test that reached the endpoint shows in `GET /deliveries?source=test`)
+- [ ] `GET /billing` → `monthly_budget_reached` is `false`, or outbound calls will answer `402 SPEND_BUDGET_REACHED`
 - [ ] Phone number is active (or pending regulatory approval with explanation)
 - [ ] Phone number is assigned to the correct agent(s)
 - [ ] Billing balance is above $5 (GET /billing)
@@ -1628,7 +1715,7 @@ Three things to say to the user before you build one, because they surprise peop
 
 ### Step 6.1 — Create the draft
 
-Name is the only required field, but pass whatever you already know. Every field below is PATCH-able later.
+Name is the only field required to create, but **no configuration field has a default**: whatever you leave out stays `null`, and launch refuses with `422 CAMPAIGN_NOT_READY` naming it. Pass what you already know now; every field is PATCH-able later, and Steps 6.3–6.4 fill the rest.
 
 ```bash
 curl -s -X POST "https://api.goyappr.com/campaigns" \
@@ -1644,7 +1731,7 @@ curl -s -X POST "https://api.goyappr.com/campaigns" \
 
 Save the returned `id` into the Phase 0 `EXISTING RESOURCES` block. `status` is `draft` — guaranteed, not incidental.
 
-- `409 DUPLICATE_NAME` → the workspace already has a non-archived campaign with that name. Pick a new name, or `GET /campaigns` and reuse the existing one (this is the create-vs-edit gate again: PATCH the existing campaign rather than minting a near-duplicate).
+- Names are **not** unique: a name another campaign already uses is accepted (`201`), so a retried create makes a second draft. `GET /campaigns` first and PATCH the existing draft rather than minting a near-duplicate — this is the create-vs-edit gate again. Tell campaigns apart by `id`.
 - `400` naming a field → the writable allowlist is strict, and **unknown or read-only keys are rejected, never ignored**. If you sent `status`, `spent_cents`, or a misspelling like `stop_dispositions`, fix the key and retry.
 
 ### Step 6.2 — Enroll contacts
@@ -1654,10 +1741,10 @@ Two inputs, usable in the same request, capped at **1,000 contacts per request**
 **From existing leads** (use this when the leads are already in Yappr, e.g. imported earlier or created by a lead-source integration):
 
 ```bash
-# Resolve ids first. GET /leads supports limit/offset/search (name, phone, email) —
-# there is no tag filter, so page through and select client-side if you need one.
-curl -s "https://api.goyappr.com/leads?limit=100" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq -r '[.data[] | select(.tags[]?.name == "Renewal") | .id]'
+# Resolve ids first. GET /leads filters by tag name (?tag=) or id (?tag_id=), plus
+# limit/offset/search. An unknown tag is 404 LEAD_TAG_UNKNOWN, never an empty page.
+curl -s "https://api.goyappr.com/leads?tag=Renewal&limit=100" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq -r '[.data[].id]'
 
 curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
@@ -1721,8 +1808,7 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
     "stop_disposition_ids": ["DO_NOT_CALL_ID", "NOT_INTERESTED_ID", "WRONG_NUMBER_ID", "APPOINTMENT_SET_ID"],
     "stop_on_no_answer": false,
     "stop_on_voicemail": true,
-    "stop_on_human_connect": true,
-    "human_connect_seconds": 20,
+    "stop_on_unclassified": false,
     "max_attempts": 3
   }' | jq '{stop_disposition_ids, stop_on_voicemail, max_attempts}'
 ```
@@ -1733,12 +1819,13 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
 
 | Instead of putting this in the stop set | Use |
 |---|---|
-| `No Answer` | `stop_on_no_answer: true` (default `false` — normally you *want* to retry an unanswered call) |
+| `No Answer` | `stop_on_no_answer: true` (usually `false` — normally you *want* to retry an unanswered call) |
 | `Voicemail` | `stop_on_voicemail: true` |
+| `Unclassified` | `stop_on_unclassified` — `false` retries the contact, `true` retires it |
 | `Failed` | nothing — platform failures use the separate `max_infra_retries` budget and never consume a dial attempt |
-| "we reached a human, we're done" | `stop_on_human_connect: true` (**default**) + `human_connect_seconds` |
+| "we reached a human, we're done" | a disposition of your own for that outcome (`POST /dispositions`), its id in `stop_disposition_ids` — there is no built-in human-connect rule |
 
-A launch needs at least one stop rule. `stop_on_human_connect` defaults to `true`, so the default config already has one — but a campaign whose whole point is "keep calling until they book" should arm the real outcome set anyway, or people who already said no will be redialled until the attempt cap.
+A launch needs at least one stop rule — a non-empty `stop_disposition_ids`, or `stop_on_no_answer` or `stop_on_voicemail` set to `true`. Nothing is armed by default, and all three booleans must be sent (none has a default). A campaign whose whole point is "keep calling until they book" should arm the real outcome set, or people who already said no will be redialled until the attempt cap.
 
 **Two independent stop conditions, whichever fires first:** `max_attempts` and the stop set. Everything that isn't a stop outcome retries after `retry_completed_seconds`, and an unanswered call retries after `retry_no_answer_seconds`.
 
@@ -1754,9 +1841,12 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
     "min_seconds_between_calls": 45,
     "max_in_flight": 2,
     "max_attempts": 3,
+    "max_infra_retries": 3,
     "retry_no_answer_seconds": 900,
     "retry_completed_seconds": 14400,
-    "disposition_timeout_seconds": 1800,
+    "randomize_retry_time": false,
+    "double_dial_enabled": false,
+    "double_dial_gap_seconds": 90,
     "budget_cents": 5000
   }' | jq '{regulatory_basis, max_calls_per_day, max_in_flight, budget_cents}'
 ```
@@ -1768,11 +1858,12 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
 | `max_in_flight` | 2 (max 8) | How many attempts this campaign may have outstanding. It is **self-restraint, not a capacity grant** — the platform's shared outbound lanes are the real ceiling, so raising it does not make the campaign faster once the queue is busy |
 | `max_attempts` | 3 | Per-contact dial cap |
 | `retry_no_answer_seconds` | 900 | Redial gap after nobody picks up |
-| `budget_cents` | the amount the user is comfortable spending | Enforced against spend **plus** in-flight reservations, so a campaign can't blow the cap with calls already dialing |
+| `budget_cents` | the amount the user is comfortable spending | Enforced against spend **plus** in-flight reservations, so a campaign can't blow the cap with calls already dialing. The workspace's own monthly limit (`PATCH /billing`) is a different number and can also pause the campaign as `paused_budget` |
+| every other configuration field | send it | None has a default — `max_infra_retries`, `randomize_retry_time`, `double_dial_enabled`, `double_dial_gap_seconds` included; launch names any still `null` |
 
-**`regulatory_basis` is required before launch** — one of `consent`, `existing_customer`, `non_marketing`, `registry_screened`. Ask the user which is true; do not pick for them. It is recorded on the launch audit event with the enrolled count, and it is the artefact that exists if anyone later asks why a person was called.
+**`regulatory_basis` is required before launch** — one of `lawful_basis_confirmed` (a single attestation that there is consent or another lawful basis for everyone on the list — what the dashboard records), `consent`, `existing_customer`, `non_marketing`, `registry_screened`. Ask the user which is true; do not pick for them. It is recorded on the launch audit event with the enrolled count, and it is the artefact that exists if anyone later asks why a person was called.
 
-**When the campaign may dial** comes from the workspace call windows (`GET`/`PUT /call-windows`), not from the campaign. If the user wants campaign-specific hours, set the workspace schedule accordingly and say so.
+**When the campaign may dial** is bounded by the workspace call windows (`GET`/`PUT /call-windows`). A campaign's own `calling_window` (`{tz, days, start, end}` — `tz`, an IANA zone name, is required once any of the others is set) can narrow those hours for this one campaign, never widen them.
 
 ### Step 6.5 — Launch
 
@@ -1851,10 +1942,12 @@ curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads/LEAD_ID" 
 |---|---|
 | Assign an agent before launching | `PATCH` with `agent_id` |
 | Assign a phone number to call from before launching | `PATCH` with `from_phone_number_id` |
-| `regulatory_basis` is required before launching | `PATCH` with `consent` / `existing_customer` / `non_marketing` / `registry_screened` — ask the user which is true |
-| Configure at least one stop rule before launching | Set `stop_disposition_ids`, or one of `stop_on_no_answer` / `stop_on_voicemail` / `stop_on_human_connect` |
+| `regulatory_basis` is required before launching | `PATCH` with `lawful_basis_confirmed` / `consent` / `existing_customer` / `non_marketing` / `registry_screened` — ask the user which is true |
+| Finish configuring the campaign before launching. Not set: … | `PATCH` every field it names — no configuration field has a default |
+| Configure at least one stop rule before launching | A non-empty `stop_disposition_ids`, or `stop_on_no_answer` / `stop_on_voicemail` set to `true` |
 | The assigned agent no longer exists | Point `agent_id` at a live agent (`GET /agents`) |
-| The assigned agent has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` — `0` = unlimited, which campaigns refuse because worst-case cost would be unbounded |
+| An agent on this campaign has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` on every agent the campaign calls with, the A/B test's second agent included — `0` = unlimited, which campaigns refuse because worst-case cost would be unbounded |
+| The second agent on this campaign's A/B test is not available | Point `split.agent_id` at an active agent in this workspace, or send `"split": null` |
 | The phone number assigned to this campaign is no longer active | Pick a number with `is_active: true` and `status: "active"` |
 | This workspace has no upcoming calling window | `PUT /call-windows` (and confirm the workspace timezone, which is dashboard-only) |
 | Enroll at least one contact before launching | `POST /campaigns/:id/leads` — and check the enroll report: everything may have been filtered as DNC or invalid |
@@ -1863,15 +1956,15 @@ curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads/LEAD_ID" 
 
 **`paused_insufficient_credit` auto-resumes; `paused` does not.** When the balance falls under the floor the campaign parks itself as `paused_insufficient_credit` and the tick re-checks every minute — after a top-up (checkout, auto-topup, or credit added by an admin) it returns to `running` on its own, with `last_tick_result: "resumed_credit_ok"`. Do not call `launch` in a loop, and do not tell the user to relaunch. Every **other** paused state (`paused`, `paused_budget`, `paused_infra`, `paused_config`) needs an explicit `resume` after the cause is fixed — deliberately, so a human pause is never undone by a payment.
 
-**`awaiting_disposition` means "wait", not "stuck".** Outcomes are classified asynchronously after the call ends — usually within seconds, occasionally much later. A contact sits in `awaiting_disposition` until it's classified or until `disposition_timeout_seconds` (default 1800) elapses, and `stop_on_unclassified` then decides whether to retire or retry it. **Never redial a contact in this state** and never "help" by placing a `POST /calls` to that number: the platform is deliberately holding it, and a manual dial can call somebody who already asked you to stop. If a user reports "it's stuck", check `attempts_in_flight` and `last_tick_result` before concluding anything.
+**`awaiting_disposition` means "wait", not "stuck".** Outcomes are classified asynchronously after the call ends — usually within seconds, occasionally much later. A contact sits in `awaiting_disposition` until its outcome arrives, however long that takes — there is no timeout that decides without one, and only that contact waits while the campaign keeps calling everyone else. When the outcome that arrives is `Unclassified`, `stop_on_unclassified` decides whether to retire or retry it. **Never redial a contact in this state** and never "help" by placing a `POST /calls` to that number: the platform is deliberately holding it, and a manual dial can call somebody who already asked you to stop. If a user reports "it's stuck", check `attempts_in_flight` and `last_tick_result` before concluding anything.
 
-**Other errors:** `400` naming a field means the writable allowlist rejected a key or a value range — fix the request, never work around it by re-creating the campaign. `409 DUPLICATE_NAME` means that name is taken by a non-archived campaign. `400 Campaign is completed/stopped/archived` means you're editing a terminal campaign; create a new one.
+**Other errors:** `400` naming a field means the writable allowlist rejected a key or a value range — fix the request, never work around it by re-creating the campaign. `400 Campaign is completed/stopped/archived` means you're editing a terminal campaign; create a new one.
 
-**Parsing campaign errors.** The three coded campaign errors put the machine code in `error` and the human text in `message` (`{"error": "CAMPAIGN_NOT_READY", "message": "Assign an agent before launching"}`), which is the reverse of the platform's usual `{"error": "<human>", "code": "<CODE>"}`. Read `code` first, then fall back to `error` when it looks like a code, and always surface `message` to the user — it names the one thing to fix.
+**Parsing campaign errors.** `409 ALREADY_IN_ACTIVE_CAMPAIGN` and `422 CAMPAIGN_NOT_READY` carry the code in `code` (repeated in `error`) and the human text in `message` — `{"error": "CAMPAIGN_NOT_READY", "code": "CAMPAIGN_NOT_READY", "message": "Assign an agent before launching"}`. Branch on `code`, and always surface `message` to the user — it names the one thing to fix.
 
 ### Report it like this
 
-When a campaign is live, tell the user: how many contacts enrolled (and how many were excluded as DNC/invalid), the stop rules in plain language ("we stop calling someone once they book, say no, or we reach a human"), the pace ("up to 150 calls a day, one every 45 seconds, within your 09:00–19:00 hours"), the spend cap, and how they'll know it's done. Then verify with `GET /campaigns/:id/stats` and quote the real numbers back — never just the launch response.
+When a campaign is live, tell the user: how many contacts enrolled (and how many were excluded as DNC/invalid), the stop rules in plain language ("we stop calling someone once they book or say no"), the pace ("up to 150 calls a day, one every 45 seconds, within your 09:00–19:00 hours"), the spend cap, and how they'll know it's done. Then verify with `GET /campaigns/:id/stats` and quote the real numbers back — never just the launch response.
 
 ---
 
@@ -1898,7 +1991,7 @@ curl -s -X PATCH "https://api.goyappr.com/agents/AGENT_ID" \
   -H "Content-Type: application/json" \
   -d '{"voice": "Maya"}'
 
-# Deactivate
+# Archive (irreversible — to pause an agent instead, PATCH {"is_active": false})
 curl -s -X DELETE "https://api.goyappr.com/agents/AGENT_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY"
 ```
@@ -1906,37 +1999,55 @@ curl -s -X DELETE "https://api.goyappr.com/agents/AGENT_ID" \
 ### Tools
 
 ```bash
-# List webhook tools
-curl -s "https://api.goyappr.com/tools" \
+# List workflow tools (page with next_cursor)
+curl -s "https://api.goyappr.com/tools?workflow=true&limit=50" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
-  | jq '[.data[] | select(.type == "webhook") | {id, name, description}]'
+  | jq '[.data[] | {id, name, kind: .workflow.kind, status: .workflow.status}]'
 
 # Get full config
 curl -s "https://api.goyappr.com/tools/TOOL_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
 
-# Patch
+# Patch a workflow tool: carry name, kind, both schemas and the two head tokens from a
+# fresh GET, plus only what changes. Every field left out keeps its value. Inside a
+# headers object you do send, null keeps a stored value and a stored header you leave
+# out is removed — so list every header you want to keep.
+curl -s "https://api.goyappr.com/tools/TOOL_ID" -H "Authorization: Bearer $YAPPR_API_KEY" \
+  | jq '{name, workflow: {kind: .workflow.kind,
+          input_schema: .workflow.current.input_schema,
+          output_schema: .workflow.current.output_schema,
+          configuration: {headers: {"Authorization": null, "X-Client": "client-42"}}},
+         expected_head_revision_id: .workflow.head_revision_id,
+         expected_head_generation: .workflow.head_generation}' > /tmp/tool-patch.json
 curl -s -X PATCH "https://api.goyappr.com/tools/TOOL_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
   -H "Content-Type: application/json" \
-  -d '{"config": {"url": "https://new-url.com/webhook", "method": "POST"}}'
+  --data-binary @/tmp/tool-patch.json | jq '.workflow.status'
 
-# Test webhook
+# Which agents use it, and does a rotation reach them
+curl -s "https://api.goyappr.com/tools/TOOL_ID/bindings" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  | jq '[.data[] | {agent_name, tool_revision_policy, rotation_reaches}]'
+
+# Test it. A workflow tool takes phase, channel, inputs and an Idempotency-Key, answers
+# 202 with a test_id to poll, and is mock by default (nothing is sent)
 curl -s -X POST "https://api.goyappr.com/tools/TOOL_ID/test" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
-
-# Get tools attached to a specific agent
-curl -s "https://api.goyappr.com/tools?agent_id=AGENT_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
-  | jq '[.data[] | {id, name, type, execution_order}]'
-
-# Detach from agent
-curl -s -X POST "https://api.goyappr.com/tools/detach" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
   -H "Content-Type: application/json" \
-  -d '{"agent_id": "AGENT_ID", "tool_id": "TOOL_ID"}'
+  -d '{"phase":"after","channel":"phone","inputs":{"order_id":"example-order"},"policy":"mock"}' | jq .
 
-# Deactivate
+# The tools an agent uses are its workflow document's bindings —
+# GET /tools?agent_id= lists legacy attachments only
+curl -s "https://api.goyappr.com/agents/AGENT_ID/workflow" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '.draft.document.bindings'
+
+# To take a tool off an agent, remove its binding (and every step that names it) from the
+# document, PUT it back, validate, publish. POST /tools/detach answers
+# 409 WORKFLOW_TOOL_OWNER_REQUIRED on a workflow agent.
+
+# Archive (idempotent — an already-archived tool answers 200 again)
 curl -s -X DELETE "https://api.goyappr.com/tools/TOOL_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY"
 ```
@@ -2051,9 +2162,9 @@ Gotchas worth flagging to the user:
 
 ## API Keys
 
-**Bootstrapping needs a human first.** `api_keys:manage` — the scope that lists, issues
-and revokes keys — can only be granted in the dashboard, by a person, under Settings →
-API keys. A key issued through `POST /api-keys` can never carry it, however much
+**Bootstrapping needs a human first.** `api_keys:manage` — the scope that issues and
+revokes keys, and reads them too — can only be granted in the dashboard, by a person, under
+Settings → API keys. A key issued through `POST /api-keys` can never carry it, however much
 authority the key minting it has, so there is no way to bootstrap key management purely
 from code: ask the user to create one key with that scope checked, hand you its secret,
 and every key after that you can mint yourself.
@@ -2075,6 +2186,20 @@ only a **subset** of what the calling key already holds — asking for more is
 `403 API_KEY_SCOPE_ESCALATION`, naming each scope that went beyond. A key cannot revoke
 itself (`409 API_KEY_SELF_REVOKE`); rotate by issuing the replacement, moving the
 integration onto it, then revoking the old one with `DELETE /api-keys/{id}`.
+
+**`api_keys:read` is the audit scope.** It lists keys (`GET /api-keys` — names, prefixes,
+scopes, `last_used_at`) and can neither issue nor revoke. It is in the dashboard's
+**Read-only** preset and can be granted through `POST /api-keys`. A key holding neither it
+nor `api_keys:manage` gets `403 INSUFFICIENT_SCOPE` on `GET /api-keys`, while `POST` and
+`DELETE` without `api_keys:manage` answer `401 INSUFFICIENT_SCOPE` — branch on the code, not
+the status, which is being unified on `403`.
+
+**Agent-scoped keys are not available yet.** A key reaches its whole workspace: scopes are
+resource types, never a list of agents, numbers or clients, and `POST /api-keys` has no
+field that narrows a key to some of them — an `agent_ids` list restricts nothing. When an
+agency wants one client's key to see only that client, the only confinement today is one
+workspace per client, and each workspace needs its own first key made by a person in the
+dashboard. Say so before promising anyone a per-client key.
 
 Field-by-field reference: `yappr-api.md` → **API Keys**.
 
@@ -2128,10 +2253,10 @@ For exact error codes and HTTP status meanings, see `yappr-api.md`. Quick refere
 | Status | Meaning |
 |--------|---------|
 | 400 | Bad request — check field names and values |
-| 401 | Auth failed — verify API key and scopes |
-| 402 | Billing — add balance or payment method |
-| 403 | Forbidden — resource not found or protected |
-| 429 | Rate limit or concurrent call limit — wait and retry |
+| 401 | Auth failed — verify API key and scopes (a missing scope is `401 INSUFFICIENT_SCOPE` on most routes) |
+| 402 | Billing — add balance or payment method (`BILLING_ERROR`), or the workspace's own monthly spending limit is reached (`SPEND_BUDGET_REACHED` — raise it with `PATCH /billing`, or it lifts on the 1st) |
+| 403 | Forbidden — resource not found or protected; also `INSUFFICIENT_SCOPE` on `GET /api-keys` and `PUT /call-windows`. Branch on `code`, not the status |
+| 429 | Rate limit (60 requests per minute per API key — wait the `Retry-After` seconds, then resend the same request) or concurrent call limit — wait and retry |
 | 500 | Server error — retry once |
 
 Always translate errors for the user. Don't show raw JSON to non-technical users.

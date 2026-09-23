@@ -83,9 +83,9 @@ curl -s -X POST "https://api.goyappr.com/resource" \
 | Status | Meaning | Action |
 |--------|---------|--------|
 | 400 | Bad request — field missing or invalid | Check error message |
-| 401 | Auth failed — invalid or missing key, or missing scope | Verify key and scopes |
-| 402 | Billing — insufficient balance or no payment method | Guide to billing setup |
-| 403 | Forbidden — resource not found or wrong company | Check resource IDs |
+| 401 | Auth failed — invalid or missing key, or (on most routes) a missing scope | Verify key and scopes |
+| 402 | Billing — insufficient balance or no payment method (`BILLING_ERROR`), or the workspace's own monthly spending limit is reached (`SPEND_BUDGET_REACHED`, see **PATCH /billing**) | Guide to billing setup, or raise the limit |
+| 403 | Forbidden — resource not found or wrong company, or `INSUFFICIENT_SCOPE` on the two routes named below | Check resource IDs and the key's scopes |
 | 429 | Rate limit or concurrent call limit | Wait and retry |
 | 500 | Server error | Retry once; if persistent, report |
 
@@ -98,6 +98,15 @@ names nothing more specific carries its status's code: `BAD_REQUEST` 400, `BILLI
 `RATE_LIMIT` 429, `INTERNAL_ERROR` 500, `UPSTREAM_ERROR` 502, `SERVICE_UNAVAILABLE` 503;
 anything else `REQUEST_FAILED`. `401` never falls back to a generic code — it is always one of
 `MISSING_KEY`, `INVALID_KEY`, `EXPIRED_KEY` or `INSUFFICIENT_SCOPE`.
+
+**A missing scope is `401` on most routes and `403` on two.** `GET /api-keys` and
+`GET /api-keys/:id` (a key holding neither `api_keys:read` nor `api_keys:manage`) and
+`PUT /call-windows` (no `call_windows:manage`) answer `403 INSUFFICIENT_SCOPE`: the key is
+valid for this workspace but not allowed that one operation. Every other route answers the
+account-wide `401 INSUFFICIENT_SCOPE` — `POST` and `DELETE /api-keys` included. Moving every
+missing-scope refusal to `403` is in progress, so branch on `code`, never on the status, and
+read neither status as a dead key: rotating it changes nothing — widen its scopes in the
+dashboard, or issue a key that holds the scope.
 
 - `404 RESOURCE_ID_INVALID` — the id in the path is not a UUID. A malformed id is a
   refusal, never the collection behind it.
@@ -126,8 +135,16 @@ anything else `REQUEST_FAILED`. `401` never falls back to a generic code — it 
   issue carries `node_id` and `label`. A transfer on an agent that also answers on `web` is
   a *warning* (`binding_channel_unsupported`, also carrying `node_id`/`label` where a step
   uses it) and still publishes — web callers reaching that step simply cannot use it.
-- `400 CALLS_QUERY_INVALID` — `GET /calls` with an unrecognised `status` or `direction`
-  (`scheduled` is not a status), or any unknown query parameter. Used to answer `500`.
+- `400 CALLS_QUERY_INVALID` — `GET /calls` (and `GET /calls/export`) with an unrecognised
+  `status`, `direction` or `source` (`scheduled` is not a status), any unknown query
+  parameter, a known filter sent with no value, an `agent_id` that is not a uuid, a
+  `from`/`to`/`updated_since` that is not an ISO 8601 timestamp (`2026`, `Sep 1` and
+  `2026-09-31` are all refused), or `cursor` together with `offset`. `GET /calls/export`
+  also refuses `limit`, `offset`, `cursor` and `updated_since` outright. Used to answer
+  `500` — and `?from=yesterday` used to answer `200` with a window nobody asked for.
+- `400 CALLS_CURSOR_INVALID` — the `cursor` on `GET /calls` was not issued by that endpoint.
+- `400 DELIVERIES_QUERY_INVALID` / `400 DELIVERY_CURSOR_INVALID` — the same two refusals on
+  `GET /deliveries`.
 - `400 SHARED_LINK_EXPIRY_INVALID` — `POST /shared-links` with an `expires_at` that does
   not parse as a date. Used to answer `500`.
 - `400 AGENT_IDEMPOTENCY_DUPLICATED` — two `Idempotency-Key` headers arrived on the same
@@ -169,7 +186,8 @@ undiallable is `400 INVALID_PHONE_NUMBER`. `source` may be `api` (default), `man
 `GET /leads` takes `limit`, `offset`, `search`, and `tag` (name) or `tag_id`; any other
 parameter is `400 LEADS_QUERY_INVALID`, and an unknown tag is `404 LEAD_TAG_UNKNOWN`.
 An agent tags a lead through `PATCH /leads/{id}` — extraction parameters land in
-`extracted_data` and the `call.analyzed` payload and never write tags themselves.
+`extracted_data` and the `call.analyzed` payload and never write tags themselves. They do
+reach the lead, read-only, as `extracted` (see **GET /leads/:id**).
 `tags` (names, matched exactly) and `tag_ids` each replace every tag on the lead and are
 applied whole: one unknown name is `400 INVALID_TAG_NAMES`, one unknown id is
 `400 INVALID_TAG_IDS`, and nothing is written either way. `[]` clears the tags.
@@ -593,9 +611,10 @@ calls that work:
 
 An input mapped `{"kind":"model","path":"/field"}` works only inside the conversation. A
 before-call step, a follow-up or a sequence child using one is `model_input_unavailable`
-— stage the value in `stored_schema`/`request_schema` and read it with
-`{"kind":"stored"}`/`{"kind":"request"}`, or read a produced result with
-`{"kind":"step"}`/`{"kind":"artifact"}`.
+— send the value in `variables` on `POST /calls`, declare it in `request_schema` and read it
+with `{"kind":"request"}`, or read a produced result with `{"kind":"step"}`/`{"kind":"artifact"}`.
+Never `{"kind":"stored"}`: nothing writes saved context, so that source is empty on every
+call and `validate` answers `stored_context_has_no_writer`.
 
 **Point a binding at another tool.** Use `rebind` when one agent should call a
 different endpoint from the others — the usual case being an agent you duplicated
@@ -698,6 +717,26 @@ name the field. Worked After trigger:
   {"id":"email","label":"Email the clinic the call summary",
    "binding_id":"email-summary","requires":["transcript"],"on_failure":"continue"}]}]}
 ```
+
+**Sending what a call collected.** The values an agent is configured to extract are the
+**analysis** artifact's `extracted_data`. An after-call step hands them to a tool with an
+ordinary artifact source — there is no special "extracted" kind:
+
+```json
+"inputs": {
+  "preferred_day": { "kind": "artifact", "artifact": "analysis", "path": "/extracted_data/preferred_day" },
+  "collected":     { "kind": "artifact", "artifact": "analysis", "path": "/extracted_data" }
+}
+```
+
+The step needs `"requires": ["analysis"]`. Each field sits at
+`/extracted_data/<the name you gave the parameter>`, and every parameter the agent
+collects is a key on every call: one the conversation never covered is stored as `null`.
+The pointer resolves, so a `fallback` on that source never fires — an input reading a
+single extracted field needs a type that accepts null (`"type": ["string", "null"]`) or the
+step fails on any call that did not cover it. `/extracted_data` as a whole avoids that, but
+only into an input declared `"type": "object"`. The same artifact carries `/summary` and
+`/disposition_id`. Saving checks none of this; `validate` and `publish` do.
 
 **Branching inside a sequence.** A sequence step may carry a `when` condition and
 route its outcome with `on_succeeded` / `on_failed`. Conditions are declarative data;
@@ -813,7 +852,13 @@ to declare the empty string deliberately.
 Validation warnings are safe codes: `strict_off_guidance`, `during_output_advisory`,
 `sequence_branch_advisory`, `before_reference_missing_fallback`, `binding_channel_unsupported`
 (a tool bound where the agent's channels outrun its contract — e.g. a phone-only transfer
-on an agent that also takes web calls; still publishes), or the generic `workflow_warning`.
+on an agent that also takes web calls; still publishes), `stored_context_has_no_writer` (a
+binding input reads `kind: "stored"`, which nothing ever fills — read it from `request` or
+an `artifact` instead), `input_constant_placeholder` (a **required** tool input is a
+`literal` that reads as a stand-in — `n/a`, `TBD`, `TODO`, `test`, `xxx`, empty, the Hebrew
+`לא רלוונטי` or `ל"ר` — and is sent exactly as written on every call), or the generic
+`workflow_warning`. The last two put `path` on the input itself,
+`/bindings/{n}/inputs/{field}`, and neither refuses a publish.
 Never discard an unknown warning or treat advisory ordering as enforced execution. A tool
 bound into a **phase** its contract excludes (`binding_phase_unsupported`) is not a
 warning — it is a refusal in `issues[]` and blocks Check/Publish, because no picker ever
@@ -854,7 +899,7 @@ keys remain company-scoped. IDs, revision numbers and head generations are serve
 | `GET /tools/{id}` | `tools:read` | Exact tool status, current revision and candidate/promotion state. No private HTTP headers or URL query values. |
 | `GET /tools/{id}/schema` | `tools:read` | Current typed input/output schemas; not a raw execution contract. |
 | `POST /tools` | `tools:create` | `{name, description?, workflow}` and mandatory `Idempotency-Key`; `201` materialized, `202` durably pending, `200` replay of a ready identity. |
-| `PATCH /tools/{id}` | `tools:update` | Full accepted definition plus `expected_head_revision_id` and numeric `expected_head_generation`, with an Idempotency-Key. Creates a candidate, never overwrites a frozen revision. |
+| `PATCH /tools/{id}` | `tools:update` | `name`, `workflow.kind`, what that kind is built from and the fields you are changing, plus `expected_head_revision_id` and numeric `expected_head_generation`, with an Idempotency-Key. Every field left out keeps its value (see **A `PATCH` changes what it sends** below). Creates a candidate, never overwrites a frozen revision. |
 | `DELETE /tools/{id}` | `tools:update` | Archives a workflow tool while retaining revisions/history; legacy deletion remains separate. Idempotent: an already-archived tool answers `200` again and keeps its first archive time, so only a tool outside the workspace is `404`. There is no `tools:delete` scope — a key cannot be issued with one. |
 | `GET /tools/{id}/workflow-revisions` | `tools:read` | The 100 newest contract revisions of one saved tool, newest first. Stored endpoint configuration is stripped from every row. |
 | `POST /tools/{id}/workflow-revisions` | `tools:update` | `{expected_revision, contract}` only; `201` with the new revision. Compare-and-swap on `expected_revision` (`null` when the tool has none). |
@@ -948,6 +993,22 @@ creation opportunity. Invalid contracts return `422`; unavailable control return
 256 KiB. Preserve nested schemas, defaults, combinators and exact JSON numbers; use a
 lossless JSON client for values outside JavaScript's safe integer range.
 
+**A `PATCH` changes what it sends and nothing else.** Every field you leave out keeps the
+value the tool already has — `description`, `effect`, `timeout_ms`, `configuration.method`,
+`include_call_context`, an app tool's `fixed_inputs`, a transfer tool's `announce_transfer`
+and `announce_message`. Send a field only to change it. That includes the call package: a
+tool with `include_call_context: false` stays that way until a change sends
+`"include_call_context": true` — leaving the key out keeps it off. A `description` sent as
+`""` clears it on purpose. What a change cannot leave out is what names the tool and what
+its kind is built from: `name`, `workflow.kind`, `expected_head_revision_id` and
+`expected_head_generation`, and for an HTTP tool `input_schema`, `output_schema` and
+`configuration` (`{}` when the endpoint is not changing), for an app tool `metadata_id` and
+`connection_id`, for a transfer tool `destination` — leave one out and it is a `422` naming
+it. (Before 2026-09-22 a header rotation that omitted `effect` and `timeout_ms` reset them to
+`write` and `30000` — a lookup tool silently became one the platform may call as a write —
+and one that omitted `description` blanked the sentence an agent picks the tool by.) `url`
+and `headers` keep the rules below, because their stored values are never handed back.
+
 On HTTP updates, omit private `configuration.url`/`headers` to retain their exact saved
 values. Empty headers clear them. `url_display` is non-executable text: never put it
 back into `url`; an explicit URL replaces the entire value including legitimate query
@@ -972,7 +1033,7 @@ Stored values are never returned, so on `PATCH /tools/{id}`:
 | `"headers": {}` | every header is cleared |
 | `"X-Client": "client-42"` | that header is set |
 | `"Authorization": null` | the value already stored under that exact name is kept |
-| a stored name you leave out | that header is removed |
+| a stored name you leave out of a `headers` you did send | that header is removed — this is the delete syntax. To change one header, send every header you want to keep, with `null` for each value you were never shown |
 
 `null` is refused outright on `POST /tools`, as `WORKFLOW_TOOL_REQUEST_INVALID` pointing
 at `/workflow/configuration/headers/<name>`. On `PATCH` the request is accepted and the
@@ -1149,7 +1210,7 @@ tool, and does the new revision reach them.
       "binding_id": "string",
       "tool_revision_policy": "follow_current" | "pinned",
       "tool_revision_id": "uuid",
-      "effective_revision_id": "uuid",
+      "effective_revision_id": "uuid | null",
       "rotation_reaches": true,
       "published": true,
       "draft": true
@@ -1210,7 +1271,7 @@ Create a new webhook tool.
 **Response:** `201` — full tool object
 
 **A legacy create renames your tool.** `POST /tools` with a `type`/`config` body stores
-the name camelCased: `critic-ron-notify-noshow` is created as `criticRonNotifyNoshow`,
+the name camelCased: `notify-no-show` is created as `notifyNoShow`,
 and a legacy `PATCH /tools/{id}` that renames a tool does the same. Read the stored name
 back out of the response and use that when you look the tool up or name it in a
 prompt — the string you sent will not match. A name sent with the `workflow` variant is
@@ -1220,7 +1281,12 @@ stored exactly as given, trimmed only.
 
 ### PATCH /tools/:id
 
-Update a webhook tool. Only include fields that should change.
+**A workflow-owned tool** (`workflow_version: "workflow_v1"`) is updated with the `workflow`
+body — see **A `PATCH` changes what it sends and nothing else** under *Unified versioned
+Tools* above: every field you leave out keeps its value. The rest of this section is the
+legacy `type`/`config` body.
+
+Update a legacy webhook tool. Only include fields that should change.
 
 **Scopes:** `tools:update`
 
@@ -1770,28 +1836,53 @@ List calls with optional filters and pagination.
 | Param | Type | Default | Notes |
 |-------|------|---------|-------|
 | `limit` | int | 20 | max 100 |
-| `offset` | int | 0 | pagination |
-| `agent_id` | uuid | — | filter by agent |
-| `status` | string | — | `ringing`, `in_progress`, `completed`, `failed`, `no_answer`, `dnc_blocked` (destination on the company DNC list — no carrier leg, no charge) |
+| `offset` | int | 0 | counts from the top of a list that grows while you read it. Send this or `cursor`, not both |
+| `cursor` | string | — | continue exactly where the last page stopped: `pagination.next_cursor`, opaque, on every page. This is the one to build a job on — an offset silently repeats or skips rows when calls arrive mid-walk. A cursor this endpoint did not issue is `400 CALLS_CURSOR_INVALID`, never a silent first page |
+| `agent_id` | uuid | — | filter by agent; anything that is not a uuid is `400 CALLS_QUERY_INVALID` |
+| `status` | string | — | `ringing`, `in_progress`, `completed`, `failed`, `no_answer`, `transferred`, `dnc_blocked` (destination on the company DNC list — no carrier leg, no charge) |
 | `direction` | string | — | `inbound`, `outbound`, `web_call` |
 | `callee` | string | — | filter by callee phone (E.164). Useful for counting prior attempts to the same lead within a retry window. |
 | `caller` | string | — | filter by caller phone (E.164) |
 | `ab_variant` | `a` \| `b` | — | Only calls answered/placed by one side of a number's split — `a` the number's own agent, `b` the second one. Calls on a number with no split carry no variant and are excluded by either value. |
 | `source` | string | — | Where the call came from: `test`, `shared_link`, `api`, `phone_inbound`, `phone_outbound`. `unknown` (a call recorded before this existed) is not a filter value. |
+| `disposition` | string | — | Only calls that ended with this outcome, by its label exactly as `GET /dispositions` returns it. A label this workspace does not have is `404 CALL_DISPOSITION_UNKNOWN`, not an empty page |
+| `disposition_id` | uuid | — | The same outcome filter by id. Send this or `disposition`, not both |
 | `from` | ISO8601 | — | `created_at` lower bound |
 | `to` | ISO8601 | — | `created_at` upper bound |
+| `updated_since` | ISO8601 | — | every call **changed** at or after this time, whatever its `created_at`. The filter an incremental sync wants; `from`/`to` are not |
 
-An unrecognised `status`, `direction` or `source`, or any parameter not in this table, is
-`400 CALLS_QUERY_INVALID` naming the value and the allowed set — not a 500. `scheduled`
-is not a status. A known filter sent with no value (`?agent_id=`) is refused the same
-way rather than returning every call in the workspace — leave the parameter out instead.
+An unrecognised `status`, `direction` or `source`, any parameter not in this table, an
+`agent_id` that is not a uuid, a `from`/`to`/`updated_since` that is not an ISO 8601
+timestamp (a date, or a date and time with `Z` or an offset — so `2026`, `Sep 1` and
+`2026/09/01` are refused, and so is `2026-09-31`, a day its month does not have), and
+`cursor` together with `offset`, are all `400 CALLS_QUERY_INVALID` naming the parameter —
+not a 500, and never a window silently reinterpreted (`?from=yesterday` used to answer `200`
+with a different window). `scheduled` is not a status. A known filter sent with no value
+(`?agent_id=`) is refused the same way rather than returning every call in the workspace —
+leave the parameter out instead.
+
+**Syncing calls into your own system.** Every row carries `updated_at`, and almost
+everything worth coming back for — `status`, `ended_at`, `duration_seconds`, `cost_cents`,
+the matched `lead`, the `disposition`, the whole `analysis` object — settles *after* the row
+is created. A sync windowed on `created_at` therefore reads each call once, at its youngest
+and emptiest, and never learns the rest landed. `updated_at` is stamped when a change
+*starts* being written and is readable only once the write finishes, and your clock is not
+the server's, so windows that merely touch can skip a change for good. Record the time
+before a run starts; ask the next run for `?updated_since=<that time minus 5 minutes>` and
+page it by `cursor` to exhaustion; upsert each call by `id`, keeping whichever copy has the
+newer `updated_at` (the overlap hands you some calls twice, by design). A call you stored
+while its `analysis.status` was still `pending` is worth re-reading by id until it settles.
+While paging by cursor, `pagination.total` counts the calls still ahead of the cursor, not
+the whole list.
 
 **Common pattern — "has this lead already been tried today?"**
 
 ```
-GET /calls?agent_id=...&callee=+972XXXXXXXXX&from=2026-04-19T00:00:00Z
+GET /calls?agent_id=...&callee=+972XXXXXXXXX&from=2026-04-19T00:00:00Z&limit=1
 ```
-Response's `data.length` gives you the prior-attempt count. Use in retry-throttle logic (automation platforms like Make.com/n8n get clean counting without iterating the response).
+Read `pagination.total` — the number of calls matching the filters — as the prior-attempt
+count, not `data.length`, which is capped by `limit` (20 by default) and undercounts a busy
+number. Use in retry-throttle logic (automation platforms like Make.com/n8n get clean counting without iterating the response).
 
 **Response:**
 ```json
@@ -1808,6 +1899,7 @@ Response's `data.length` gives you the prior-attempt count. Use in retry-throttl
       "ended_at": "ISO8601",
       "duration_seconds": 120,
       "created_at": "ISO8601",
+      "updated_at": "ISO8601",
       "tool_calls_count": 2,
       "ab_variant": "a" | "b" | null,
       "source": "test" | "shared_link" | "api" | "phone_inbound" | "phone_outbound" | "unknown",
@@ -1822,7 +1914,8 @@ Response's `data.length` gives you the prior-attempt count. Use in retry-throttl
     "total": 100,
     "limit": 20,
     "offset": 0,
-    "has_more": true
+    "has_more": true,
+    "next_cursor": "opaque string | null"
   }
 }
 ```
@@ -1835,15 +1928,18 @@ exception and is on every row. A month's spend or a failure report is this list 
 not one `GET /calls/:id` per call; a sync can page this list and decide what to do with
 each call — `analysis.status: "done"` means the values are ready on the detail read,
 `"pending"` means come back later, `"skipped"`/`"failed"` mean nothing more is coming.
+`updated_at` is on every row, and `GET /calls/:id` carries the same value.
 
 ---
 
 ### GET /calls/export
 
 The call log as a CSV file, filtered exactly the way `GET /calls` above is filtered —
-same query params, `?limit`/`?offset` **refused** here (`400 CALLS_QUERY_INVALID`): an
-export is the whole window at once, not a page. This is the dashboard's own **Export
-CSV**, addressable.
+same query params, except that `limit`, `offset`, `cursor` and `updated_since` are
+**refused** here (`400 CALLS_QUERY_INVALID`): an export is one whole window of call starts,
+not a page of it and not what changed since it last ran. A file answered for
+`updated_since` would carry the whole `from`/`to` window while reading as everything that
+changed. This is the dashboard's own **Export CSV**, addressable.
 
 **Scopes:** `calls:read`
 
@@ -1852,7 +1948,9 @@ on empty, not on a translated word), `A/B`, `Direction`, `Status`, `Disposition`
 `To`, `Duration` (seconds), `Cost (USD)` (a bare decimal; **empty**, never `0`, on a call
 that has not settled), `Source`, `Shared link ID` (only on a `shared_link` call). The
 last line is `Total` with the summed cost over calls in the file that have settled. The
-file opens with a UTF-8 BOM, so Hebrew names open correctly in a spreadsheet.
+file opens with a UTF-8 BOM, so Hebrew names open correctly in a spreadsheet. There is
+no call-id column, so the file cannot be joined back to calls row by row — to join calls to
+your own records, page `GET /calls` (JSON, with `id`) over the same window instead.
 
 **The row limit.** One export carries at most **10000** calls; a window holding more is
 `400 CALLS_EXPORT_TOO_LARGE`, naming the count — never truncated. Page a larger export by
@@ -1895,6 +1993,7 @@ Get full details of a single call, including resolved lead and disposition objec
   "source": "test" | "shared_link" | "api" | "phone_inbound" | "phone_outbound" | "unknown",
   "shared_link_id": "uuid",
   "cost_cents": 12,
+  "updated_at": "ISO8601",
   "analysis": { "status": "pending" | "done" | "skipped" | "failed", "reason": "string | null", "completed_at": "ISO8601 | null" },
   "transcript": [ { "role": "agent|user", "text": "string", "start": 0, "end": 0 } ],
   "transcript_live": [ { "role": "agent|user", "text": "string", "start_ms": 0, "end_ms": 0, "source": "gemini|openai", "interrupted": true } ],
@@ -2011,6 +2110,10 @@ Get full details of a single call, including resolved lead and disposition objec
 }
 ```
 
+**`updated_at`** — When this call last changed: the same field the list rows carry, so a
+sync that pages `GET /calls?updated_since=` and then reads a call by id for its transcript
+and analysis keeps the timestamp its loop windows on.
+
 **`metadata`** — The metadata object you attached at `POST /calls`. Empty object `{}` if no metadata was provided at call creation.
 
 **`extracted_data`** — Present **only when extraction ran**: an agent with no
@@ -2057,8 +2160,9 @@ a person and its wording changes. `failure.stage` is `dialing`, `connecting`,
 `conversation` or `null`. `failure.at` is when the failure was recorded, or `null`.
 
 Codes: `no_answer`, `busy`, `rejected`, `cancelled`, `unreachable` (all `dialing`);
-`network_blocked` — a browser call the caller's own network never let connect — and
-`voice_unavailable` (both `connecting`); `call_interrupted` and `transfer_failed` (both
+`caller_left` — a browser call the caller closed, or navigated away from, before it
+connected — `network_blocked` — a browser call the caller's own network never let
+connect — and `voice_unavailable` (all three `connecting`); `call_interrupted` and `transfer_failed` (both
 `conversation`); `unknown` when nothing recorded why. Treat a code you do not recognise
 as `unknown` rather than as an error in your integration.
 
@@ -2931,6 +3035,8 @@ List leads with optional search and pagination.
 | `limit` | int | 20 | max 100 |
 | `offset` | int | 0 | pagination |
 | `search` | string | — | search by name, phone, or email |
+| `tag` | string | — | only leads carrying this tag, by name exactly as `GET /lead-tags` returns it |
+| `tag_id` | uuid | — | the same filter by id. Send `tag` or `tag_id`, not both. An unknown tag is `404 LEAD_TAG_UNKNOWN`, not an empty page; any other parameter is `400 LEADS_QUERY_INVALID` |
 
 **Response:**
 ```json
@@ -2958,11 +3064,23 @@ Get a single lead with full details including tags.
   "source": "string | null",
   "tags": [ { "id": "uuid", "name": "string", "color": "#hex" } ],
   "long_term_context": "string | null",
+  "extracted": { "preferred_day": "Tuesday", "policy_number": "4471-B" },
   "metadata": {},
   "created_at": "ISO8601",
   "updated_at": "ISO8601"
 }
 ```
+
+**`extracted`** — what this lead's calls collected, keyed by each extraction parameter's
+own name, merged across every call with that person: the most recent call that answered a
+field wins it, and a field that call never covered keeps the answer an earlier call found.
+Only answers are merged, so this is not a copy of any one call's `extracted_data` (which
+carries every parameter, `null` for the ones that call never covered) — a parameter no call
+has answered is absent here. At most 100 fields: the latest call's answers stay, and
+earlier ones fill the rest in order of their names. `null` until a call collects
+something; the values arrive with the call's analysis, a minute or two after it ends.
+Read-only: it is stored under the reserved `metadata.extracted` key, neither `POST /leads`
+nor `PATCH /leads/{id}` can set it, and replacing `metadata` does not erase it.
 
 ---
 
@@ -2981,7 +3099,7 @@ Create a lead.
 | `tags` | string[] | no | Tag names, matched exactly — resolved to IDs server-side. One unknown name is `400 INVALID_TAG_NAMES` and nothing is written |
 | `tag_ids` | uuid[] | no | Alternative to `tags` — pass UUIDs directly. One unknown id is `400 INVALID_TAG_IDS`. Send one of the two, not both: `tags` wins when both are present |
 | `long_term_context` | string | no | AI memory injected into system prompt at call time |
-| `metadata` | object | no | Arbitrary JSONB |
+| `metadata` | object | no | Arbitrary JSON object. The reserved key `extracted` is dropped — only a call writes it |
 
 **Response:** `201` — full lead object
 
@@ -3093,21 +3211,20 @@ an internal enum, and the retired prompt-agent fields (`system_prompt`, `flow_co
   "from_phone_number_id": "uuid | null",
   "from_number": "+972... | null",      // audit snapshot, taken at launch
 
+  "split": { "agent_id": "uuid", "percent": 30 } | null,
   "retry_rules": {},
   "calling_window": {},
 
   "stop_disposition_ids": ["uuid"],
   "stop_on_no_answer": false,
   "stop_on_voicemail": false,
-  "stop_on_human_connect": true,
-  "human_connect_seconds": 20,
   "stop_on_unclassified": false,
 
   "max_attempts": 3,
-  "max_infra_retries": 5,
-  "disposition_timeout_seconds": 1800,
-  "retry_no_answer_seconds": 60,
-  "retry_completed_seconds": 14400,
+  "max_infra_retries": 3,
+  "retry_no_answer_seconds": 3600,
+  "retry_completed_seconds": 86400,
+  "randomize_retry_time": false,
   "double_dial_enabled": false,
   "double_dial_gap_seconds": 90,
 
@@ -3123,7 +3240,7 @@ an internal enum, and the retired prompt-agent fields (`system_prompt`, `flow_co
   "spent_cents": 0,
   "reserved_cents": 0,
 
-  "regulatory_basis": "consent | existing_customer | non_marketing | registry_screened | null",
+  "regulatory_basis": "lawful_basis_confirmed | consent | existing_customer | non_marketing | registry_screened | null",
 
   "last_tick_at": "ISO8601 | null",
   "last_tick_result": "string | null",
@@ -3138,6 +3255,7 @@ an internal enum, and the retired prompt-agent fields (`system_prompt`, `flow_co
   "created_by": "uuid | null",
 
   "agent": { /* full agent object, or null */ },
+  "split_agent": { /* full agent object for split.agent_id, or null */ },
   "from_phone_number": { /* full phone-number object, or null */ },
   "stop_dispositions": [ { /* full disposition object */ } ]
 }
@@ -3155,37 +3273,42 @@ Create a campaign. **It always lands as `draft`** — `status` is not writable, 
 
 **Response:** `201` — full campaign object.
 
+**No configuration field has a default.** Only `name` is required to create, but every
+field you leave out stays `null`, and `POST /campaigns/:id/launch` then answers
+`422 CAMPAIGN_NOT_READY` naming each one. The **Suggested** column below is what the
+dashboard prefills for a person, not what the API substitutes for you. Send every field on
+create, or fill the gaps with `PATCH` before launching — how often to call someone and when
+to stop are decisions the platform will not make on your behalf.
+
 #### Client-writable fields
 
 This exact allowlist applies to both `POST` and `PATCH`. **Any other key — including a typo or a read-only field — is rejected with `400`** and a message listing the writable set. This is deliberate: silently ignoring a misspelled `stop_dispositions` would leave you believing you armed a kill switch when you did not.
 
-| Field | Type | Default | Validation / notes |
+| Field | Type | Suggested | Validation / notes |
 |-------|------|---------|--------------------|
-| `name` | string | — | **Required on create.** Trimmed. Must be unique among the workspace's non-archived campaigns → `409 DUPLICATE_NAME` |
+| `name` | string | — | **Required on create.** Trimmed. **Not unique** — a name another campaign already uses is accepted (`201`), so a retried create makes a second draft. Tell campaigns apart by `id` |
 | `description` | string | null | Free text |
-| `agent_id` | uuid | null | Required before launch |
-| `from_phone_number_id` | uuid | null | Required before launch; must be an active number the workspace owns |
+| `agent_id` | uuid | — | Required before launch |
+| `from_phone_number_id` | uuid | — | Required before launch; must be an active number the workspace owns |
 | `split` | object \| null | null | Optional two-agent A/B test — `{ "agent_id": "...", "percent": 1-99 }`. `percent` is the **second** agent's share of contacts; `agent_id` on the campaign above takes the rest. See [Testing two agents on a campaign](#testing-two-agents-on-a-campaign) below |
-| `retry_rules` | object | `{}` | JSON object (not an array). See [retry_rules and calling_window](#retry_rules-and-calling_window) before using it |
-| `calling_window` | object | `{}` | JSON object. **Not the gate that decides when a campaign dials** — see the same note |
+| `retry_rules` | object | — | Leave it out. The dialer never evaluates it — see [retry_rules and calling_window](#retry_rules-and-calling_window) |
+| `calling_window` | object | `{}` | Optional narrowing of the workspace calling hours for this campaign — it can never widen them. `{}` follows the workspace hours; see the same note |
 | `stop_disposition_ids` | uuid[] | `[]` | Array of **disposition ids**, never labels. Every id must belong to this workspace, or `400` |
 | `stop_on_no_answer` | boolean | `false` | Retire a contact the first time nobody picks up |
 | `stop_on_voicemail` | boolean | `false` | Retire a contact on a voicemail-class outcome |
-| `stop_on_human_connect` | boolean | `true` | Retire a contact once a human demonstrably answered — independent of taxonomy |
-| `human_connect_seconds` | int | 20 | 5–300. Talk time that counts as "a human answered" |
-| `stop_on_unclassified` | boolean | `false` | `true` retires a contact whose call was never classified before `disposition_timeout_seconds`; `false` retries it |
-| `max_attempts` | int | 3 | 1–10. Per-contact dial cap |
-| `max_infra_retries` | int | 5 | 0–20. Separate budget for platform-side failures, which never count against `max_attempts` |
-| `disposition_timeout_seconds` | int | 1800 | 60–86400. How long to wait for the outcome classifier before deciding without it |
-| `retry_no_answer_seconds` | int | 60 | 30–604800. Wait before redialing an unanswered contact |
-| `retry_completed_seconds` | int | 14400 | 60–604800. Wait before redialing a contact whose call connected but landed a non-stop outcome |
+| `stop_on_unclassified` | boolean | `false` | What to do when the outcome that arrives is `Unclassified` — the call happened but matched none of your outcomes. `false` retries, `true` retires. Not a timeout: a contact is never advanced without an outcome |
+| `max_attempts` | int | 3 | 1–999. Per-contact dial cap |
+| `max_infra_retries` | int | 3 | 0–20. Separate budget for platform-side failures, which never count against `max_attempts` |
+| `retry_no_answer_seconds` | int | 3600 | 30–604800. Wait before redialing an unanswered contact |
+| `retry_completed_seconds` | int | 86400 | 60–604800. Wait before redialing a contact whose call connected but landed a non-stop outcome |
+| `randomize_retry_time` | boolean | `false` | `false` keeps a retry at the same time of day; `true` picks another hour inside the calling window. Never earlier than the configured wait either way |
 | `double_dial_enabled` | boolean | `false` | Pair a second ring with an unanswered attempt |
-| `double_dial_gap_seconds` | int | 90 | 10–3600 |
+| `double_dial_gap_seconds` | int | 90 | 10–3600. Required before launch even when `double_dial_enabled` is `false` |
 | `max_calls_per_day` | int | 200 | 1–100000. Resets on the workspace's own calendar day |
 | `min_seconds_between_calls` | int | 30 | 0–86400. Minimum spacing between two admissions |
 | `max_in_flight` | int | 2 | 1–8. How many attempts *this* campaign may have outstanding. Self-restraint, not a capacity grant — the platform's shared outbound lanes are the real ceiling |
 | `budget_cents` | int \| null | null | Positive integer, or `null` for no cap. Enforced against `spent_cents + reserved_cents` |
-| `regulatory_basis` | string | null | One of `consent`, `existing_customer`, `non_marketing`, `registry_screened`. **Required before launch** |
+| `regulatory_basis` | string | — | One of `lawful_basis_confirmed` (a single attestation of consent or another lawful basis for everyone on the list — what the dashboard records), `consent`, `existing_customer`, `non_marketing`, `registry_screened`. **Required before launch** |
 | `starts_at` | ISO8601 | null | Do not admit before this instant |
 | `ends_at` | ISO8601 | null | Do not admit after this instant |
 
@@ -3198,7 +3321,17 @@ curl -s -X POST "https://api.goyappr.com/campaigns" \
     "agent_id": "AGENT_ID",
     "from_phone_number_id": "PHONE_NUMBER_ID",
     "regulatory_basis": "existing_customer",
+    "stop_disposition_ids": ["NOT_INTERESTED_ID", "APPOINTMENT_SET_ID"],
+    "stop_on_no_answer": false,
+    "stop_on_voicemail": true,
+    "stop_on_unclassified": false,
     "max_attempts": 3,
+    "max_infra_retries": 3,
+    "retry_no_answer_seconds": 3600,
+    "retry_completed_seconds": 86400,
+    "randomize_retry_time": true,
+    "double_dial_enabled": false,
+    "double_dial_gap_seconds": 90,
     "max_calls_per_day": 150,
     "min_seconds_between_calls": 45,
     "max_in_flight": 2,
@@ -3214,10 +3347,10 @@ Never writable; sending any of them returns `400`. Read them from `GET /campaign
 
 #### retry_rules and calling_window
 
-Both are stored as-is and echoed back, and the dashboard's campaign wizard writes them (`retry_rules` = `{max_attempts_default, fallback, by_disconnect_reason, by_disposition}` keyed by disposition **id**; `calling_window` = `{tz, days:[0..6], start:"HH:MM", end:"HH:MM"}`). For an API-driven campaign, prefer the scalar controls, which are the ones the pacer reads:
+`retry_rules` is an earlier structured retry matrix that the dialer never evaluates — leave it out. The scalar controls are the whole retry configuration, and they are what the pacer reads:
 
-- retry timing → `retry_no_answer_seconds`, `retry_completed_seconds`, `max_attempts`, `max_infra_retries`
-- when the campaign may dial → the **workspace** call windows (`GET`/`PUT /call-windows`). That is the gate the pacer evaluates; a campaign with no reachable workspace window refuses to launch and pauses itself as `paused_config`.
+- retry timing → `retry_no_answer_seconds`, `retry_completed_seconds`, `randomize_retry_time`, `max_attempts`, `max_infra_retries`
+- when the campaign may dial → the **workspace** call windows (`GET`/`PUT /call-windows`) are the outer gate; a campaign with no reachable workspace window refuses to launch and pauses itself as `paused_config`. `calling_window` (`{tz, days:[0..6], start:"HH:MM", end:"HH:MM"}`) can only narrow those hours for this one campaign, never widen them.
 
 **`calling_window` needs a zone.** `{}` inherits the workspace calling hours — this is an
 optional per-campaign narrowing, not the gate itself (see above). As soon as the object
@@ -3225,7 +3358,7 @@ sets `days`, `start` or `end`, `tz` (an IANA name such as `Asia/Jerusalem`) is r
 `"09:00-18:00"` says nothing until it says whose nine in the morning. Setting one without
 the other is `400`.
 
-Leave both at `{}` unless you are deliberately mirroring dashboard state.
+Leave `calling_window` at `{}` unless you want this one campaign to dial inside narrower hours than the workspace.
 
 #### Testing two agents on a campaign
 
@@ -3278,7 +3411,7 @@ Update any subset of the writable fields above. Safe while a campaign is `runnin
 - `400` when the campaign is `completed`, `stopped`, or `archived` (no longer editable)
 - `400` when the body contains no writable field
 - `400` on an unknown/read-only key, an out-of-range value, or a `stop_disposition_ids` entry from another workspace
-- `409 DUPLICATE_NAME` on a name collision
+- a rename is never refused for the name alone — campaign names do not have to be unique
 
 **Response:** `200` — full updated campaign object.
 
@@ -3390,7 +3523,7 @@ The enrolled contacts and their per-contact state, oldest enrollment first.
 | `excluded` | Removed by you, by `stop`, or by archive. Terminal |
 | `dnc` | On the do-not-call list. Terminal |
 
-`stop_reason` (and the attempt ledger's settle reason) is one of: `stop_disposition`, `non_stop_disposition`, `disposition_timeout`, `no_answer`, `voicemail`, `dial_failed`, `infra_failure`, `insufficient_credit`, `queue_expired`, `never_dialed`, `dnc_blocked`, `orphan_reaped`, `cancelled`, `lead_removed`, `manual`.
+`stop_reason` (and the attempt ledger's settle reason) is a short code; values you will see include `disposition`, `stop_disposition`, `non_stop_disposition`, `disposition_timeout`, `no_answer`, `voicemail`, `dial_failed`, `infra_failure`, `insufficient_credit`, `queue_expired`, `never_dialed`, `dnc_blocked`, `orphan_reaped`, `cancelled`, `lead_removed`, `manual`.
 
 ---
 
@@ -3492,19 +3625,23 @@ curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/launch" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq '{status, last_tick_result, error, message}'
 ```
 
-#### Launch preflight — the nine causes of `422 CAMPAIGN_NOT_READY`
+#### Launch preflight — the causes of `422 CAMPAIGN_NOT_READY`
+
+All of these must hold; the first failure is the one you get back, named in `message`.
 
 | Message | Fix |
 |---|---|
 | Assign an agent before launching | `PATCH` with `agent_id` |
 | Assign a phone number to call from before launching | `PATCH` with `from_phone_number_id` |
-| `regulatory_basis` is required before launching | `PATCH` with one of the four bases |
-| Configure at least one stop rule before launching | Set `stop_disposition_ids`, or one of `stop_on_no_answer` / `stop_on_voicemail` / `stop_on_human_connect` |
+| `regulatory_basis` is required before launching | `PATCH` with one of the five bases |
+| Finish configuring the campaign before launching. Not set: … | `PATCH` every field it names — none has a default: `max_attempts`, `max_infra_retries`, `retry_no_answer_seconds`, `retry_completed_seconds`, `randomize_retry_time`, `stop_on_no_answer`, `stop_on_voicemail`, `stop_on_unclassified`, `double_dial_enabled`, `double_dial_gap_seconds`, `max_calls_per_day`, `min_seconds_between_calls`, `max_in_flight` |
+| Configure at least one stop rule before launching | A non-empty `stop_disposition_ids`, or `stop_on_no_answer` / `stop_on_voicemail` set to `true` |
 | The assigned agent no longer exists | Point `agent_id` at a live agent |
-| The assigned agent has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` — `0` means unlimited, which makes the campaign's worst-case cost unbounded |
+| An agent on this campaign has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` on every agent the campaign calls with, the A/B test's second agent included — `0` means unlimited, which makes the campaign's worst-case cost unbounded |
+| The second agent on this campaign's A/B test is not available | Point `split.agent_id` at an active agent in this workspace, or send `"split": null` |
 | The phone number assigned to this campaign is no longer active | Pick an `is_active` number with `status: "active"` |
 | This workspace has no upcoming calling window | Fix `PUT /call-windows` (and the workspace timezone, which is dashboard-only) |
-| Enroll at least one contact before launching | `POST /campaigns/:id/leads` |
+| Enroll at least one contact before launching | `POST /campaigns/:id/leads` — at least one contact must still be callable (`pending` or `scheduled`) |
 
 ---
 
@@ -3517,7 +3654,7 @@ curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/launch" \
 | `running` | Admitting calls | — |
 | `paused` | **You** paused it | **No** — a manual pause survives a top-up. Call `resume` |
 | `paused_insufficient_credit` | Balance under the floor needed to place a call | **Yes** — the tick re-checks every minute and resumes from any funding path (checkout, auto-topup, admin credit) |
-| `paused_budget` | `spent_cents + reserved_cents` would exceed `budget_cents` | No — raise `budget_cents`, then `resume` |
+| `paused_budget` | `spent_cents + reserved_cents` would exceed `budget_cents`, or the workspace's own monthly spending limit is reached | No — raise whichever of the two fired (`budget_cents`, or `PATCH /billing`), then `resume` |
 | `paused_infra` | Transient platform problem (e.g. the from-number went inactive, calls dispatched but never dialed) | No — fix the cause, then `resume` |
 | `paused_config` | Permanent config problem (no reachable calling window, agent without a duration cap) | No — fix the config, then `resume` |
 | `completed` | Nothing live left to dial. Terminal | — |
@@ -3557,8 +3694,9 @@ Two independent per-contact stop conditions, whichever fires first:
 Rules that matter:
 
 - **`stop_disposition_ids` holds disposition ids, never labels.** Labels are renameable per workspace; ids are stable. Read them from `GET /dispositions`.
-- **Never put `No Answer`, `Failed`, or `Voicemail` in `stop_disposition_ids`.** Those three labels are *also* auto-assigned, and the classifier legitimately assigns them to real conversations — putting them in the stop set retires people you actually reached. Use `stop_on_no_answer` / `stop_on_voicemail` (and `stop_on_human_connect`) instead, which are evaluated on the call's outcome class rather than its label.
-- **Outcomes are classified asynchronously after the call ends**, typically within seconds but occasionally much later. A contact sits in `awaiting_disposition` until it's classified or until `disposition_timeout_seconds` elapses; `stop_on_unclassified` decides what happens then. The platform will not redial a contact in `awaiting_disposition`, and neither should you.
+- **Never put `No Answer`, `Failed`, `Voicemail` or `Unclassified` in `stop_disposition_ids`.** Those labels are *also* auto-assigned, and the classifier legitimately assigns them to real conversations — putting them in the stop set retires people you actually reached. Use `stop_on_no_answer` / `stop_on_voicemail` / `stop_on_unclassified` instead, which are evaluated on the call's outcome rather than its label.
+- **There is no built-in "reached a human" rule.** To stop calling people you have already spoken to, create a disposition for that outcome (`POST /dispositions`) and put its id in `stop_disposition_ids`.
+- **Outcomes are classified asynchronously after the call ends**, typically within seconds but occasionally much later. A contact sits in `awaiting_disposition` until its outcome arrives, however long that takes — there is no timeout that decides without one, and only that contact waits while the campaign keeps calling everyone else. `stop_on_unclassified` decides what happens when the outcome that arrives is `Unclassified`. The platform will not redial a contact in `awaiting_disposition`, and neither should you.
 - **A disposition that is a stop rule on a live campaign cannot be deleted.** `DELETE /dispositions/:id` is refused at the database layer (it surfaces as a `500`, not a clean error) rather than silently disarming your kill switch. Remove the id from every non-terminal campaign's `stop_disposition_ids` first. (The 10 seeded defaults are `403 PROTECTED` anyway, so this bites on custom outcomes.)
 
 ### Compliance
@@ -3574,13 +3712,12 @@ Rules that matter:
 |---|---|---|
 | 400 | message names the field | Unknown or read-only key, out-of-range value, non-object `retry_rules`/`calling_window`, stop-disposition id from another workspace, empty PATCH, editing a terminal campaign, enrolling into a terminal campaign, over 1,000 contacts in one enroll |
 | 404 | — | Campaign not in this workspace (or archived); contact not enrolled |
-| 409 | `DUPLICATE_NAME` | Another non-archived campaign already uses that name |
 | 409 | `ALREADY_IN_ACTIVE_CAMPAIGN` | A number is live in another active campaign |
 | 422 | `CAMPAIGN_NOT_READY` | Launch preflight failed; `message` names the single blocking cause |
 | 422 | `INVALID_SPLIT` | A malformed or out-of-range `split` on create/update — see [Testing two agents on a campaign](#testing-two-agents-on-a-campaign) |
 | 422 | `INVALID_AGENT` | `agent_id` names an agent from another workspace or one that no longer exists — `message` names the field |
 
-> **Envelope note — campaigns invert the usual error shape on 409/422.** The three coded errors above return `{ "error": "<CODE>", "message": "<human text>" }` — the machine code is in `error`, not in `code`. Plain `400`/`404`/`500` responses use the standard `{ "error": "<human text>" }`. So parse defensively: read `code` first, then fall back to `error` when it matches `^[A-Z_]+$`.
+> **Envelope note — the two coded campaign conflicts carry the code twice.** `409 ALREADY_IN_ACTIVE_CAMPAIGN` and `422 CAMPAIGN_NOT_READY` return `{ "error": "<CODE>", "code": "<CODE>", "message": "<human text>" }` — branch on `code` and show `message`; `error` repeats the code rather than carrying prose. `INVALID_SPLIT` and `INVALID_AGENT` use the ordinary `{ "error": "<human text>", "code": "<CODE>" }`. Plain `400`/`404`/`500` responses use `{ "error": "<human text>" }`.
 
 ---
 
@@ -3746,14 +3883,29 @@ shekel.
 **`api_keys:manage` only starts with a person.** It is off by default and can only be
 ticked when a person creates a key in the dashboard's Settings → API keys, under **API
 keys → Manage**. A key issued through this API can never receive it, however wide the
-issuing key's own scopes are, so key issuance stays one generation deep.
+issuing key's own scopes are, so key issuance stays one generation deep. Each workspace
+needs its own first key: a key belongs to one workspace and cannot issue keys in another.
+
+**`api_keys:read` audits without changing anything.** It lists and reads keys — names,
+prefixes, scopes, `last_used_at` — and can neither issue nor revoke. It is in the
+dashboard's **Read-only** preset, and unlike `api_keys:manage` it *can* be granted through
+`POST /api-keys`: give it to a job that should watch the inventory and nothing else.
+
+**A key reaches its whole workspace — there are no agent- or client-scoped keys yet.**
+Scopes are resource types (`calls:read`, `leads:manage`, …), never a list of agents,
+numbers or clients: a key that can read calls reads every agent's calls. `POST /api-keys`
+takes `name` and `scopes` and nothing else that narrows a key, so sending something like
+`agent_ids` restricts nothing. To confine one client's key to that client today, give the
+client its own workspace, with its own first key made by a person in the dashboard.
 
 ### GET /api-keys · GET /api-keys/:id
 
 Every active key in the workspace, newest first (revoked keys are not listed), or one key
 by id (`404` once revoked).
 
-**Scopes:** `api_keys:manage`
+**Scopes:** `api_keys:read`, or `api_keys:manage` (which reads the list as well). A key
+holding neither gets `403 INSUFFICIENT_SCOPE` here — not the `401` the two routes below
+answer for a missing `api_keys:manage`.
 
 **Response (list):**
 ```json
@@ -3792,6 +3944,8 @@ another.
   `403 API_KEY_SCOPE_ESCALATION`, naming each scope that went beyond.
 - **`api_keys:manage` is never granted here** — `403 API_KEY_MANAGE_NOT_DELEGABLE`.
   Create that key in the dashboard.
+
+`api_keys:read` is granted here like any other scope.
 
 **Response:** `201`
 ```json
@@ -3835,7 +3989,9 @@ integration onto it, then revoke the old one.
 **Errors** (all three endpoints): `400 API_KEY_REQUEST_INVALID` (`name` missing/over 100
 characters, or `scopes` missing/empty/not an array of strings); `400
 API_KEY_SCOPE_UNKNOWN` (a requested scope does not exist — check it against the Scope
-Map); `401 INSUFFICIENT_SCOPE`; `403 API_KEY_SCOPE_ESCALATION` /
+Map); `INSUFFICIENT_SCOPE` — `403` on the two `GET`s (neither `api_keys:read` nor
+`api_keys:manage`), `401` on `POST` and `DELETE` (no `api_keys:manage`); the move to `403`
+everywhere is in progress, so branch on the code; `403 API_KEY_SCOPE_ESCALATION` /
 `403 API_KEY_MANAGE_NOT_DELEGABLE`; `404 NOT_FOUND`; `409 API_KEY_NAME_TAKEN` /
 `409 API_KEY_SELF_REVOKE`; `503 API_KEY_STORAGE_UNAVAILABLE` (nothing was
 created/revoked — retry).
@@ -4083,18 +4239,21 @@ to fetch back for those.
 
 ### GET /deliveries
 
-Every settled webhook delivery in your workspace, newest first, across calls — how you
-confirm a configured webhook actually fired, for one call, for one tool across a week, or
-for everything that failed last night. A row here is the `delivery` row of a call's
-`timeline` (`GET /calls/:id`), field for field, plus `call_id`. Before this endpoint,
-checking delivery health across many calls meant paging `GET /calls` and opening each
-one.
+Every webhook delivery in your workspace — settled, or still `pending` — newest first,
+across calls: how you confirm a configured webhook actually fired, for one call, for one
+tool across a week, or for everything that failed last night. A row here is the `delivery`
+row of a call's `timeline` (`GET /calls/:id`), field for field, plus `call_id` and
+`source`. Before this endpoint, checking delivery health across many calls meant paging
+`GET /calls` and opening each one.
 
 **Scopes:** `tools:read`
 
 **Query params:** `tool_id`, `agent_id`, `call_id`, `status` (`delivered` \| `failed` \|
-`pending`), `from`, `to`, `limit` (≤ 200), `cursor`. Every filter here is refused with no
-value, same as `GET /calls` — send `cursor` only once you have one.
+`pending`), `source` (`live` \| `test`), `from`, `to` (a real ISO 8601 timestamp — a
+month-end its month does not have, like `2026-09-31`, is refused), `limit` (1–200,
+default 50), `cursor`. Anything else, a value outside its set, or a filter sent with no
+value is `400 DELIVERIES_QUERY_INVALID`, same as `GET /calls` — send `cursor` only once
+you have one.
 
 **Response:**
 ```json
@@ -4103,27 +4262,42 @@ value, same as `GET /calls` — send `cursor` only once you have one.
     {
       "kind": "delivery",
       "id": "uuid",
-      "call_id": "uuid",
+      "call_id": "uuid | null",
       "at": "ISO8601",
-      "delivered_at": "ISO8601 | null",
+      "delivered_at": "ISO8601",
       "event": "call.answered",
+      "source": "live" | "test",
       "status": "delivered" | "failed" | "pending",
       "response_status": 200,
       "attempt_count": 1,
       "error_message": "string | null",
-      "tool_name": "string"
+      "tool_name": "string | null"
     }
   ],
-  "pagination": { "limit": 50, "has_more": true, "next_cursor": "opaque string" }
+  "pagination": { "limit": 50, "has_more": true, "next_cursor": "opaque string | null" }
 }
 ```
 
-`status` is the field to branch on. `response_status` is what your endpoint answered
+`status` is the field to branch on: `delivered` — your endpoint accepted it; `failed` — it
+did not, after every attempt; `pending` — it has not settled yet. `at` is when it settled,
+and `delivered_at` is the same moment under the name the per-call timeline uses — never a
+separate "was it delivered" flag. `response_status` is what your endpoint answered
 with, `null` when nothing answered at all. `attempt_count` includes the attempt that
 settled it. `error_message` is one sentence for a person, only on a failure — wording may
 change, so branch on `status`/`response_status`, never on the text. `tool_name` is the
 tool whose step sent the delivery, or, for an agent not yet on the workflow engine, the
 agent itself.
+
+**Real traffic and rehearsals — `source`.** `live` is real traffic: a call, or a lead
+event (`lead.created`, `lead.updated`), which can belong to no call and then has
+`call_id: null`. `test` is a `POST /tools/{id}/test` that actually reached your endpoint — a
+legacy webhook tool's test at once, a workflow tool's **real** test (`"policy":
+"allowlist"`, `"allowed_binding_ids": ["test_tool"]`, an `http` tool) once its request
+settles. A mock test sends nothing and writes no row, and neither does a connected-app
+action, which is not a webhook. A rehearsal happens on no call, so its `call_id` is `null`
+and its `event` carries a `test:` prefix — branch on `source`, not on the event's spelling.
+Left out, `?source=` returns both; `?source=live` keeps rehearsals out of a delivery-health
+report, and `?source=test&tool_id=…` answers "did my test reach the endpoint?".
 
 `agent_id` filters both eras of an agent: deliveries it sent itself, and deliveries its
 tools sent on its calls (a workflow-engine agent sends through its tools). Summaries
@@ -4220,7 +4394,7 @@ member can reach in the dashboard has a public endpoint behind it.
 | POST /tools/detach | `tools:update` |
 | POST /tools/:id/test | `tools:update` |
 | GET /deliveries | `tools:read` |
-| GET /api-keys, GET /api-keys/:id | `api_keys:manage` |
+| GET /api-keys, GET /api-keys/:id | `api_keys:read` or `api_keys:manage` |
 | POST /api-keys | `api_keys:manage` |
 | DELETE /api-keys/:id | `api_keys:manage` |
 | POST /agents/:id/extraction/dry-run | `agents:read` |
@@ -4262,6 +4436,7 @@ member can reach in the dashboard has a public endpoint behind it.
 | GET /tool-connections, /tool-connection-auth-attempts/:id | `tool-connections:read` |
 | POST /tool-connections, /tool-connections/:id/reconnect | `tool-connections:manage` |
 | DELETE /tool-connections/:id | `tool-connections:manage` |
+| POST /tool-connections/:id/remove | `tool-connections:manage` |
 | POST /tool-connections/attempts/:id/cancel | `tool-connections:manage` |
 | GET /do-not-call (list/get) | `do_not_call:read` |
 | POST /do-not-call | `do_not_call:manage` |
@@ -4344,12 +4519,13 @@ Connection control is available on deployments that enable the workspace connect
 | Endpoint | Scope | Contract |
 | --- | --- | --- |
 | `GET /tool-apps/connection-options` | `tools:read` | Authentication-configured app slugs/names; discovery is `GET /tool-apps`, neither executes an action. |
-| `GET /tool-connections` | `tool-connections:read` | Safe company metadata, 50 records/page, opaque `next_cursor`. Pass the cursor unchanged; it binds company and environment. |
+| `GET /tool-connections` | `tool-connections:read` | Safe company metadata, 50 records/page, opaque `next_cursor`. Pass the cursor unchanged; it binds company and environment. `?state=` (one record state, or `removed`) and `?toolkit=` (one slug from `GET /tool-apps/connection-options`) narrow it; anything else in the query string is `400 CONNECTION_INVALID`. |
 | `GET /tool-connections/{id}` | `tool-connections:read` | Exact account status, with server checks coalesced for 15 seconds. |
 | `POST /tool-connections` | `tool-connections:manage` | Body `{ "toolkit": "gmail", "label": "Team mailbox", "locale": "en" }`; returns `201 {connection, attempt, handoff_url}`. Hosted OAuth only; no provider ownership fields or manual secrets accepted here. |
 | `GET /tool-connection-auth-attempts/{id}` | `tool-connections:read` | Exact local attempt plus safe connection state. Never infer success from list differences or browser messages. |
 | `POST /tool-connections/{id}/reconnect` | `tool-connections:manage` | Body `{ "mode": "replace", "locale": "en" }`; returns a fresh one-time human handoff. Same-account reauthorization is not yet exposed. |
 | `DELETE /tool-connections/{id}` | `tool-connections:manage` | Returns `202 {connection}` after immediate local denial; removal at the connected-app service and manual revocation in the provider account may still be outstanding. Repeated requests do not advance the authorization epoch again. |
+| `POST /tool-connections/{id}/remove` | `tool-connections:manage` | Takes a record that is **already disconnected** off the list. `200 {connection}`; repeating it is safe. Not a delete: nothing is disconnected, revoked or erased. |
 | `POST /tool-connections/attempts/{id}/cancel` | `tool-connections:manage` | Cancels an authorization attempt nobody is going to open. Use the `attempt.id` a create or reconnect returned, not the connection id. |
 
 `POST /tool-connections` requires both `toolkit` and `label` — omitting `label` is
@@ -4379,7 +4555,52 @@ or wait: an attempt nobody finishes is closed server-side ten minutes after it s
 The workspace also has a ceiling of 120 starts in ten minutes, counted whatever became of
 them, so connecting and cancelling in a loop is refused the same way.
 
-Safe read DTOs expose only local Yappr IDs, toolkit, label, verified provider identity when available, readiness, decimal-string `binding_revision`/`authorization_epoch`, disconnect progress and timestamps. Replacement increments immutable identity and authorization generations for future bindings; pinned work never silently changes accounts. Disconnect blocks new actions immediately, while already sent actions may finish. Three `disconnect_progress` values: `record_deleted` — nothing was ever bound to this connection, so there is nothing left to take back (the usual outcome for an authorization that was never finished); `manual_revocation_required` — an account was bound, so a human should remove Yappr's access in the provider account's own app-access settings too; `unknown` — that step needs reconciliation, read the connection again. Connection deletion is not proof that a grant was revoked.
+Safe read DTOs expose only local Yappr IDs, toolkit, label, verified provider identity when available, readiness, decimal-string `binding_revision`/`authorization_epoch`, disconnect progress and timestamps. Replacement increments immutable identity and authorization generations for future bindings; pinned work never silently changes accounts. Disconnect blocks new actions immediately, while already sent actions may finish. Where a `DELETE` settles, in `disconnect_progress`: `record_deleted` — nothing was ever bound to this connection, so there is nothing left to take back (the usual outcome for an authorization that was never finished); `manual_revocation_required` — an account was bound, so a human should remove Yappr's access in the provider account's own app-access settings too; `unknown` — that step needs reconciliation, read the connection again; `pending` — local denial is committed and the upstream step has not reported yet, so read the connection again for its settled value. `none` means the connection has not been disconnected. Connection deletion is not proof that a grant was revoked.
+
+**Who started it.** Every record carries `created_by` (whoever started the first
+authorization) and `started_by` (whoever started the most recent one — a replacement is
+usually somebody else), each `{"type": "user" | "api_key", "id": "..."}` and never `null`.
+The id stays after that member leaves or that key is revoked; there is no name or address.
+Compare `created_by.id` with your own API key's id to tell your integration's records from
+a person's before cleaning anything up.
+
+**Taking a disconnected record off the list.** `POST /tool-connections/{id}/remove` hides a
+record that is already disconnected; `?state=removed` reads it back, with `removed_at` set.
+The record, its id, label and audit trail are kept.
+
+| | `DELETE /tool-connections/{id}` | `POST /tool-connections/{id}/remove` |
+| --- | --- | --- |
+| does | blocks new tool actions, advances the authorization epoch | stops listing the record |
+| needs first | any state | already disconnected |
+| repeating it | safe | safe, answers the same record |
+
+Not disconnected yet → `409 CONNECTION_STILL_CONNECTED`; send the `DELETE` first. Somebody
+is connecting it again right now → `409 CONNECTION_ATTEMPT_OPEN`; wait for that
+authorization to finish or expire (ten minutes), or cancel it with
+`POST /tool-connections/attempts/{id}/cancel`. A removed record never comes back by itself:
+`POST /tool-connections/{id}/reconnect` still works on it, and once that authorization
+completes the record is working again, `removed_at` is `null` and it is back on the list.
+A filtered page is a page of **matches**, not of records — it can hold fewer than 50 rows,
+or none, and still carry a `next_cursor`, so never stop on a short page. Cleaning up a
+workspace you share: list `?state=disconnected&toolkit=<slug>`, keep only the rows whose
+`created_by.id` is your own key's id, then `remove` each.
+
+**Turning a connected account into a tool.** A connected account is not yet something an
+agent can call. With the same `x-company-id` on every call:
+
+1. `GET /tool-apps/{slug}/actions?version=<dated version>` — the app's actions,
+   cursor-paged with `next_cursor`. There is no `limit` parameter; sending one is `422`.
+2. `GET /tool-apps/{slug}/actions/{action}?version=<same version>` — take its `id`; an
+   action whose `eligible` is `false` cannot be saved.
+3. `GET /tool-connections?state=ready&toolkit=<slug>` — take a row's `id`. An account in any
+   other state makes the next call answer `422` with the tool written at
+   `workflow.status: "failed"`.
+4. `POST /tools` with
+   `workflow: {"kind":"app","metadata_id":"<id from 2>","connection_id":"<id from 3>","fixed_inputs":{},"timeout_ms":10000}`.
+
+The tool then behaves like any other: it shows up in `GET /tools/workflow-catalog` once its
+revision is promoted and binds to a step exactly like an HTTP tool. A booking journey needs
+`GOOGLECALENDAR_FIND_FREE_SLOTS` before `GOOGLECALENDAR_CREATE_EVENT`.
 
 `400` covers malformed/foreign cursors and invalid fields, `401` invalid or insufficiently scoped API keys, `404` missing/cross-company resources, `409` active/closed/ambiguous authorization state, `429 CONNECTION_RATE_LIMIT` bounded start limits, and `503` unavailable control/storage. These routes pass the connection service's body and status through unchanged, so besides the `CONNECTION_*` codes a code this reference does not list can arrive, at one of the statuses above. Treat it by its status, never by its name: on `503`, retry the same request, and if it persists start a fresh connection rather than looping. The forwarded names are not a contract. Error messages never echo submitted credentials.
 
@@ -4829,7 +5050,7 @@ Aggregated debits from your credit account, bucketed by date and product.
 |---|---|---|---|
 | `from` | ISO8601 | now - 30d | Start of window |
 | `to` | ISO8601 | now | End of window (exclusive) |
-| `group_by` | "day" \| "month" \| "total" \| "agent" \| "product" \| "disposition" \| "agent,disposition" | "day" | Bucket granularity |
+| `group_by` | "day" \| "month" \| "total" \| "agent" \| "product" \| "disposition" \| "agent,disposition" \| "source" \| "agent,source" | "day" | Bucket granularity. Anything else is `400` |
 | `product` | enum | (all) | `voice_call` \| `eval_run` \| `phone_number` \| `topup` \| `refund` |
 | `include_topups` | bool | false | Include positive credit purchases |
 
@@ -4847,7 +5068,7 @@ Aggregated debits from your credit account, bucketed by date and product.
 }
 ```
 
-When `group_by=agent`, each row carries an `agent_id` field. Agent grouping currently only populates for `voice_call`.
+When `group_by=agent` (and on `agent,disposition` and `agent,source`), each row carries an `agent_id` field. Agent grouping currently only populates for `voice_call`.
 
 **`group_by=agent,disposition`** — cost *and* outcomes in one read: one row per agent per
 outcome, each with its own `count` and `total_amount_cents`.
@@ -4863,6 +5084,21 @@ outcome, each with its own `count` and `total_amount_cents`.
 with no call behind it (number rent, top-up, eval run) and an undispositioned call both
 read `disposition: null` — the row's own `agent_id` tells the two apart. This plus
 `GET /calls/export` replaces joining `GET /calls` and `GET /dispositions` by hand.
+
+**`group_by=source`** (or `agent,source`) — each row carries `source`: where the call
+behind those charges was started — `test`, `shared_link`, `api`, `phone_inbound`,
+`phone_outbound`. These are the values `GET /calls` reports and `GET /calls?source=`
+filters by, so the two reads agree call for call. Use it to separate a workspace's own
+rehearsals from the calls it was paid for without exporting the call log once per source.
+An origin is a fact about the call a charge belongs to, so a charge with no call behind it
+— a number's monthly rent, a top-up, an eval run — comes back as `source: null`, and a call
+recorded before origins were written down comes back as `source: "unknown"`.
+
+**The window.** `to` is exclusive here, and charges are bucketed by when they were
+debited — a call is debited when it ends. `GET /calls/export` windows on when calls
+*started*, with an inclusive `to`. The same `from`/`to` on both reads therefore differs by
+the calls that straddle a boundary and by charges with no call behind them, which only this
+endpoint has — add `product=voice_call` to compare call spend alone.
 
 ---
 
