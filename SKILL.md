@@ -1219,12 +1219,12 @@ The most common pre-fetched variables:
 
 When the user wants voice **on their own website** (not a phone call), use the browser SDK instead of `POST /calls` with `to`/`from`:
 
-1. **Server mints a session** — `POST /calls {type:"web", agent_id}` with the secret API key. Returns `{ token, connection }` (see **POST /calls — web call session** in `yappr-api.md`). No call is placed; the secret key stays on the server.
+1. **Server mints a session** — `POST /calls {type:"web", agent_id}` with the secret API key (optionally `lead_id` and `metadata`). Returns `{ call_id, token, connection, protocol }` (see **POST /calls — web call session** in `yappr-api.md`). Nothing is dialled and the secret key stays on the server, but the call already exists: `GET /calls/{call_id}` reads `pending_connection` until the browser connects, and an unused session settles `no_answer` (`session_expired`, cost 0) about a minute after the token expires — so mint on click, not on page load.
 2. **Browser connects** — `npm install @goyappr/client`, then `YapprConversation.startSession({ token, connection })`. The developer owns the UI; the SDK handles mic + WebRTC. Controls: `setMicMuted`, `setVolume`, `getInputVolume`/`getOutputVolume`, `endSession`; callbacks `onStatusChange`, `onModeChange`, `onConnect`, `onDisconnect`, `onError`.
 
 Billing, voice, and language come from the agent config — same as any call. Audio-only in preview (no live transcript yet).
 
-A workflow agent whose published workflow runs before-call steps serves browser calls through a different exchange: the mint succeeds with `protocol: "call_request"` instead of `"offer"`, and the browser must create a call request, poll it, then start it (see **Web calls on an agent that prepares** in `yappr-api.md`). A browser that tries the one-shot `offer` connection on such an agent is refused with `409 workflow_preparation_required` before the token is spent — nothing is lost; switch to the exchange `protocol` names rather than republishing.
+A workflow agent whose published workflow runs before-call steps **or has follow-ups (After steps)** serves browser calls through a different exchange: the mint succeeds with `protocol: "call_request"` instead of `"offer"`, and the browser must create a call request, poll it, then start it (see **Web calls on an agent that prepares** in `yappr-api.md`). A browser that tries the one-shot `offer` connection on such an agent is refused with `409 workflow_preparation_required` before the token is spent — nothing is lost; switch to the exchange `protocol` names rather than republishing. Always follow `protocol`; never infer it from the workflow. On a `call_request` session `call_id` is `null` (the request reports it once it starts), and `lead_id` is refused with `422 WEB_LEAD_UNSUPPORTED`.
 
 ## PHASE 4: Post-Call Automation
 
