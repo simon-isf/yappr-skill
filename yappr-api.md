@@ -88,7 +88,7 @@ curl -s -X POST "https://api.goyappr.com/resource" \
 | 401 | `MISSING_KEY` (nothing sent), `INVALID_KEY` (a key was sent and is not ours, or is revoked), `EXPIRED_KEY` — the key itself was not accepted | Fix the key. Even a `401` carries `X-RateLimit-*` (`Remaining` = `Limit`: nothing was counted). |
 | 402 | Billing — insufficient balance or no payment method (`BILLING_ERROR`), or the workspace's own monthly spending limit is reached (`SPEND_BUDGET_REACHED`, see **PATCH /billing**) | Guide to billing setup, or raise the limit |
 | 403 | `INSUFFICIENT_SCOPE` — the key is fine but lacks a scope; the message names it. Also a resource in another workspace or a protected one | Widen the key in Settings → API keys, or use one that holds the scope. Never rotate on a `403`. |
-| 404 | `AGENT_NOT_FOUND` — the agent in the path, or the `agent_id` a request names, is not in this workspace | Every route answers a missing agent this way. Another `404` code under `/agents/{id}` means the agent is there and something else is missing. (Campaign and phone-number bodies keep `422 INVALID_AGENT`, below.) |
+| 404 | `AGENT_NOT_FOUND` — the agent in the path, or the `agent_id` a request names, is not in this workspace | The public API answers a missing agent this way. Another `404` code under `/agents/{id}` means the agent is there and something else is missing. (Campaign and phone-number bodies keep `422 INVALID_AGENT`, and call requests keep `404 WORKFLOW_AGENT_UNAVAILABLE` for an agent that is archived or switched off — both below.) |
 | 429 | Rate limit or concurrent call limit | Wait and retry |
 | 500 | Server error | Retry once; if persistent, report |
 
