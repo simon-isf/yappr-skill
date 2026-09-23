@@ -2192,17 +2192,22 @@ itself (`409 API_KEY_SELF_REVOKE`); rotate by issuing the replacement, moving th
 integration onto it, then revoking the old one with `DELETE /api-keys/{id}`.
 
 **`api_keys:read` is the audit scope.** It lists keys (`GET /api-keys` — names, prefixes,
-scopes, `last_used_at`) and can neither issue nor revoke. It is in the dashboard's
-**Read-only** preset and can be granted through `POST /api-keys`. A key holding neither it
+scopes, `agent_ids`, `last_used_at`) and can neither issue nor revoke. It is **not** in the
+dashboard's **Read-only** preset (that one leaves out billing, API keys and affiliates), but
+it can be granted through `POST /api-keys`. A key holding neither it
 nor `api_keys:manage` gets `403 INSUFFICIENT_SCOPE` on `GET /api-keys`, and so do `POST` and
 `DELETE` without `api_keys:manage` — a missing scope is `403` on every route.
 
-**Agent-scoped keys are not available yet.** A key reaches its whole workspace: scopes are
-resource types, never a list of agents, numbers or clients, and `POST /api-keys` has no
-field that narrows a key to some of them — an `agent_ids` list restricts nothing. When an
-agency wants one client's key to see only that client, the only confinement today is one
-workspace per client, and each workspace needs its own first key made by a person in the
-dashboard. Say so before promising anyone a per-client key.
+**A per-client key is `agent_ids`.** Scopes say what a key may do; `agent_ids` (1–100
+agent ids on `POST /api-keys`) says which agents it may do it to. Leave it out for a key
+that reaches the whole workspace. A limited key reaches only its agents, their calls and
+charges, the leads they called (read only), their deliveries and the campaigns they
+answer; everything the workspace shares (tools, numbers, dispositions, the do-not-call
+list, calling hours, other keys) is `403 API_KEY_AGENT_SCOPED`, and naming another agent is
+`403 AGENT_OUTSIDE_KEY_SCOPE`. It cannot create or duplicate agents, and `POST /calls` must
+name one of its agents and call from a number one of them uses. There is no key update
+(`PATCH` is `405`): change a key's agents in the dashboard, or issue a replacement and
+revoke the old one.
 
 Field-by-field reference: `yappr-api.md` → **API Keys**.
 

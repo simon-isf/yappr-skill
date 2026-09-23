@@ -3915,16 +3915,21 @@ issuing key's own scopes are, so key issuance stays one generation deep. Each wo
 needs its own first key: a key belongs to one workspace and cannot issue keys in another.
 
 **`api_keys:read` audits without changing anything.** It lists and reads keys — names,
-prefixes, scopes, `last_used_at` — and can neither issue nor revoke. It is in the
-dashboard's **Read-only** preset, and unlike `api_keys:manage` it *can* be granted through
-`POST /api-keys`: give it to a job that should watch the inventory and nothing else.
+prefixes, scopes, `last_used_at` — and can neither issue nor revoke. It is **not** in the
+dashboard's **Read-only** preset (see the presets below); unlike `api_keys:manage` it *can*
+be granted through `POST /api-keys`: give it to a job that should watch the inventory and
+nothing else.
 
-**A key reaches its whole workspace — there are no agent- or client-scoped keys yet.**
-Scopes are resource types (`calls:read`, `leads:manage`, …), never a list of agents,
-numbers or clients: a key that can read calls reads every agent's calls. `POST /api-keys`
-takes `name` and `scopes` and nothing else that narrows a key, so sending something like
-`agent_ids` restricts nothing. To confine one client's key to that client today, give the
-client its own workspace, with its own first key made by a person in the dashboard.
+**Scopes say what a key may do; `agent_ids` says which agents it may do it to.** Scopes
+are resource types (`calls:read`, `leads:manage`, …). A key issued without `agent_ids`
+reaches the whole workspace, as every key always has; a key issued with them reaches only
+those agents — see **Limit a key to some agents** below.
+
+**Dashboard presets.** **Standard** = agents and tools read + create + update, calls read +
+create. **Read-only** = the reads of agents, tools, `phone_numbers:search`, calls,
+dispositions, leads, lead tags, campaigns, flows, agent eval, integrations,
+tool-connections, shared links, do-not-call and SIP endpoints — no billing, API keys or
+affiliates. **Full access** = every scope.
 
 ### GET /api-keys · GET /api-keys/:id
 
@@ -3943,12 +3948,16 @@ holding neither gets `403 INSUFFICIENT_SCOPE`.
       "name": "string",
       "prefix": "ypr_live_9f2c41a",
       "scopes": ["leads:read", "leads:manage"],
+      "agent_ids": null,
       "created_at": "ISO8601",
       "last_used_at": "ISO8601 | null"
     }
   ]
 }
 ```
+
+`agent_ids` is on every read of a key: `null` = no limit, a list = the only agents it
+reaches.
 
 The secret is never returned here — `prefix` (first 16 characters) is enough to tell two
 keys apart and to match a key against the dashboard list. `last_used_at` is when the key
@@ -3965,6 +3974,8 @@ another.
 
 **Request body:** `{"name": "Nightly lead sync", "scopes": ["leads:read", "leads:manage"]}`
 — `scopes` is required and has no default: a key is issued with exactly what you ask for.
+Optional `agent_ids` limits the key to some agents (below). Nothing else is read: an
+unknown body field is `400 API_KEY_REQUEST_INVALID` naming it.
 
 **Two rules decide what a new key may hold:**
 - **Subset** — you can only grant scopes the calling key itself holds. Anything more is
@@ -3981,12 +3992,42 @@ another.
   "name": "Nightly lead sync",
   "prefix": "ypr_live_9f2c41a",
   "scopes": ["leads:read", "leads:manage"],
+  "agent_ids": null,
   "created_at": "ISO8601",
   "last_used_at": null,
   "key": "ypr_live_9f2c41a7b0e3…"
 }
 ```
 `key` appears in this response and no other.
+
+Two creates under one name get one key and one `409 API_KEY_NAME_TAKEN`. There is no
+update — `PATCH`/`PUT /api-keys/{id}` is `405`: change scopes or agents in the dashboard
+(Settings → API keys → Edit scopes), or issue a replacement and revoke the old key.
+
+#### Limit a key to some agents — `agent_ids`
+
+`POST /api-keys` takes `agent_ids`: 1–100 agent ids. Leave it out (or send `null`) for a
+key that reaches the whole workspace. An id that is not a live agent here is
+`400 API_KEY_AGENT_UNKNOWN`; an empty list is `400 API_KEY_REQUEST_INVALID`.
+
+A limited key reaches only: its agents (`/agents`, no create or duplicate), their calls
+(`/calls`, `/calls/export`; `POST /calls` must send one of its agents as `agent_id`, and a
+`from` number one of its agents answers or calls from), the leads they called (`/leads`,
+read only), their charges (`/billing/consumption`), their deliveries (`/deliveries`) and
+the campaigns they answer (`/campaigns`; `from_phone_number_id` must be one of its agents'
+numbers). Everything else — tools, numbers, dispositions, the do-not-call list, calling
+hours, other keys, billing status — answers `403 API_KEY_AGENT_SCOPED`, and so does calling
+from any other number (another client's, or one no agent uses). Naming another agent
+answers `403 AGENT_OUTSIDE_KEY_SCOPE`, the same answer whether that agent exists or not.
+Enrolling contacts in one of its campaigns (`POST /campaigns/{id}/leads`) is the one lead
+write it makes: a new number becomes a workspace lead, a known number enrolls the
+workspace's lead for it.
+
+```bash
+curl -X POST "https://api.goyappr.com/api-keys" -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Client A","scopes":["agents:read","calls:read"],"agent_ids":["<agent id>"]}'
+```
 
 **Testing a scope boundary** — issue a narrow key, then watch the endpoint that needs the
 missing scope refuse it:
@@ -4014,12 +4055,14 @@ keys for the workspace. Rotation is therefore: issue the replacement, move your
 integration onto it, then revoke the old one.
 
 **Errors** (all three endpoints): `400 API_KEY_REQUEST_INVALID` (`name` missing/over 100
-characters, or `scopes` missing/empty/not an array of strings); `400
+characters, `scopes` missing/empty/not an array of strings, an empty or oversized
+`agent_ids`, or a field the endpoint does not read); `400 API_KEY_AGENT_UNKNOWN` (an
+`agent_ids` entry that is not a live agent here); `400
 API_KEY_SCOPE_UNKNOWN` (a requested scope does not exist — check it against the Scope
 Map); `403 INSUFFICIENT_SCOPE` (the two `GET`s: neither `api_keys:read` nor
 `api_keys:manage`; `POST` and `DELETE`: no `api_keys:manage`); `403 API_KEY_SCOPE_ESCALATION` /
 `403 API_KEY_MANAGE_NOT_DELEGABLE`; `404 NOT_FOUND`; `409 API_KEY_NAME_TAKEN` /
-`409 API_KEY_SELF_REVOKE`; `503 API_KEY_STORAGE_UNAVAILABLE` (nothing was
+`409 API_KEY_SELF_REVOKE`; `405` on `PATCH`/`PUT`; `503 API_KEY_STORAGE_UNAVAILABLE` (nothing was
 created/revoked — retry).
 
 ---
