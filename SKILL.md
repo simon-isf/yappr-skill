@@ -1402,11 +1402,15 @@ GET /billing/consumption?from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z&group
    `phone_outbound` — so rehearsal spend is separated from the calls that were paid for
    without exporting once per source. `group_by=agent,disposition` gives cost and outcomes
    on the same row instead. Charges with no call behind them (a number's monthly rent, an
-   eval run) come back with `source: null`.
+   eval run) come back with `source: null`. `product` narrows it to one of `voice_call`,
+   `eval_run`, `phone_number`, `topup`, `refund`, `adjustment` — anything else (`voice`) is
+   `400 CONSUMPTION_QUERY_INVALID`, and so is `?agent_id=` (there is no agent filter; group
+   by agent instead).
 3. **The two totals will not match to the cent, and that is not an error.** The export
-   windows on when calls *started* and its `to` is inclusive; consumption windows on when
-   charges were *debited* (a call is debited when it ends) and its `to` is exclusive. Calls
-   that straddle midnight on the 1st, and charges with no call, make the difference. Say so
+   windows on when calls *started*; consumption windows on when charges were *debited* (a
+   call is debited when it ends). Both `to`s are inclusive, and a date-only `to` covers that
+   whole day (UTC). Calls that straddle midnight on the 1st, and charges with no call, make
+   the difference. Say so
    in the report rather than forcing the two to agree.
 4. **Month to date** is `monthly_spend_cents` on `GET /billing` — reported whether or not a
    spending limit is set, measured from `monthly_period_start` (the 1st, 00:00 UTC).
@@ -2190,9 +2194,8 @@ integration onto it, then revoking the old one with `DELETE /api-keys/{id}`.
 **`api_keys:read` is the audit scope.** It lists keys (`GET /api-keys` — names, prefixes,
 scopes, `last_used_at`) and can neither issue nor revoke. It is in the dashboard's
 **Read-only** preset and can be granted through `POST /api-keys`. A key holding neither it
-nor `api_keys:manage` gets `403 INSUFFICIENT_SCOPE` on `GET /api-keys`, while `POST` and
-`DELETE` without `api_keys:manage` answer `401 INSUFFICIENT_SCOPE` — branch on the code, not
-the status, which is being unified on `403`.
+nor `api_keys:manage` gets `403 INSUFFICIENT_SCOPE` on `GET /api-keys`, and so do `POST` and
+`DELETE` without `api_keys:manage` — a missing scope is `403` on every route.
 
 **Agent-scoped keys are not available yet.** A key reaches its whole workspace: scopes are
 resource types, never a list of agents, numbers or clients, and `POST /api-keys` has no
@@ -2253,9 +2256,10 @@ For exact error codes and HTTP status meanings, see `yappr-api.md`. Quick refere
 | Status | Meaning |
 |--------|---------|
 | 400 | Bad request — check field names and values |
-| 401 | Auth failed — verify API key and scopes (a missing scope is `401 INSUFFICIENT_SCOPE` on most routes) |
+| 401 | The key itself was not accepted (`MISSING_KEY`, `INVALID_KEY`, `EXPIRED_KEY`) — fix the key |
 | 402 | Billing — add balance or payment method (`BILLING_ERROR`), or the workspace's own monthly spending limit is reached (`SPEND_BUDGET_REACHED` — raise it with `PATCH /billing`, or it lifts on the 1st) |
-| 403 | Forbidden — resource not found or protected; also `INSUFFICIENT_SCOPE` on `GET /api-keys` and `PUT /call-windows`. Branch on `code`, not the status |
+| 403 | `INSUFFICIENT_SCOPE` on every route — the key is fine but lacks the scope the message names; widen it, never rotate it. Also a resource that is protected or in another workspace |
+| 404 | `AGENT_NOT_FOUND` — that agent is not in this workspace |
 | 429 | Rate limit (60 requests per minute per API key — wait the `Retry-After` seconds, then resend the same request) or concurrent call limit — wait and retry |
 | 500 | Server error — retry once |
 

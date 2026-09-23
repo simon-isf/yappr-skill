@@ -83,9 +83,10 @@ curl -s -X POST "https://api.goyappr.com/resource" \
 | Status | Meaning | Action |
 |--------|---------|--------|
 | 400 | Bad request — field missing or invalid | Check error message |
-| 401 | Auth failed — invalid or missing key, or (on most routes) a missing scope | Verify key and scopes |
+| 401 | `MISSING_KEY` (nothing sent), `INVALID_KEY` (a key was sent and is not ours, or is revoked), `EXPIRED_KEY` — the key itself was not accepted | Fix the key. Even a `401` carries `X-RateLimit-*` (`Remaining` = `Limit`: nothing was counted). |
 | 402 | Billing — insufficient balance or no payment method (`BILLING_ERROR`), or the workspace's own monthly spending limit is reached (`SPEND_BUDGET_REACHED`, see **PATCH /billing**) | Guide to billing setup, or raise the limit |
-| 403 | Forbidden — resource not found or wrong company, or `INSUFFICIENT_SCOPE` on the two routes named below | Check resource IDs and the key's scopes |
+| 403 | `INSUFFICIENT_SCOPE` — the key is fine but lacks a scope; the message names it. Also a resource in another workspace or a protected one | Widen the key in Settings → API keys, or use one that holds the scope. Never rotate on a `403`. |
+| 404 | `AGENT_NOT_FOUND` — the agent in the path, or the `agent_id` a request names, is not in this workspace | Every route answers a missing agent this way. Another `404` code under `/agents/{id}` means the agent is there and something else is missing. (Campaign and phone-number bodies keep `422 INVALID_AGENT`, below.) |
 | 429 | Rate limit or concurrent call limit | Wait and retry |
 | 500 | Server error | Retry once; if persistent, report |
 
@@ -97,16 +98,13 @@ names nothing more specific carries its status's code: `BAD_REQUEST` 400, `BILLI
 `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `UNPROCESSABLE_REQUEST` 422,
 `RATE_LIMIT` 429, `INTERNAL_ERROR` 500, `UPSTREAM_ERROR` 502, `SERVICE_UNAVAILABLE` 503;
 anything else `REQUEST_FAILED`. `401` never falls back to a generic code — it is always one of
-`MISSING_KEY`, `INVALID_KEY`, `EXPIRED_KEY` or `INSUFFICIENT_SCOPE`.
+`MISSING_KEY`, `INVALID_KEY` or `EXPIRED_KEY`.
 
-**A missing scope is `401` on most routes and `403` on two.** `GET /api-keys` and
-`GET /api-keys/:id` (a key holding neither `api_keys:read` nor `api_keys:manage`) and
-`PUT /call-windows` (no `call_windows:manage`) answer `403 INSUFFICIENT_SCOPE`: the key is
-valid for this workspace but not allowed that one operation. Every other route answers the
-account-wide `401 INSUFFICIENT_SCOPE` — `POST` and `DELETE /api-keys` included. Moving every
-missing-scope refusal to `403` is in progress, so branch on `code`, never on the status, and
-read neither status as a dead key: rotating it changes nothing — widen its scopes in the
-dashboard, or issue a key that holds the scope.
+**A missing scope is `403 INSUFFICIENT_SCOPE`, on every route.** The key is valid for this
+workspace but not allowed that one operation, and the message names the scope it lacks. It
+used to be `401` on most routes and `403` on a few; it is `403` everywhere now, and `401`
+means only that the key itself was not accepted. Never read a `403` as a dead key: rotating
+it changes nothing — widen its scopes in the dashboard, or issue a key that holds the scope.
 
 - `404 RESOURCE_ID_INVALID` — the id in the path is not a UUID. A malformed id is a
   refusal, never the collection behind it.
@@ -150,6 +148,36 @@ dashboard, or issue a key that holds the scope.
 - `400 AGENT_IDEMPOTENCY_DUPLICATED` — two `Idempotency-Key` headers arrived on the same
   request (a client or proxy bug). Naming how many arrived and whether they agreed — not
   `AGENT_IDEMPOTENCY_REQUIRED`, which is for a key that is genuinely missing or malformed.
+
+### The API refuses what it does not read
+
+A query parameter or body field an endpoint does not read is a `400` that names it and lists
+what the endpoint does read — never silently ignored. Codes: `AGENTS_QUERY_INVALID`,
+`TOOLS_QUERY_INVALID`, `CONSUMPTION_QUERY_INVALID`, `CAMPAIGNS_QUERY_INVALID`,
+`CALLS_QUERY_INVALID`, `LEADS_QUERY_INVALID`, `DELIVERIES_QUERY_INVALID`,
+`DO_NOT_CALL_REQUEST_INVALID`, `API_KEY_REQUEST_INVALID`, `LEAD_REQUEST_INVALID`,
+`WEB_CALL_REQUEST_INVALID`, `CAMPAIGN_REQUEST_INVALID`. The same `400` refuses a parameter
+sent twice or empty, a date that does not exist, and `from` after `to`.
+
+- Every `400` from `/do-not-call` is `DO_NOT_CALL_REQUEST_INVALID`, and every refused
+  campaign create or edit body is `CAMPAIGN_REQUEST_INVALID` (a disposition label in
+  `stop_disposition_ids` included: send ids from `GET /dispositions`). The message names
+  the field.
+- There is no agent filter on `GET /billing/consumption`: use `group_by=agent`.
+- A date-only `to` covers that whole day (UTC): `from=2026-08-01&to=2026-08-31` is all of
+  August.
+- `expires_at` in the past is refused on do-not-call add and edit and on shared links.
+- `metadata.extracted` on a lead: send it back unchanged or leave it out; changing it is
+  `400`.
+- Stopping a half-built draft campaign is `409 CAMPAIGN_NOT_STOPPABLE`: archive it with
+  `DELETE`.
+- Workflow save / validate / publish / rebind refusals carry `issues[]` with a `path`:
+  `/expected_version`, `/document`, `/bindings/<n>/tool_revision_id`.
+  `reference_is_tool_id` means a tool id was sent where its revision belongs; the message
+  names the revision to send (`workflow.head_revision_id` from `GET /tools/{id}`).
+- A rebind to a tool that is not in the workspace is `404 WORKFLOW_NOT_FOUND` with one
+  issue per binding, code `tool_not_found`, path `/bindings/<binding id>`: send the tool's
+  own id from `GET /tools`.
 
 ### Agent object
 
@@ -3904,8 +3932,7 @@ Every active key in the workspace, newest first (revoked keys are not listed), o
 by id (`404` once revoked).
 
 **Scopes:** `api_keys:read`, or `api_keys:manage` (which reads the list as well). A key
-holding neither gets `403 INSUFFICIENT_SCOPE` here — not the `401` the two routes below
-answer for a missing `api_keys:manage`.
+holding neither gets `403 INSUFFICIENT_SCOPE`.
 
 **Response (list):**
 ```json
@@ -3989,9 +4016,8 @@ integration onto it, then revoke the old one.
 **Errors** (all three endpoints): `400 API_KEY_REQUEST_INVALID` (`name` missing/over 100
 characters, or `scopes` missing/empty/not an array of strings); `400
 API_KEY_SCOPE_UNKNOWN` (a requested scope does not exist — check it against the Scope
-Map); `INSUFFICIENT_SCOPE` — `403` on the two `GET`s (neither `api_keys:read` nor
-`api_keys:manage`), `401` on `POST` and `DELETE` (no `api_keys:manage`); the move to `403`
-everywhere is in progress, so branch on the code; `403 API_KEY_SCOPE_ESCALATION` /
+Map); `403 INSUFFICIENT_SCOPE` (the two `GET`s: neither `api_keys:read` nor
+`api_keys:manage`; `POST` and `DELETE`: no `api_keys:manage`); `403 API_KEY_SCOPE_ESCALATION` /
 `403 API_KEY_MANAGE_NOT_DELEGABLE`; `404 NOT_FOUND`; `409 API_KEY_NAME_TAKEN` /
 `409 API_KEY_SELF_REVOKE`; `503 API_KEY_STORAGE_UNAVAILABLE` (nothing was
 created/revoked — retry).
@@ -4602,7 +4628,7 @@ The tool then behaves like any other: it shows up in `GET /tools/workflow-catalo
 revision is promoted and binds to a step exactly like an HTTP tool. A booking journey needs
 `GOOGLECALENDAR_FIND_FREE_SLOTS` before `GOOGLECALENDAR_CREATE_EVENT`.
 
-`400` covers malformed/foreign cursors and invalid fields, `401` invalid or insufficiently scoped API keys, `404` missing/cross-company resources, `409` active/closed/ambiguous authorization state, `429 CONNECTION_RATE_LIMIT` bounded start limits, and `503` unavailable control/storage. These routes pass the connection service's body and status through unchanged, so besides the `CONNECTION_*` codes a code this reference does not list can arrive, at one of the statuses above. Treat it by its status, never by its name: on `503`, retry the same request, and if it persists start a fresh connection rather than looping. The forwarded names are not a contract. Error messages never echo submitted credentials.
+`400` covers malformed/foreign cursors and invalid fields, `401` an invalid API key, `403 INSUFFICIENT_SCOPE` a key without the scope, `404` missing/cross-company resources, `409` active/closed/ambiguous authorization state, `429 CONNECTION_RATE_LIMIT` bounded start limits, and `503` unavailable control/storage. These routes pass the connection service's body and status through unchanged, so besides the `CONNECTION_*` codes a code this reference does not list can arrive, at one of the statuses above. Treat it by its status, never by its name: on `503`, retry the same request, and if it persists start a fresh connection rather than looping. The forwarded names are not a contract. Error messages never echo submitted credentials.
 
 ---
 
@@ -5049,9 +5075,9 @@ Aggregated debits from your credit account, bucketed by date and product.
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `from` | ISO8601 | now - 30d | Start of window |
-| `to` | ISO8601 | now | End of window (exclusive) |
+| `to` | ISO8601 | now | End of window, inclusive. A date-only value covers that whole day (UTC). `from` after `to` is a `400`. |
 | `group_by` | "day" \| "month" \| "total" \| "agent" \| "product" \| "disposition" \| "agent,disposition" \| "source" \| "agent,source" | "day" | Bucket granularity. Anything else is `400` |
-| `product` | enum | (all) | `voice_call` \| `eval_run` \| `phone_number` \| `topup` \| `refund` |
+| `product` | enum | (all) | `voice_call` \| `eval_run` \| `phone_number` \| `topup` \| `refund` \| `adjustment`. Anything else (`voice`, `minutes`) is `400 CONSUMPTION_QUERY_INVALID`. |
 | `include_topups` | bool | false | Include positive credit purchases |
 
 **Response:**
@@ -5094,8 +5120,8 @@ An origin is a fact about the call a charge belongs to, so a charge with no call
 — a number's monthly rent, a top-up, an eval run — comes back as `source: null`, and a call
 recorded before origins were written down comes back as `source: "unknown"`.
 
-**The window.** `to` is exclusive here, and charges are bucketed by when they were
-debited — a call is debited when it ends. `GET /calls/export` windows on when calls
+**The window.** `to` is inclusive here too (a date-only `to` is that whole day, UTC), but
+charges are bucketed by when they were debited — a call is debited when it ends. `GET /calls/export` windows on when calls
 *started*, with an inclusive `to`. The same `from`/`to` on both reads therefore differs by
 the calls that straddle a boundary and by charges with no call behind them, which only this
 endpoint has — add `product=voice_call` to compare call spend alone.
