@@ -1801,7 +1801,7 @@ Each item is `{phone, name?, email?, notes?}` or a bare string. Numbers are cano
 - `on_do_not_call` — excluded at enroll time. Say so explicitly: these people will not be called, and that is correct.
 - `invalid_phone` — unparseable numbers. Show the samples so the user can fix their list.
 - `already_enrolled` — re-enrolling is idempotent, so a sync script can be naive.
-- `409 ALREADY_IN_ACTIVE_CAMPAIGN` — see the failure table below. The report in the body still tells you what *did* land.
+- `in_another_campaign` / `results[]` — enrolment never refuses the batch. A number another live campaign is calling comes back in `in_another_campaign[]` with `campaign_id` and `campaign_name`, and in `results[]` (one entry per number: `enrolled`, `already_enrolled`, `in_another_campaign`). Tell the user which campaign holds each one. A draft holds no number; launching a draft retires contacts another campaign took meanwhile (`stop_reason: in_another_campaign`).
 
 ### Step 6.3 — Pick stop rules by disposition **id**
 
@@ -1917,7 +1917,7 @@ curl -s "https://api.goyappr.com/campaigns/CAMPAIGN_ID/stats" \
 | `insufficient_credit` / `no_billing_account` | Balance too low → status `paused_insufficient_credit` | top up; **it resumes by itself** |
 | `credit_reserve_would_breach_floor` | Balance can't cover the next call's worst case | top up |
 | `budget_exhausted` | The campaign's own budget cap is reached → `paused_budget` | raise `budget_cents`, then `resume` |
-| `from_number_unavailable` | The calling number went inactive → `paused_infra` | assign an active number, then `resume` |
+| `from_number_unavailable` | The calling number went inactive → `paused_config` | assign an active number, then `resume` |
 | `agent_has_no_duration_cap` | The agent's max call duration was set to unlimited → `paused_config` | set a positive `max_call_duration_secs`, then `resume` |
 | `platform_admission_disabled` | The platform paused new campaign admissions; in-flight calls continue | wait; report it if it persists |
 | `resumed_credit_ok` | Auto-resumed after a top-up | none |
@@ -1969,15 +1969,15 @@ curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads/LEAD_ID" 
 | This workspace has no upcoming calling window | `PUT /call-windows` (and confirm the workspace timezone, which is dashboard-only) |
 | Enroll at least one contact before launching | `POST /campaigns/:id/leads` — and check the enroll report: everything may have been filtered as DNC or invalid |
 
-**`409 ALREADY_IN_ACTIVE_CAMPAIGN` on enroll.** One or more numbers are already live in another active campaign. A number can only be dialed by one campaign at a time, workspace-wide — this is the guard that stops the same person being called twice as fast. Do not retry blindly. Instead: `GET /campaigns?status=running,paused` and find the other campaign; then either finish/stop it, exclude the overlapping contacts there, or drop them from this enroll batch. The 409 body still contains the full report, so contacts that did land are enrolled.
+**`in_another_campaign` on enroll.** A number can only be dialed by one campaign at a time, workspace-wide — the guard that stops the same person being called twice as fast. Enrolment never refuses the batch for it: each such number is reported in `in_another_campaign[]` with the `campaign_id` and `campaign_name` that holds it, and everyone else is enrolled. To move those contacts here, finish or stop the other campaign, or exclude them there, then enroll again. `409 CONFLICT` on launch means another campaign took one of the draft's contacts at the same instant — nothing changed; launch again and that contact is skipped.
 
-**`paused_insufficient_credit` auto-resumes; `paused` does not.** When the balance falls under the floor the campaign parks itself as `paused_insufficient_credit` and the tick re-checks every minute — after a top-up (checkout, auto-topup, or credit added by an admin) it returns to `running` on its own, with `last_tick_result: "resumed_credit_ok"`. Do not call `launch` in a loop, and do not tell the user to relaunch. Every **other** paused state (`paused`, `paused_budget`, `paused_infra`, `paused_config`) needs an explicit `resume` after the cause is fixed — deliberately, so a human pause is never undone by a payment.
+**`paused_insufficient_credit` auto-resumes; `paused` does not.** When the balance falls under the floor the campaign parks itself as `paused_insufficient_credit` and the tick re-checks every minute — after a top-up (checkout, auto-topup, or credit added by an admin) it returns to `running` on its own, with `last_tick_result: "resumed_credit_ok"`. Do not call `launch` in a loop, and do not tell the user to relaunch. Every **other** paused state (`paused`, `paused_budget`, `paused_infra`, `paused_config`) needs an explicit `resume` after the cause is fixed — deliberately, so a human pause is never undone by a payment. Read `pause_reason` (on the campaign and `/stats`) to know where the fix is: `campaign_budget` → raise `budget_cents`; `workspace_spend_limit` → raise the monthly limit (`PATCH /billing`); `call_placement_failures` (`paused_infra`) → one contact's call failed to go out more than `max_infra_retries` times, nobody lost their place, resume once calls go out; `configuration` (`paused_config`) → fix the setting `last_tick_result` names.
 
 **`awaiting_disposition` means "wait", not "stuck".** Outcomes are classified asynchronously after the call ends — usually within seconds, occasionally much later. A contact sits in `awaiting_disposition` until its outcome arrives, however long that takes — there is no timeout that decides without one, and only that contact waits while the campaign keeps calling everyone else. When the outcome that arrives is `Unclassified`, `stop_on_unclassified` decides whether to retire or retry it. **Never redial a contact in this state** and never "help" by placing a `POST /calls` to that number: the platform is deliberately holding it, and a manual dial can call somebody who already asked you to stop. If a user reports "it's stuck", check `attempts_in_flight` and `last_tick_result` before concluding anything.
 
 **Other errors:** `400` naming a field means the writable allowlist rejected a key or a value range — fix the request, never work around it by re-creating the campaign. `400 Campaign is completed/stopped/archived` means you're editing a terminal campaign; create a new one.
 
-**Parsing campaign errors.** `409 ALREADY_IN_ACTIVE_CAMPAIGN` and `422 CAMPAIGN_NOT_READY` carry the code in `code` (repeated in `error`) and the human text in `message` — `{"error": "CAMPAIGN_NOT_READY", "code": "CAMPAIGN_NOT_READY", "message": "Assign an agent before launching"}`. Branch on `code`, and always surface `message` to the user — it names the one thing to fix.
+**Parsing campaign errors.** `422 CAMPAIGN_NOT_READY` carries the code in `code` (repeated in `error`) and the human text in `message` — `{"error": "CAMPAIGN_NOT_READY", "code": "CAMPAIGN_NOT_READY", "message": "Assign an agent before launching"}`. Branch on `code`, and always surface `message` to the user — it names the one thing to fix.
 
 ### Report it like this
 

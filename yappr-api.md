@@ -222,9 +222,11 @@ applied whole: one unknown name is `400 INVALID_TAG_NAMES`, one unknown id is
 
 ### Campaigns and flows
 
-`CAMPAIGN_NOT_READY` (422 on launch/resume), `ALREADY_IN_ACTIVE_CAMPAIGN` (409 on enrol)
-and `FLOW_INVALID` (400 on a flow save) arrive in `code`, and are repeated in `error` for
-older clients. `FLOW_INVALID` carries `issues[]`; the campaign codes carry `message`.
+`CAMPAIGN_NOT_READY` (422 on launch/resume) and `FLOW_INVALID` (400 on a flow save) arrive
+in `code`, and are repeated in `error` for older clients. `FLOW_INVALID` carries `issues[]`;
+the campaign code carries `message`. Enrolment no longer answers
+`409 ALREADY_IN_ACTIVE_CAMPAIGN` — a number another campaign holds is reported per number
+(see **POST /campaigns/:id/leads**).
 
 ---
 
@@ -3256,6 +3258,7 @@ Bulk outbound dialing over your leads. A campaign holds a list of enrolled conta
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/campaigns` | List campaigns |
+| GET | `/campaigns/defaults` | The dashboard's suggested settings for this workspace, ready to send to `POST /campaigns` |
 | POST | `/campaigns` | Create (always lands as `draft`) |
 | GET | `/campaigns/:id` | Get one |
 | PATCH | `/campaigns/:id` | Update config |
@@ -3390,6 +3393,12 @@ field you leave out stays `null`, and `POST /campaigns/:id/launch` then answers
 dashboard prefills for a person, not what the API substitutes for you. Send every field on
 create, or fill the gaps with `PATCH` before launching — how often to call someone and when
 to stop are decisions the platform will not make on your behalf.
+
+To start from what the dashboard offers, `GET /campaigns/defaults` (`campaigns:read`) →
+`settings`, merge `name`, `agent_id`, `from_phone_number_id` and `regulatory_basis`, and
+`POST` it. Its `stop_disposition_ids` are this workspace's Appointment Set, Not Interested,
+Issue Resolved, Transferred to a Person, Wrong Number and Do Not Call; `calling_window` is
+in the workspace timezone (Sun–Thu in Israel).
 
 #### Client-writable fields
 
@@ -3634,7 +3643,7 @@ The enrolled contacts and their per-contact state, oldest enrollment first.
 | `excluded` | Removed by you, by `stop`, or by archive. Terminal |
 | `dnc` | On the do-not-call list. Terminal |
 
-`stop_reason` (and the attempt ledger's settle reason) is a short code; values you will see include `disposition`, `stop_disposition`, `non_stop_disposition`, `disposition_timeout`, `no_answer`, `voicemail`, `dial_failed`, `infra_failure`, `insufficient_credit`, `queue_expired`, `never_dialed`, `dnc_blocked`, `orphan_reaped`, `cancelled`, `lead_removed`, `manual`.
+`stop_reason` (and the attempt ledger's settle reason) is a short code; values you will see include `in_another_campaign`, `campaign_stopped`, `campaign_archived`, `disposition`, `stop_disposition`, `non_stop_disposition`, `disposition_timeout`, `no_answer`, `voicemail`, `dial_failed`, `infra_failure`, `insufficient_credit`, `queue_expired`, `never_dialed`, `dnc_blocked`, `orphan_reaped`, `cancelled`, `lead_removed`, `manual`.
 
 ---
 
@@ -3668,6 +3677,8 @@ What happens to `phone_numbers`:
   "invalid_phone": [ { "phone": "05012" }, { "lead_id": "uuid", "phone": "n/a" } ],
   "on_do_not_call": ["+972501234567"],
   "not_found": ["uuid"],
+  "in_another_campaign": [ { "phone": "+972521112222", "lead_id": "uuid", "campaign_id": "uuid", "campaign_name": "September recall" } ],
+  "results": [ { "phone": "+972501111111", "lead_id": "uuid", "result": "enrolled" } ],
   "total_leads": 1042,
   "company_id": "uuid"
 }
@@ -3678,7 +3689,7 @@ What happens to `phone_numbers`:
 - `not_found` — ids in `lead_ids` that are not leads of this workspace
 - `invalid_phone` — unparseable numbers, and existing leads whose stored number cannot be canonicalized
 
-**`409 ALREADY_IN_ACTIVE_CAMPAIGN`** — one or more numbers are live in another active campaign. A number can only be dialed by one campaign at a time, workspace-wide. The response still carries the full report so you can see what did land.
+**Enrolment never refuses the batch.** A number another live campaign is calling comes back in `in_another_campaign[]` with `campaign_id` and `campaign_name`, and in `results[]` — one entry per number that got past parsing and the do-not-call screen, in the order sent, with `result` `enrolled`, `already_enrolled` or `in_another_campaign`. Everyone else is enrolled. A draft holds no number; launching a draft retires contacts another campaign took meanwhile (`stop_reason: in_another_campaign`).
 
 ```bash
 # Existing leads
@@ -3725,11 +3736,13 @@ Four POST sub-actions, no body. All return the full campaign object (`200`).
 | `launch` | `draft`, `paused`, `paused_insufficient_credit`, `paused_budget`, `paused_infra`, `paused_config` | `running`, sets `started_at`, writes a `launched` audit event carrying `regulatory_basis` and the enrolled count |
 | `resume` | same set | `running` (identical mechanics to `launch`; use whichever reads better) |
 | `pause` | `running`, `scheduled`, any `paused_*` | `paused` — a **manual** pause, which deliberately does *not* auto-resume when the balance is topped up |
-| `stop` | any non-terminal status | `stopped` (terminal) and every `pending`/`scheduled` contact → `excluded`. In-flight calls finish |
+| `stop` | any non-terminal status | `stopped` (terminal) and every `pending`/`scheduled` contact → `excluded` with `stop_hit: true`, `stop_reason: campaign_stopped`. In-flight calls finish. A half-built draft cannot be stopped (`409 CAMPAIGN_NOT_STOPPABLE`) — archive it with `DELETE` |
 
 - Launching an already-`running` campaign is a no-op: `200` with `"message": "Already running"`.
 - Launching from a terminal status, or stopping a terminal campaign, returns `400`.
 - `launch`/`resume` run a **preflight**; a failure is `422 CAMPAIGN_NOT_READY` with a specific, actionable message and no state change.
+- `launch` (and `resume` on a draft) can answer `409 CONFLICT` when another campaign started calling one of the draft's contacts at the same instant. Nothing changed; send it again — that contact is then skipped with `stop_reason: in_another_campaign`.
+- Contacts retired by a stop or an archive carry `stop_reason: campaign_stopped | campaign_archived`, whether the campaign was stopped in the dashboard or through the API.
 
 ```bash
 curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/launch" \
@@ -3765,12 +3778,20 @@ All of these must hold; the first failure is the one you get back, named in `mes
 | `running` | Admitting calls | — |
 | `paused` | **You** paused it | **No** — a manual pause survives a top-up. Call `resume` |
 | `paused_insufficient_credit` | Balance under the floor needed to place a call | **Yes** — the tick re-checks every minute and resumes from any funding path (checkout, auto-topup, admin credit) |
-| `paused_budget` | `spent_cents + reserved_cents` would exceed `budget_cents`, or the workspace's own monthly spending limit is reached | No — raise whichever of the two fired (`budget_cents`, or `PATCH /billing`), then `resume` |
-| `paused_infra` | Transient platform problem (e.g. the from-number went inactive, calls dispatched but never dialed) | No — fix the cause, then `resume` |
-| `paused_config` | Permanent config problem (no reachable calling window, agent without a duration cap) | No — fix the config, then `resume` |
+| `paused_budget` | `spent_cents + reserved_cents` would exceed `budget_cents`, or the workspace's own monthly spending limit is reached | No — read `pause_reason` (below), raise that limit, then `resume` |
+| `paused_infra` | One contact's call failed to go out more than `max_infra_retries` times | No — resume once calls go out |
+| `paused_config` | Config problem (no reachable calling window, agent without a duration cap, the from-number no longer active) | No — fix the config, then `resume` |
 | `completed` | Nothing live left to dial. Terminal | — |
 | `stopped` | You stopped it. Terminal | — |
 | `archived` | Soft-deleted, hidden from list. Terminal | — |
+
+**`pause_reason`** (on the campaign and on `/stats`) says why a paused campaign is paused,
+so you know where the fix is: `manual`, `insufficient_credit`, `campaign_budget` → raise
+`budget_cents`, resume; `workspace_spend_limit` → raise the monthly limit
+(`PATCH /billing`), resume; `call_placement_failures` (`paused_infra`) → one contact's call
+failed to go out more than `max_infra_retries` times — calls under way finished, nobody lost
+their place; resume once calls go out; `configuration` (`paused_config`). `null` when the
+campaign is not paused.
 
 ### Reading `last_tick_result`
 
@@ -3788,7 +3809,7 @@ Written every tick on both the campaign object and `/stats`. A `running` campaig
 | `insufficient_credit` / `no_billing_account` | Under the credit floor → status `paused_insufficient_credit` |
 | `credit_reserve_would_breach_floor` | Balance minus the worst-case reservation for the next call would drop under the floor |
 | `budget_exhausted` | `budget_cents` reached → status `paused_budget` |
-| `from_number_unavailable` | The from-number is no longer active → status `paused_infra` |
+| `from_number_unavailable` | The from-number is no longer active → status `paused_config` (not `paused_infra`) |
 | `agent_has_no_duration_cap` | The agent's `max_call_duration_secs` was set to `0` mid-campaign → status `paused_config` |
 | `platform_admission_disabled` | Platform-wide admission pause (operational kill switch). In-flight calls and reconciliation continue |
 | `resumed_credit_ok` | Auto-resumed after funding |
@@ -3815,20 +3836,21 @@ Rules that matter:
 - `regulatory_basis` is a required attestation before launch, recorded on the launch audit event together with the enrolled count. It is the artefact that exists when someone asks why a person was called.
 - **Enrollment excludes numbers on the do-not-call list** and reports them in `on_do_not_call`. The dispatcher re-checks at dial time.
 - **A verbal opt-out is honoured automatically.** When a call is classified as `Do Not Call`, that number is added to the workspace's do-not-call list — workspace-wide, across every agent and campaign, not just this one. This fires even when the classification lands long after the call.
-- A number can be dialed by only **one active campaign at a time** (`409 ALREADY_IN_ACTIVE_CAMPAIGN`), so the same person on two lists does not receive double the calls.
+- A number can be dialed by only **one active campaign at a time** — enrolment reports it per number as `in_another_campaign` — so the same person on two lists does not receive double the calls.
 
 ### Campaign error codes
 
 | Status | Code / shape | Cause |
 |---|---|---|
-| 400 | message names the field | Unknown or read-only key, out-of-range value, non-object `retry_rules`/`calling_window`, stop-disposition id from another workspace, empty PATCH, editing a terminal campaign, enrolling into a terminal campaign, over 1,000 contacts in one enroll |
+| 400 | `CAMPAIGN_REQUEST_INVALID` on a create/edit body (message names the field); `CAMPAIGN_QUERY_INVALID` on a list | Unknown or read-only key, out-of-range value, non-object `retry_rules`/`calling_window`, stop-disposition id from another workspace or a label instead of an id, empty PATCH, editing a terminal campaign, enrolling into a terminal campaign, over 1,000 contacts in one enroll |
 | 404 | — | Campaign not in this workspace (or archived); contact not enrolled |
-| 409 | `ALREADY_IN_ACTIVE_CAMPAIGN` | A number is live in another active campaign |
+| 409 | `CAMPAIGN_NOT_STOPPABLE` | Stopping a half-built draft — archive it with `DELETE` |
+| 409 | `CONFLICT` | Launch raced another campaign for one of the draft's contacts — send it again |
 | 422 | `CAMPAIGN_NOT_READY` | Launch preflight failed; `message` names the single blocking cause |
 | 422 | `INVALID_SPLIT` | A malformed or out-of-range `split` on create/update — see [Testing two agents on a campaign](#testing-two-agents-on-a-campaign) |
 | 422 | `INVALID_AGENT` | `agent_id` names an agent from another workspace or one that no longer exists — `message` names the field |
 
-> **Envelope note — the two coded campaign conflicts carry the code twice.** `409 ALREADY_IN_ACTIVE_CAMPAIGN` and `422 CAMPAIGN_NOT_READY` return `{ "error": "<CODE>", "code": "<CODE>", "message": "<human text>" }` — branch on `code` and show `message`; `error` repeats the code rather than carrying prose. `INVALID_SPLIT` and `INVALID_AGENT` use the ordinary `{ "error": "<human text>", "code": "<CODE>" }`. Plain `400`/`404`/`500` responses use `{ "error": "<human text>" }`.
+> **Envelope note — `422 CAMPAIGN_NOT_READY` carries the code twice.** It returns `{ "error": "<CODE>", "code": "<CODE>", "message": "<human text>" }` — branch on `code` and show `message`; `error` repeats the code rather than carrying prose. `INVALID_SPLIT` and `INVALID_AGENT` use the ordinary `{ "error": "<human text>", "code": "<CODE>" }`. Plain `400`/`404`/`500` responses use `{ "error": "<human text>" }`.
 
 ---
 
@@ -4641,7 +4663,7 @@ member can reach in the dashboard has a public endpoint behind it.
 | POST /do-not-call | `do_not_call:manage` |
 | PATCH /do-not-call/:id | `do_not_call:manage` |
 | DELETE /do-not-call/:id | `do_not_call:manage` |
-| GET /campaigns (list/get/stats) | `campaigns:read` |
+| GET /campaigns (list/get/stats), GET /campaigns/defaults | `campaigns:read` |
 | GET /campaigns/:id/leads | `campaigns:read` |
 | POST /campaigns (create) | `campaigns:manage` |
 | PATCH /campaigns/:id | `campaigns:manage` |
