@@ -57,7 +57,7 @@ curl -s -X POST "https://api.goyappr.com/resource" \
   before the key has a window at all: `401` and `403 WORKSPACE_MISMATCH`. Two keys are
   two windows.
 - Every response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
-  `X-RateLimit-Reset` (Unix timestamp). Inside one window a key never hands back the same
+  `X-RateLimit-Reset` (a Unix timestamp in seconds). Inside one window a key never hands back the same
   `Remaining` twice — a burst's answers race back out of order, but sorted they are
   consecutive. A repeated `Remaining` almost always means the burst went over more than
   one key, not a miscount; group by `X-RateLimit-Reset` to see the split (it is a whole
@@ -65,6 +65,8 @@ curl -s -X POST "https://api.goyappr.com/resource" \
 - Over the limit: `429 RATE_LIMIT` with `Retry-After` — whole seconds, never zero.
   Nothing in a `429` was acted on: wait it out, then resend the same request, with the
   same `Idempotency-Key` where one was used. There is nothing to add on top of the wait.
+- The dashboard shows this limit, the API base and the doc links under **Settings →
+  Developers**.
 - Up to your company's `max_concurrent_calls` (default 10) active calls. Capacity
   pressure returns `202` with `status: "queued"` (or `"scheduled"` for a call-window
   defer), not `429` — check both the HTTP status and the response `status`.
@@ -196,15 +198,19 @@ unaffected by anything on the workflow plane, so nothing here requires moving on
 Publishing writes the agent row, so an `updated_at` read before it is stale afterwards.
 Send `settings_updated_at` as `expected_updated_at` on the next `PATCH /agents/{id}`;
 without it the documented create → save → check → publish → PATCH sequence answers
-`409 WORKFLOW_SETTINGS_CONFLICT` with nobody else involved.
+`409 WORKFLOW_SETTINGS_CONFLICT` with nobody else involved. An identical publish replay
+returns the same revision **and** the same `settings_updated_at`.
 
 **Environments.** Every published revision carries `environment` — the deployment plane
 that stored it, returned on `POST /agents/{id}/workflow/publish` (`revision.environment`)
 and on `GET /agents/{id}/workflow/versions`. You never send it. The hosted API stores as
 `testing`, and a call placed through the same API runs on the same plane, so
-publish-then-call always matches — do not treat `testing` as a failure. The one real
-failure case is a version published through a *different* deployment; see
-`artifact_unavailable` in the errors reference.
+publish-then-call always matches — do not treat `testing` as a failure: it is the plane
+that takes your real calls, not a rehearsal copy. The dashboard labels the same version
+**Live** ("Version 3 is live.", "Live · version 3"), and there is no promote step. Mapping:
+`testing` → Live, `production` → Live, `local` → Local. The one real failure case is a
+version published through a *different* deployment; see `artifact_unavailable` in the
+errors reference.
 
 ### Leads
 
