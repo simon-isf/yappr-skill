@@ -4584,15 +4584,21 @@ holding neither gets `403 INSUFFICIENT_SCOPE`.
       "prefix": "ypr_live_9f2c41a",
       "scopes": ["leads:read", "leads:manage"],
       "agent_ids": null,
+      "agents": null,
       "created_at": "ISO8601",
-      "last_used_at": "ISO8601 | null"
+      "last_used_at": "ISO8601 | null",
+      "expires_at": "ISO8601 | null"
     }
   ]
 }
 ```
 
 `agent_ids` is on every read of a key: `null` = no limit, a list = the only agents it
-reaches.
+reaches. `agents` is the same list with each agent's `name` (`null` for an agent that no
+longer exists), so the list alone says which client each key belongs to. `expires_at` is
+when the key stops working, `null` for one that works until revoked; a key past it answers
+`401 EXPIRED_KEY` to every request and **stays listed** until you revoke it. The list takes
+no query parameters — any is `400 API_KEY_REQUEST_INVALID`.
 
 The secret is never returned here — `prefix` (first 16 characters) is enough to tell two
 keys apart and to match a key against the dashboard list. `last_used_at` is when the key
@@ -4609,8 +4615,13 @@ another.
 
 **Request body:** `{"name": "Nightly lead sync", "scopes": ["leads:read", "leads:manage"]}`
 — `scopes` is required and has no default: a key is issued with exactly what you ask for.
-Optional `agent_ids` limits the key to some agents (below). Nothing else is read: an
-unknown body field is `400 API_KEY_REQUEST_INVALID` naming it.
+Optional `agent_ids` limits the key to some agents (below). Optional **`expires_at`** gives
+the key an end date: an ISO 8601 date-time **with a time zone** (`2026-12-31T23:59:59Z`);
+from that moment every request made with it answers `401 EXPIRED_KEY`. Leave it out or
+send `null` for a key that works until revoked. A moment already past, or a date without a
+time zone, is `400 API_KEY_REQUEST_INVALID` rather than guessed at. Give a contractor's or
+a trial client's key an end date instead of relying on someone remembering to revoke it.
+Nothing else is read: an unknown body field is `400 API_KEY_REQUEST_INVALID` naming it.
 
 **Two rules decide what a new key may hold:**
 - **Subset** — you can only grant scopes the calling key itself holds. Anything more is
@@ -4628,16 +4639,28 @@ unknown body field is `400 API_KEY_REQUEST_INVALID` naming it.
   "prefix": "ypr_live_9f2c41a",
   "scopes": ["leads:read", "leads:manage"],
   "agent_ids": null,
+  "agents": null,
   "created_at": "ISO8601",
   "last_used_at": null,
+  "expires_at": null,
   "key": "ypr_live_9f2c41a7b0e3…"
 }
 ```
 `key` appears in this response and no other.
 
-Two creates under one name get one key and one `409 API_KEY_NAME_TAKEN`. There is no
-update — `PATCH`/`PUT /api-keys/{id}` is `405`: change scopes or agents in the dashboard
-(Settings → API keys → Edit scopes), or issue a replacement and revoke the old key.
+A name belongs to **one active key**, compared without regard to case (`Client-A` is taken
+while `client-a` is live): a second is `409 API_KEY_NAME_TAKEN`, and two creates sent at
+once under one name get one key and one `409`. There is no update — `PATCH`/`PUT
+/api-keys/{id}` is `405`: change scopes or agents in the dashboard (Settings → API keys →
+Edit scopes), or issue a replacement and revoke the old key.
+
+**Rotating from code** therefore needs a **new name** for the replacement (the old key
+still holds its name until revoked, and there is no rename): issue the replacement under
+it, move the job over — both keys work meanwhile, so nothing stops — then
+`DELETE /api-keys/{id}` the old one, from a different key (a key cannot revoke itself). The
+dashboard's **Rotate** on a key's card does it in one step and keeps the name, scopes,
+agents and end date; the old secret keeps working for a grace you pick (up to 7 days, shown
+as its `expires_at`) or stops at once, for a secret that leaked.
 
 #### Limit a key to some agents — `agent_ids`
 
@@ -4686,12 +4709,13 @@ refused, and it drops off `GET /api-keys` and the dashboard list.
 
 A key cannot revoke itself: `409 API_KEY_SELF_REVOKE`, pointing at the dashboard, where a
 person can do it deliberately — it would otherwise leave nothing able to issue or revoke
-keys for the workspace. Rotation is therefore: issue the replacement, move your
-integration onto it, then revoke the old one.
+keys for the workspace. Rotation is therefore: issue the replacement under a new name,
+move your integration onto it, then revoke the old one.
 
 **Errors** (all three endpoints): `400 API_KEY_REQUEST_INVALID` (`name` missing/over 100
 characters, `scopes` missing/empty/not an array of strings, an empty or oversized
-`agent_ids`, or a field the endpoint does not read); `400 API_KEY_AGENT_UNKNOWN` (an
+`agent_ids`, an `expires_at` without a time zone or already past, a query parameter on the
+list, or a field the endpoint does not read); `400 API_KEY_AGENT_UNKNOWN` (an
 `agent_ids` entry that is not a live agent here); `400
 API_KEY_SCOPE_UNKNOWN` (a requested scope does not exist — check it against the Scope
 Map); `403 INSUFFICIENT_SCOPE` (the two `GET`s: neither `api_keys:read` nor

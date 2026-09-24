@@ -2297,12 +2297,21 @@ The secret comes back **once**, in `key` — save it before doing anything else;
 read returns it, only `prefix` (its first 16 characters, enough to tell keys apart in a
 list). `scopes` is required and has no default: a key gets exactly what you ask for, and
 only a **subset** of what the calling key already holds — asking for more is
-`403 API_KEY_SCOPE_ESCALATION`, naming each scope that went beyond. A key cannot revoke
-itself (`409 API_KEY_SELF_REVOKE`); rotate by issuing the replacement, moving the
-integration onto it, then revoking the old one with `DELETE /api-keys/{id}`.
+`403 API_KEY_SCOPE_ESCALATION`, naming each scope that went beyond. Add
+`"expires_at": "2026-12-31T23:59:59Z"` (a date-time **with** a time zone) for a key that
+should stop on its own — a contractor's, a trial client's; after it every request is
+`401 EXPIRED_KEY`, and the key stays listed with its `expires_at` until revoked.
+
+**Rotating from code.** A name belongs to one active key (case ignored, so `Client-A` and
+`client-a` clash: `409 API_KEY_NAME_TAKEN`), and there is no rename, so the replacement
+needs a **new name** — e.g. a date suffix. Issue it, move the integration onto it (both keys
+work meanwhile), then revoke the old one with `DELETE /api-keys/{id}` from a different key —
+a key cannot revoke itself (`409 API_KEY_SELF_REVOKE`). The dashboard's **Rotate** does all
+of this in one step and keeps the name; the old secret keeps working for a grace of up to
+7 days, or stops at once for a leaked secret.
 
 **`api_keys:read` is the audit scope.** It lists keys (`GET /api-keys` — names, prefixes,
-scopes, `agent_ids`, `last_used_at`) and can neither issue nor revoke. It is **not** in the
+scopes, `agent_ids` with each agent's name in `agents`, `last_used_at`, `expires_at`) and can neither issue nor revoke. It is **not** in the
 dashboard's **Read-only** preset (that one leaves out billing, API keys and affiliates), but
 it can be granted through `POST /api-keys`. A key holding neither it
 nor `api_keys:manage` gets `403 INSUFFICIENT_SCOPE` on `GET /api-keys`, and so do `POST` and
