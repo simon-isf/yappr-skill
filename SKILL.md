@@ -1640,6 +1640,81 @@ Concrete example pastes for common platforms:
 - [ ] The endpoint is marked `is_active: true`
 - [ ] If the URI ever needs to be revoked, the recipe is delete-and-recreate (not rotate)
 
+### Step 5.1c — Option C: call from the customer's own Telnyx numbers (no Yappr number needed)
+
+Use this when the customer already owns numbers at Telnyx and wants agents to call **from** them: their caller ID, their Telnyx account, nothing ported or bought. It is outbound only — calls *to* those numbers keep going where they go in Telnyx; to have an agent answer them, add a SIP endpoint (Step 5.1b). Full reference: **Carrier Accounts** in `yappr-api.md`.
+
+**Who bills what.** Telnyx bills the customer's own account for the phone minutes at their rates, Telnyx's own fees (call control, media streaming, recording, noise suppression) and the numbers themselves; none of it appears on the Yappr bill. Yappr bills the agent minutes, at the same per-minute rate as any other call. Say this before they connect — it is the first question they will have.
+
+**0. Check the workspace is switched on.** Yappr switches carrier accounts on workspace by workspace; there is no self-serve toggle.
+
+```bash
+curl -s "https://api.goyappr.com/carrier-accounts/status" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+
+- `200 {"enabled": true}` — go on.
+- `403 CARRIER_ACCOUNTS_NOT_ENABLED` — not on yet. Stop here and have the customer ask Yappr support to switch it on.
+- `401 INSUFFICIENT_SCOPE` — the key lacks the carrier scopes, which no key has by default. The dashboard's Settings → API keys shows the **Your carrier (Telnyx)** scope group only once the workspace is on: no group means not on yet (ask support); otherwise create a new key with `carrier_accounts:read` and `carrier_accounts:manage`.
+
+**1. Prerequisites in Telnyx.** The customer does these in their Telnyx portal; confirm each one before calling the API:
+
+- [ ] The account is verified to **Level 2**. Level 1 allows calls inside the US only; Level 2 turns on international calling, Israel included.
+- [ ] An **outbound voice profile** allows every country the agents will call. A new profile allows only the US and Canada, and a call anywhere else is refused. Set a **channel limit** and a **daily spend limit** on it: they cap what a leaked key could spend.
+- [ ] A **dedicated API key for Yappr** (Account Settings → API Keys → Create API Key — Telnyx shows it once). Telnyx keys cannot be limited to certain actions, so this one is for Yappr alone; switching it off in Telnyx stops Yappr's calls from the account at once.
+- [ ] The account's **public key** (Keys & Credentials → Public Key). Optional but recommended: Yappr uses it to check that call events really come from their account.
+
+The Telnyx key is a full-access credential to the customer's account: take it once, send it once, never echo it back or write it into a file or log.
+
+**2. Connect the account.**
+
+```bash
+curl -s -X POST "https://api.goyappr.com/carrier-accounts" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Main Telnyx", "api_key": "TELNYX_API_KEY", "public_key": "TELNYX_PUBLIC_KEY"}' | jq '{id: .data.id, profiles: .telnyx.outbound_voice_profiles}'
+```
+
+Telnyx checks the key before anything is saved: `422 TELNYX_KEY_REJECTED` stores nothing (have them check the key is active and paste it again). The response lists their outbound voice profiles and apps, and a `webhook_url` — a secret, needed only if they bring their own app in the next step.
+
+**3. Choose the Call Control App.** Default: let Yappr create one on the profile whose `allowed_destinations` cover the countries the agents call.
+
+```bash
+curl -s -X POST "https://api.goyappr.com/carrier-accounts/ACCOUNT_ID/connection" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"create": {"outbound_voice_profile_id": "PROFILE_ID"}}' | jq .
+```
+
+Yappr creates an app named "Yappr outbound" and never changes their profile. Alternative: `{"connection_id": "…"}` for an app they made just for Yappr, with its webhook URL set to exactly the account's `webhook_url`, a profile attached, and switched on.
+
+**4. Add the numbers**, one call each. Each must be an active number in that Telnyx account; `outbound_agent_id` binds the calling agent at once.
+
+```bash
+curl -s -X POST "https://api.goyappr.com/carrier-accounts/ACCOUNT_ID/numbers" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"number": "+972XXXXXXXXX", "outbound_agent_id": "AGENT_ID"}' | jq .
+```
+
+`409 CONNECTION_REQUIRED` means step 3 is not done; `422 NUMBER_NOT_IN_YOUR_TELNYX_ACCOUNT` means Telnyx does not list it as active there; `409 NUMBER_ALREADY_REGISTERED` means the number is held elsewhere in Yappr (Yappr support moves it). Tell the customer to leave each number's settings in Telnyx as they are.
+
+**5. Test.** `POST /carrier-accounts/ACCOUNT_ID/test` places no call and returns `ok` plus one check each for the key, the app, the profile (its `detail` lists the allowed countries) and the numbers. Fix any failed check in Telnyx and test again.
+
+**6. Use the numbers** — as `from` on `POST /calls`, as a campaign's `from_phone_number_id`, or as an agent's outbound number. Nothing else changes in the call request. The account reads `untested` until the first answered call, then `active`.
+
+**7. Watch for a pause.** `GET /carrier-accounts/ACCOUNT_ID` → `status: "paused"` switches every number on the account off, so campaigns stop and `POST /calls` from those numbers answers `400 INVALID_FROM_NUMBER`. Only a refused key or a missing app pauses at once; any other refusal (a country the profile does not allow, one bad destination, a caller ID Telnyx will not present) counts once, and five in a row pause it. Read `pause_reason` and `last_error`, fix the cause in Telnyx, then `POST /carrier-accounts/ACCOUNT_ID/reactivate` — it tests first and answers `422 CARRIER_TEST_FAILED` with the checks still failing.
+
+**A refused call before it rings has no webhook when placed directly.** `POST /calls` answers `422` with the reason in `error`, and that answer is the only notice; queued and campaign calls send `call.failed` with `data.error_reason`. Make sure the caller's code reads that `422`.
+
+**Pre-launch checklist for carrier accounts:** all the standard items in Step 5.2 still apply, plus:
+
+- [ ] `GET /carrier-accounts/status` is `200` for this workspace
+- [ ] `POST /carrier-accounts/{id}/test` returns `ok: true`, and the profile's allowed countries cover every destination
+- [ ] Every number shows `ownership_verified_at` set and `is_active: true`
+- [ ] One real call from a carrier number was answered, and the account reads `active`
+- [ ] The customer knows Telnyx bills the phone minutes, and where to turn the account back on (Phone numbers → Your carrier) if it pauses
+
 ### Step 5.2 — Pre-Launch Checklist
 
 Before telling the user they're live, verify each item:
@@ -2260,9 +2335,9 @@ curl -s -X POST "https://api.goyappr.com/billing/topup" \
 
 ## Skill Scope
 
-This skill covers: agents, tools, phone numbers, calls, dispositions, leads, lead tags, shared links, billing.
+This skill covers: agents, tools, phone numbers (including SIP endpoints, Step 5.1b, and calling from the customer's own Telnyx numbers, Step 5.1c), calls, dispositions, leads, lead tags, shared links, billing.
 
-Out of scope: custom SIP trunks, team/user management, WhatsApp directly (only via webhook to an external service), model training, non-Israeli phone numbers.
+Out of scope: custom SIP trunks (distinct from SIP endpoints, Step 5.1b, and carrier accounts, Step 5.1c), team/user management, WhatsApp directly (only via webhook to an external service), model training, buying non-Israeli phone numbers (a number in the customer's own Telnyx account may be any country's, Step 5.1c).
 
 If a request is out of scope, say so clearly and offer the developer consultation link: **https://cal.com/yappr/skill-dev-consultation**
 
