@@ -4123,7 +4123,12 @@ The enrolled contacts and their per-contact state, oldest enrollment first.
 
 **Scopes:** `campaigns:read`
 
-**Query params:** `status` (comma-separated), `limit` (default 50, max 200), `offset`.
+**Query params:** `status` (comma-separated; an unknown status is `400 CAMPAIGNS_QUERY_INVALID`, naming it), `phone`, `limit` (default 50, clamped to 1–200), `offset`.
+
+`phone` finds a contact by the number you know, in any format: `0501234567`,
+`050-123-4567`, `+972501234567` and `00972501234567` find the same contact, and part of a
+number (`1234567`, at least 3 digits) finds every contact whose number contains it. Text
+that is not a number (`?phone=Dana`) is `400 CAMPAIGNS_QUERY_INVALID`.
 
 ```jsonc
 {
@@ -4289,7 +4294,7 @@ All of these must hold; the first failure is the one you get back, named in `mes
 | An agent on this campaign has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` on every agent the campaign calls with, the A/B test's second agent included — `0` means the agent has no cap of its own, so each call can run to the platform's 65-minute limit, far above any budget |
 | The second agent on this campaign's A/B test is not available | Point `split.agent_id` at an active agent in this workspace, or send `"split": null` |
 | The phone number assigned to this campaign is no longer active | Pick an `is_active` number with `status: "active"` |
-| This workspace has no upcoming calling window | Fix `PUT /call-windows` (and the workspace timezone, which is dashboard-only) |
+| This workspace has no upcoming calling window | Fix `PUT /call-windows` — windows and, if it is wrong, the workspace's `timezone` (an IANA name) in the same request |
 | Enroll at least one contact before launching | `POST /campaigns/:id/leads` — at least one contact must still be callable (`pending` or `scheduled`) |
 
 ---

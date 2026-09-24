@@ -1818,7 +1818,7 @@ Three things to say to the user before you build one, because they surprise peop
 |---|---|
 | An agent, with a **positive** `max_call_duration_secs` | `GET /agents/:id` — `0` means the agent has no cap of its own, so each call can run to the platform's 65-minute limit; campaigns refuse it, because that worst case is far above any budget |
 | An active from-number | `GET /phone-numbers` — needs `is_active: true` and `status: "active"` |
-| A reachable workspace calling window | `GET /call-windows` — this is the schedule the campaign obeys; confirm the timezone too (dashboard-only) |
+| A reachable workspace calling window | `GET /call-windows` — this is the schedule the campaign obeys; confirm its `timezone` too (set it with `PUT /call-windows`) |
 | Credit above the call floor | `GET /billing` |
 | A compliance basis the user can attest to | Ask (see Step 6.4) |
 | An agent that does **not** depend on custom `{{Variables}}` | Campaign calls are placed by the platform and carry **no per-call `variables`**, so a custom `{{AvailableSlots}}` would render empty. Built-ins (`{{CurrentDate}}`, `{{CallerPhone}}`, `{{Timezone}}`, …) still work, and per-contact context belongs in the lead's memory (`notes` at enroll → `long_term_context`). If the prompt genuinely needs per-lead pre-fetched values, dispatch with Phase 3 Pattern 2/3 instead of a campaign |
@@ -2034,6 +2034,10 @@ curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/resume" -H "Autho
 curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/stop"   -H "Authorization: Bearer $YAPPR_API_KEY" | jq .status
 curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID"      -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
 
+# Find one person on this campaign by the number you know — any format, or 3+ digits of it
+curl -s "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads?phone=050-123-4567" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '.data[] | {lead_id, status, stop_reason}'
+
 # Remove one person from this campaign (addressed by lead_id, terminal)
 curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads/LEAD_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
@@ -2059,7 +2063,7 @@ curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads/LEAD_ID" 
 | An agent on this campaign has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` on every agent the campaign calls with, the A/B test's second agent included — `0` = no cap of the agent's own (only the platform's 65-minute limit), which campaigns refuse because that worst case is far above any budget |
 | The second agent on this campaign's A/B test is not available | Point `split.agent_id` at an active agent in this workspace, or send `"split": null` |
 | The phone number assigned to this campaign is no longer active | Pick a number with `is_active: true` and `status: "active"` |
-| This workspace has no upcoming calling window | `PUT /call-windows` (and confirm the workspace timezone, which is dashboard-only) |
+| This workspace has no upcoming calling window | `PUT /call-windows` — windows, and the workspace `timezone` if it is wrong, in the same request |
 | Enroll at least one contact before launching | `POST /campaigns/:id/leads` — and check the enroll report: everything may have been filtered as DNC or invalid |
 
 **`in_another_campaign` on enroll.** A number can only be dialed by one campaign at a time, workspace-wide — the guard that stops the same person being called twice as fast. Enrolment never refuses the batch for it: each such number is reported in `in_another_campaign[]` with the `campaign_id` and `campaign_name` that holds it, and everyone else is enrolled. To move those contacts here, finish or stop the other campaign, or exclude them there, then enroll again. `409 CONFLICT` on launch means another campaign took one of the draft's contacts at the same instant — nothing changed; launch again and that contact is skipped.
