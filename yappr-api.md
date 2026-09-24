@@ -1558,7 +1558,7 @@ This is the exact flat payload Yappr sends to a webhook tool's `config.url` when
 | `company_id`, `agent_id`, `agent_name` | Agent config | Identifies which company/agent made the call |
 | `call_id` | Platform | Yappr's internal UUID for the call (use to query `GET /calls/:id` if you need the transcript or disposition later) |
 | `call_direction` | Platform | `inbound`, `outbound`, or `web_call` |
-| `caller_number`, `callee_number` | PSTN / WebRTC | E.164 |
+| `caller_number`, `callee_number` | PSTN / WebRTC | E.164 on a phone call. On a call that arrived on a SIP endpoint, `callee_number` is the endpoint's address — its credential, so do not log or forward it — and `caller_number` is whatever the customer's phone system sent |
 | `call_metadata` | `POST /calls body.metadata` | **The exact object you passed at call creation.** Use this to carry CRM IDs (appointment_id, contact_id, calendar_id, etc.) that tool receivers need to route updates back to the right record. Empty object `{}` if you didn't pass any. |
 | `call_variables` | `POST /calls body.variables` | The same `{{VariableName}}` values that were injected into the system prompt. Available here for tool receivers that want to echo context (e.g. Slack alerts: "Noa booked an appointment for {{LeadName}}"). |
 | `<static_params>` | Tool `config.payload_config.static_parameters` | Fixed values set when the tool was created — the same for every call |
@@ -1806,7 +1806,27 @@ the form `sip:{slug}@yappr-byoc.sip.telnyx.com`.
 There is **no SIP digest auth** at the protocol layer. The slug embedded
 in the URI is the bearer credential — server-generated with ~120 bits of
 random entropy in its 24-char suffix, so unguessable. Treat the full URI
-like an API key: anyone who has it can dial the agent.
+like an API key: anyone who has it can dial the agent, billed to the
+workspace.
+
+**What is not enforced — say so before handing a URI out:**
+
+- **No TLS.** Calls reach the URI over UDP or TCP, port 5060. TLS is not
+  available on these addresses, so the URI travels in clear text between the
+  customer's phone system and Yappr, and sits in its configuration, logs and
+  SIP traces.
+- **No source filtering.** `allowed_source_ips` is stored with the endpoint
+  for the customer's records, but no call is checked against it: a call to the
+  URI is answered wherever it comes from.
+- **The URI is not hidden everywhere.** A call that arrives on an endpoint
+  reads `to: null` and carries `sip_endpoint_id` on `GET /calls` and
+  `GET /calls/:id`, and its `To` is empty in the export. The dashboard's call
+  logs still show the URI as the number called, and the call details tools and
+  webhooks receive carry it as `callee_number`.
+- **What does limit exposure:** who can read the phone system's configuration,
+  `is_active: false` while the endpoint is not in use, and rotating the URI
+  (create a new endpoint, repoint the phone system, then delete the old one)
+  whenever it may have been seen.
 
 Use SIP Endpoints when the customer already has a business line and
 wants Yappr to answer specific calls (overflow, after-hours, escalations)
@@ -1817,9 +1837,9 @@ agent can answer calls from both.
 **Caller-ID trust:** for calls arriving via SIP endpoints, the
 calling-party number is whatever the customer's upstream sends —
 attacker-controlled if the upstream is compromised. By default Yappr
-does **not** use that number for lead-context lookups or returning-caller
-recognition. Agents must opt in via the dashboard if their upstream is
-trustworthy.
+does **not** use that number for lead-memory lookups or returning-caller
+recognition, on any call that arrives via a SIP endpoint. There is no setting
+to change that, in the API or the dashboard.
 
 ### GET /sip-endpoints
 
@@ -1830,8 +1850,12 @@ List the company's SIP endpoints.
 **Query params:**
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `limit` | int | 50 | max 200 |
+| `limit` | int | 50 | 1–200; a larger value is capped at 200 |
 | `offset` | int | 0 | for pagination |
+
+Newest first. Any other parameter (a filter such as `status` or `name`) is
+`400 SIP_ENDPOINT_QUERY_INVALID`, not answered with every endpoint. Each row's
+`sip_uri` is the endpoint's credential.
 
 **Response:**
 ```json
@@ -1867,14 +1891,22 @@ PBX/CPaaS. No authentication setup required at the SIP layer.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `name` | string | yes | Human-readable label, shown in the dashboard |
-| `inbound_agent_id` | uuid | yes | Agent that answers calls routed to this endpoint |
-| `slug` | string | no | Optional human-readable prefix (max 12 chars). Server appends a hyphen and a 24-char random suffix |
-| `allowed_source_ips` | string[] | no | Optional CIDRs/IPs that may dial this endpoint. `null` (default) accepts any source |
+| `name` | string | yes | 1–200 characters, shown in the dashboard |
+| `inbound_agent_id` | uuid | yes | An agent in this workspace; it answers every call to the endpoint |
+| `slug` | string | no | The readable start of the address: 2–12 characters. Server appends a hyphen and a 24-char random suffix |
+| `allowed_source_ips` | string[] | no | Up to 50 IPv4/IPv6 addresses, each optionally with a `/prefix`. **Recorded only — no call is checked against it.** `[]` and `null` both mean no list |
 
-Slug constraints (enforced server-side): 4–64 chars total, lowercase
-letters / digits / single hyphens, no consecutive hyphens, must not start
-with a reserved prefix.
+Slug rule: 2–12 lowercase letters, digits and single hyphens, starting and
+ending with a letter or digit (letters are lowercased), and not a reserved
+word — `yappr`, `admin`, `internal`, `system`, `api`, `sip`, `telnyx`,
+`trunk`, `root`, `test`, `sudo`, `support` — alone or followed by a hyphen. A
+slug that does not fit is refused with `400 SIP_ENDPOINT_REQUEST_INVALID`,
+never rewritten. Leave it out and the prefix is derived from `name`, cut to
+12 characters.
+
+Any other field — `sip_username`, `sip_password`, `transport`,
+`require_tls`, a typo — is refused with `400 SIP_ENDPOINT_REQUEST_INVALID`,
+by name, rather than dropped, and nothing is created.
 
 **Rate limit:** 20 creates per company per day.
 
@@ -1894,9 +1926,10 @@ with a reserved prefix.
 }
 ```
 
-The customer pastes the value of `sip_uri` into their telephony platform's
-outbound SIP route. UDP, TCP, and TLS are all supported. No username,
-no password.
+The customer pastes the value of `data.sip_uri` into their telephony
+platform's outbound SIP route: authentication none, UDP or TCP on port 5060
+(TLS is not available), G.711 (µ-law or A-law) or G.722. No username, no
+password.
 
 ---
 
@@ -1910,8 +1943,11 @@ Get one endpoint. Same fields as the list response.
 
 ### PATCH /sip-endpoints/{id}
 
-Update name, inbound agent, active state, or allowlist. The slug is
-immutable — delete and recreate if a different URI is needed.
+Update name, inbound agent, active state, or the recorded source addresses.
+Send at least one. The slug is immutable: a body with `slug` is refused with
+`400 SIP_ENDPOINT_REQUEST_INVALID`, and so is any other field the endpoint does
+not read, by name. To move to a different URI, create a new endpoint, point the
+phone system at it, then delete this one.
 
 **Scopes:** `sip_endpoints:manage`
 
@@ -1919,18 +1955,20 @@ immutable — delete and recreate if a different URI is needed.
 |-------|------|-------|
 | `name` | string | new label |
 | `inbound_agent_id` | uuid | agent must belong to this company |
-| `is_active` | bool | toggle to disable temporarily without deleting |
-| `allowed_source_ips` | string[] \| null | replace the source-IP allowlist; `null` removes it |
+| `is_active` | bool | `false` switches the endpoint off without deleting it: calls to its URI are rejected before they are answered until it is switched back on |
+| `allowed_source_ips` | string[] \| null | replace the recorded list (not enforced); `[]` or `null` clears it |
 
-**Response:** `200` — updated endpoint object.
+**Response:** `200` — `{ "data": { ...endpoint } }`.
 
 ---
 
 ### DELETE /sip-endpoints/{id}
 
 Hard-deletes the endpoint. New calls dialing the slug get rejected
-pre-answer; in-flight calls finish. To rotate access, delete + create a
-new endpoint with a fresh slug.
+pre-answer; in-flight calls finish. A deleted URI is never handed out again.
+To rotate access, **create first**: create a new endpoint, point the phone
+system at its `sip_uri`, then delete the old one — deleting first drops every
+call until the new URI is in place.
 
 **Scopes:** `sip_endpoints:manage`
 
@@ -2388,13 +2426,19 @@ number. Use in retry-throttle logic (automation platforms like Make.com/n8n get 
 
 **The list row now carries the same `cost_cents`, `failure`, `source`, `shared_link_id`
 and `analysis` that `GET /calls/:id` returns** — see that endpoint below for the full
-semantics of each. All five (plus `recording_url`, `disposition`, `lead` and
-`ab_variant`) are **omitted**, not `null`, on a row that has none — `analysis` is the one
+semantics of each. All five (plus `recording_url`, `disposition`, `lead`,
+`ab_variant` and `sip_endpoint_id`) are **omitted**, not `null`, on a row that has none — `analysis` is the one
 exception and is on every row. A month's spend or a failure report is this list summed,
 not one `GET /calls/:id` per call; a sync can page this list and decide what to do with
 each call — `analysis.status: "done"` means the values are ready on the detail read,
 `"pending"` means come back later, `"skipped"`/`"failed"` mean nothing more is coming.
 `updated_at` is on every row, and `GET /calls/:id` carries the same value.
+
+**A call that arrived on a SIP endpoint** is `source: phone_inbound` with **`to: null`** —
+it dialled no number — and carries **`sip_endpoint_id`**. Its `from` is whatever the
+customer's phone system sent as the caller, which may not be a phone number. The
+endpoint's URI is its credential, so neither this list, `GET /calls/:id` nor the export
+returns it. There is no `sip_endpoint_id` filter; match on the field instead.
 
 **`cost_status`** is on every row, beside `cost_cents`: `charged` (the recorded charge;
 final), `not_charged` (`cost_cents: 0`, final — the call failed, went unanswered, was

@@ -1606,7 +1606,7 @@ When the customer already has a business line and an external telephony system t
 
 This path is independent of Yappr-bought numbers — a single agent can answer calls from both, and they share the same billing, concurrency cap, and call-log storage. The PSTN inbound flow (Step 5.1 above) is unaffected.
 
-**The model: slug = bearer credential, no SIP digest auth.** The URI we hand the customer contains a 24-char random suffix (~120 bits of entropy). Anyone with the URI can dial the agent — treat it like an API key. To rotate access, delete the endpoint and create a new one (the new URI has a fresh slug).
+**The model: slug = bearer credential, no SIP digest auth.** The URI we hand the customer contains a 24-char random suffix (~120 bits of entropy). Anyone with the URI can dial the agent, billed to the workspace — treat it like an API key. The URI cannot be changed; to rotate access, create a new endpoint, point the phone system at its `sip_uri`, then delete the old one — in that order, so no call is dropped.
 
 **Create the endpoint via API:**
 
@@ -1617,9 +1617,9 @@ curl -s -X POST "https://api.goyappr.com/sip-endpoints" \
   -d '{"name": "After-hours", "inbound_agent_id": "AGENT_UUID"}'
 ```
 
-The response includes `sip_uri` — that's everything the customer needs. There is no `sip_username` or `sip_password` to copy.
+The response is the endpoint wrapped in `data`, and `data.sip_uri` is everything the customer needs. There is no `sip_username` or `sip_password` to copy. `slug` is optional: the readable start of the address, 2–12 lowercase letters, digits and single hyphens, starting and ending with a letter or digit, and not a reserved word (`yappr`, `admin`, `internal`, `system`, `api`, `sip`, `telnyx`, `trunk`, `root`, `test`, `sudo`, `support`) or one followed by a hyphen. A slug that does not fit is refused with `400 SIP_ENDPOINT_REQUEST_INVALID`, never rewritten. Leave it out and the prefix is derived from `name`, cut to 12 characters. Any field the endpoint does not read (`sip_password`, `transport`, `require_tls`, a typo) is refused the same way, by name.
 
-**Hand the URI to the customer's telephony.** They paste it as the SIP destination in their PBX/CPaaS outbound route. No authentication setup. UDP, TCP, and TLS are all supported by the upstream SIP gateway; G711/G722 codecs are advertised.
+**Hand the URI to the customer's telephony.** They paste it as the SIP destination in their PBX/CPaaS outbound route. Authentication: none ("none" or "anonymous"). Transport: UDP or TCP, port 5060 — **TLS is not available on these addresses**, so the URI travels in clear text between their phone system and Yappr and sits in their configuration, logs and SIP traces. Codecs: G.711 (µ-law or A-law) or G.722.
 
 Concrete example pastes for common platforms:
 - **Twilio Studio** — set the "Connect Call To" SIP value in the appropriate widget to `sip_uri`
@@ -1628,9 +1628,11 @@ Concrete example pastes for common platforms:
 - **FreeSWITCH** — `<action application="bridge" data="sofia/external/<sip_uri>"/>` in the relevant XML route
 - **3CX / Yeastar / hosted PBX** — paste the URI as the "SIP trunk destination" with auth set to "none"
 
-**Optional: source-IP allowlist.** If the customer's PBX has a fixed egress IP, pass `allowed_source_ips: ["1.2.3.4/32"]` on create (or PATCH later). Calls from any other IP are rejected pre-answer. Useful defense-in-depth on top of slug obscurity.
+**`allowed_source_ips` is a record, not a filter.** The field is stored with the endpoint (up to 50 IPv4/IPv6 addresses, each optionally with a `/prefix`), but no call is checked against it: a call to the URI is answered wherever it comes from. Never tell the customer it blocks other sources. What actually limits exposure: who can read the phone system's configuration, `is_active: false` while the endpoint is not in use (calls are then rejected before they are answered), and rotating the URI whenever it may have been seen.
 
-**Caller-ID note.** Because the upstream is customer-controlled, the caller-ID arriving in the SIP `From` header cannot be trusted by default. Yappr **skips lead-context lookups** on calls arriving via SIP endpoints unless the agent has `trust_external_sip_caller_id = true`. Set that only when the upstream is operated directly by the customer and they vouch for the caller-ID.
+**Caller-ID note.** Because the upstream is customer-controlled, the caller-ID arriving in the SIP `From` header cannot be trusted. Yappr **skips lead-memory lookups and returning-caller recognition** on every call arriving via a SIP endpoint. There is no setting to turn that on, in the API or the dashboard — an agent field such as `trust_external_sip_caller_id` is refused with a 400.
+
+**Reading these calls back.** A SIP-endpoint call is `source: phone_inbound` with `to: null` (it dialled no number) and carries `sip_endpoint_id`; its `from` is whatever the phone system sent as the caller, which may not be a phone number. The calls API and the export never return the URI, but the dashboard's call logs show it as the number called, and the call details the agent's tools and webhooks receive carry the address as `callee_number` — so anyone who can read those can read the credential.
 
 **Pre-launch checklist for SIP endpoints:** all the standard items in Step 5.2 still apply, plus:
 
@@ -1638,7 +1640,8 @@ Concrete example pastes for common platforms:
 - [ ] A test call from the customer's system reaches the agent (the call appears in the dashboard call log, and via `GET /calls`)
 - [ ] The customer understands the caller-ID trust model (default: untrusted)
 - [ ] The endpoint is marked `is_active: true`
-- [ ] If the URI ever needs to be revoked, the recipe is delete-and-recreate (not rotate)
+- [ ] The customer knows the rotation recipe: create a new endpoint, repoint the phone system, then delete the old one (deleting first drops calls until the new URI is in place)
+- [ ] The customer knows TLS is not available and `allowed_source_ips` is not enforced
 
 ### Step 5.1c — Option C: call from the customer's own Telnyx numbers (no Yappr number needed)
 
