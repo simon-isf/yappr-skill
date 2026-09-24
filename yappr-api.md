@@ -4779,8 +4779,10 @@ There is no subscription field: Yappr is prepaid credit. `balance` is `balance_c
 whole currency units. `is_suspended` is `true` while calling is stopped for a billing
 reason — a suspended workspace still answers this read. Auto top-up is the three
 `auto_topup_enabled` / `auto_topup_amount_cents` (charged each time) /
-`low_balance_threshold_cents` (the balance that triggers it) fields together; all `false`
-or `null` on a workspace that never configured it, and none of them writable here.
+`low_balance_threshold_cents` (the balance that triggers it) fields together, none of
+them writable here. `auto_topup_enabled` says whether it is on; the amount and threshold
+carry values even while it is off (`2000` and `500` if never set), and are `null` only
+before the workspace has a credit account.
 
 `billing_email` is masked (`s***@domain`), never the full address, and `null` when
 unset. `monthly_spend_cents` is reported **whether or not a limit is set** — it is
