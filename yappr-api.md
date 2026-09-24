@@ -1938,6 +1938,353 @@ new endpoint with a fresh slug.
 
 ---
 
+## Carrier Accounts (the customer's own Telnyx account)
+
+Let agents call **from numbers the customer already owns at Telnyx** — nothing ported,
+no Yappr number bought. Yappr places each call on a Call Control App in the customer's
+own Telnyx account, with an API key they gave Yappr, so **Telnyx bills their account**
+for the phone minutes and its own fees (call control, media streaming, recording, noise
+suppression). **Yappr bills the agent minutes** at the usual per-minute rate. The agent,
+the recording, the transcript and the webhooks are the same as on any other call, and
+the recording is copied into Yappr when the call ends.
+
+**Outbound only.** Calls *to* these numbers keep going wherever they go in Telnyx today.
+To have an agent answer them, route the number in Telnyx to a SIP endpoint (above).
+Setting `inbound_agent_id` on one of these numbers is
+`422 INBOUND_NOT_AVAILABLE_ON_EXTERNAL_NUMBER`.
+
+**Switched on per workspace, by Yappr.** It is off by default, and there is no
+self-serve switch. Until Yappr switches the workspace on, every route below answers
+`403 CARRIER_ACCOUNTS_NOT_ENABLED` (body `{error, code, enabled: false}`), nothing is
+sent to Telnyx, and the dashboard shows no **Phone numbers → Your carrier** tab. The
+customer asks Yappr support to switch it on.
+
+**Scopes:** `carrier_accounts:read` (every `GET`) and `carrier_accounts:manage` (every
+other method — `test` included, because it uses the customer's Telnyx key). Both are
+opt-in: no existing key was given them, a new key does not start with them, and the
+dashboard offers the **Your carrier (Telnyx)** scope group only once the workspace is
+switched on. A key without the route's scope gets `401 INSUFFICIENT_SCOPE` — scopes are
+checked before the workspace switch, so such a key never sees the `403` above. In the
+dashboard, only owners and admins can change a carrier account.
+
+| Method | Path | What it does | Daily limit |
+|---|---|---|---|
+| GET | `/carrier-accounts/status` | Is this workspace switched on? `{"enabled": true}`, or the `403` | — |
+| GET | `/carrier-accounts` | `{ "data": [account] }`, numbers expanded, never `webhook_url` | — |
+| POST | `/carrier-accounts` | Connect a Telnyx account | 10 |
+| GET | `/carrier-accounts/{id}` | One account; `webhook_url` only for a `manage` key | — |
+| PATCH | `/carrier-accounts/{id}` | Rename, replace the API key or the public key | 20 |
+| DELETE | `/carrier-accounts/{id}` | Disconnect | — |
+| POST | `/carrier-accounts/{id}/connection` | Create or choose the Call Control App | 10 |
+| POST | `/carrier-accounts/{id}/test` | Check everything. Places no call | 60 |
+| POST | `/carrier-accounts/{id}/reactivate` | Test, then lift a pause | shares `test`'s 60 |
+| POST | `/carrier-accounts/{id}/numbers` | Add a number from that Telnyx account | 50 |
+| DELETE | `/carrier-accounts/{id}/numbers/{phone_number_id}` | Remove a number | — |
+
+Limits are per workspace per day; over one is `429 RATE_LIMITED`. On any route,
+`503 TELNYX_UNAVAILABLE` means Telnyx did not answer and nothing changed (retry in a
+minute), and an id not in this workspace is `404 CARRIER_ACCOUNT_NOT_FOUND`.
+
+### The carrier account object
+
+```json
+{
+  "id": "uuid",
+  "name": "Main Telnyx",
+  "provider": "telnyx",
+  "api_key_last4": "9XyZ",
+  "api_key_updated_at": "ISO8601",
+  "public_key_set": true,
+  "signature_verified": false,
+  "connection": { "id": "CALL_CONTROL_APP_ID", "created_by_yappr": true, "outbound_voice_profile_id": "PROFILE_ID" } | null,
+  "status": "untested" | "active" | "paused",
+  "pause_reason": "key_rejected" | "connection_invalid" | "carrier_rejections" | null,
+  "last_error": { "code": "carrier_rejected", "sip_code": "403" | null, "at": "ISO8601" } | null,
+  "last_success_at": "ISO8601 | null",
+  "last_tested_at": "ISO8601 | null",
+  "numbers": [ /* phone-number objects, provider "external" */ ],
+  "created_at": "ISO8601",
+  "updated_at": "ISO8601",
+  "webhook_url": "https://… (manage keys only)"
+}
+```
+
+- **The Telnyx API key is write-only.** Only its last four characters ever come back;
+  you can replace it, never read it.
+- **`webhook_url` carries a secret for this account** — treat it like a password. It
+  comes back on the connect response, and on `GET /carrier-accounts/{id}` for a
+  `manage` key. You need it only for an app the customer makes themselves.
+- `signature_verified` turns `true` once a call event from Telnyx verified against the
+  public key; from then on every event for this account must carry a valid signature.
+- `last_error.code` is one of `carrier_rejected`, `key_rejected`, `connection_invalid`,
+  `public_key_mismatch`, `connection_mismatch`, `inbound_on_app`, `number_released`.
+- **A number on the account** is a phone-number object with `provider: "external"`,
+  `carrier_account: { id, name, provider, status }` and `ownership_verified_at` — when
+  the customer's key last proved it is an active number in their account. `null` means
+  Telnyx no longer lists it: it cannot call until a `test` finds it again.
+
+### POST /carrier-accounts
+
+Connect the customer's Telnyx account.
+
+**Scopes:** `carrier_accounts:manage`
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | string | yes | 1–100 characters |
+| `api_key` | string | yes | A Telnyx API key made just for Yappr (it starts with `KEY`) |
+| `public_key` | string | no | Recommended. The account's public key: 44 characters of base64, from Keys & Credentials → Public Key |
+
+```bash
+curl -s -X POST "https://api.goyappr.com/carrier-accounts" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Main Telnyx", "api_key": "TELNYX_API_KEY", "public_key": "TELNYX_PUBLIC_KEY"}' | jq .
+```
+
+The key is checked with Telnyx **before anything is stored**. **Response:** `201`
+
+```json
+{
+  "data": { /* the account: status "untested", connection null, numbers [] */ },
+  "webhook_url": "https://…",
+  "telnyx": {
+    "connections": [ { "id": "…", "name": "…", "active": true, "outbound_voice_profile_id": "… | null" } ],
+    "outbound_voice_profiles": [
+      { "id": "…", "name": "…", "enabled": true, "allowed_destinations": ["IL", "US"],
+        "daily_spend_limit": "50.00", "daily_spend_limit_enabled": true, "channel_limit": 10 }
+    ]
+  }
+}
+```
+
+`telnyx` is what the key can see: pick the profile (and, optionally, the app) for the
+next step from it.
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `INVALID_NAME`, `INVALID_API_KEY`, `INVALID_PUBLIC_KEY`, `INVALID_JSON` | Fix the field `error` names |
+| 422 | `TELNYX_KEY_REJECTED` | Telnyx refused the key. Nothing was stored |
+| 422 | `KEY_IS_YAPPR_ACCOUNT` | The key belongs to Yappr's own Telnyx account. Use a key from the customer's own account |
+
+### PATCH /carrier-accounts/{id}
+
+Rename the account, or replace its API key or public key. Send at least one of `name`,
+`api_key`, `public_key` (`400 NOTHING_TO_UPDATE` otherwise). A public key can be
+replaced, not cleared.
+
+**Scopes:** `carrier_accounts:manage`
+
+A new `api_key` is checked with Telnyx first. Once an app is chosen, it must be a key to
+**the same Telnyx account** — one that can see that app — or it is
+`422 KEY_ACCOUNT_MISMATCH`. `TELNYX_KEY_REJECTED` and `KEY_IS_YAPPR_ACCOUNT` apply as on
+create. To rotate: create a new key in Telnyx, `PATCH` it here, then delete the old one
+in Telnyx.
+
+**Response:** `200` `{ "data": account }`
+
+### DELETE /carrier-accounts/{id}
+
+Disconnect. `409 CARRIER_ACCOUNT_HAS_NUMBERS` until every number is removed — there is no
+cascade, because campaigns and agents may still call from them. If Yappr created the
+Call Control App, it is deleted from the customer's Telnyx account too (best effort). The
+API key is never touched: the customer deletes it in Telnyx.
+
+**Scopes:** `carrier_accounts:manage`
+
+**Response:** `200` `{ "success": true, "id": "uuid", "telnyx_connection_deleted": true | false | null }`
+(`null` when the app was not Yappr's to delete).
+
+### POST /carrier-accounts/{id}/connection
+
+Every call from the account's numbers goes through one Call Control App in the
+customer's Telnyx account. Send **exactly one** of:
+
+- `{"create": {"outbound_voice_profile_id": "PROFILE_ID"}}` — the default. Yappr creates
+  an app named "Yappr outbound" on that profile, with its webhook set. Pick a profile
+  from `telnyx.outbound_voice_profiles` whose `allowed_destinations` cover every country
+  the agents call. Yappr never creates or changes an outbound voice profile: its
+  countries and spend limits stay the customer's decision.
+- `{"connection_id": "CALL_CONTROL_APP_ID"}` — an app the customer made just for Yappr.
+  Its webhook URL must be exactly the account's `webhook_url`, it must have an outbound
+  voice profile, and it must be switched on.
+
+**Scopes:** `carrier_accounts:manage`
+
+```bash
+curl -s -X POST "https://api.goyappr.com/carrier-accounts/ACCOUNT_ID/connection" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"create": {"outbound_voice_profile_id": "PROFILE_ID"}}' | jq .
+```
+
+**Response:** `200` `{ "data": account }` with `connection` set. The app cannot be
+swapped afterwards: `409 CONNECTION_ALREADY_CONNECTED` — remove the numbers, disconnect,
+and connect again.
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `INVALID_CONNECTION_REQUEST` | Not exactly one of `create` / `connection_id`, or an id that is not a Telnyx id |
+| 409 | `CONNECTION_ALREADY_CONNECTED` | The account already has its app |
+| 422 | `OUTBOUND_PROFILE_NOT_FOUND` | That profile is not in the customer's account |
+| 422 | `CONNECTION_CREATE_REJECTED` | Telnyx refused to create the app — check the account's limits in Telnyx |
+| 422 | `CONNECTION_NOT_FOUND` | No app with that id in the account |
+| 422 | `CONNECTION_WEBHOOK_MISMATCH` | The app's webhook URL is not the account's. The error body carries `webhook_url` |
+| 422 | `CONNECTION_HAS_NO_OUTBOUND_PROFILE` | Attach an outbound voice profile to the app (its Outbound tab) |
+| 422 | `CONNECTION_INACTIVE` | The app is switched off in Telnyx |
+| 422 | `TELNYX_KEY_REJECTED` | Telnyx refused the saved key |
+
+### POST /carrier-accounts/{id}/numbers
+
+Add a number the customer owns in that Telnyx account.
+
+**Scopes:** `carrier_accounts:manage`
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `number` | string | yes | Strict E.164 — the same rule as `POST /calls` (`+972` numbers are `+972` followed by 8 or 9 digits). Any country |
+| `friendly_name` | string | no | Up to 100 characters |
+| `outbound_agent_id` | uuid | no | Bind an outbound agent at once. Must be an agent in this workspace |
+
+```bash
+curl -s -X POST "https://api.goyappr.com/carrier-accounts/ACCOUNT_ID/numbers" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"number": "+972XXXXXXXXX", "friendly_name": "Sales line", "outbound_agent_id": "AGENT_ID"}' | jq .
+```
+
+- **Choose the app first:** before it, this is `409 CONNECTION_REQUIRED`.
+- **Proven with the customer's own key.** Yappr asks Telnyx whether the number is an
+  active number in that account, and adds it only if it is —
+  `422 NUMBER_NOT_IN_YOUR_TELNYX_ACCOUNT` otherwise.
+- **A number is in Yappr once.** A Yappr-bought number, or another workspace's claim that
+  its own key still proves, is `409 NUMBER_ALREADY_REGISTERED` (it does not say where).
+  A lapsed claim — its key no longer proves it — is released automatically, unless that
+  workspace still uses the number (a campaign calls from it, or past calls were made
+  from it): then the claim is switched off but kept, the `409` stands, and Yappr
+  support moves the number.
+- Tell the customer to leave the number's own settings in Telnyx as they are.
+- A number added to a `paused` account starts switched off.
+
+**Response:** `201` `{ "data": phone_number }` — `provider: "external"`,
+`ownership_verified_at` set, `monthly_cost: null` (the number stays in, and is billed
+by, the customer's Telnyx account).
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `INVALID_NUMBER`, `INVALID_AGENT`, `INVALID_NAME`, `INVALID_JSON` | Fix the field `error` names |
+| 409 | `CONNECTION_REQUIRED` | No Call Control App chosen yet |
+| 409 | `NUMBER_ALREADY_REGISTERED` | Held elsewhere in Yappr (see above) |
+| 422 | `NUMBER_NOT_IN_YOUR_TELNYX_ACCOUNT` | Telnyx does not list it as active in this account. Nothing was added |
+| 422 | `TELNYX_KEY_REJECTED` | Telnyx refused the saved key |
+| 503 | `OWNERSHIP_CHECK_UNAVAILABLE` | Telnyx did not answer while checking another holder. Nothing was added |
+
+### DELETE /carrier-accounts/{id}/numbers/{phone_number_id}
+
+Agents stop calling from the number. Nothing changes in the customer's Telnyx account.
+`404 NUMBER_NOT_FOUND` when the number is not on this account.
+
+**Scopes:** `carrier_accounts:manage`
+
+**Response:** `200` `{ "success": true, "id": "uuid" }`
+
+### POST /carrier-accounts/{id}/test
+
+Checks the account and **places no call**.
+
+**Scopes:** `carrier_accounts:manage`
+
+**Response:** `200`
+
+```json
+{
+  "ok": true,
+  "checks": [
+    { "name": "api_key", "ok": true, "detail": "Telnyx accepts the API key." },
+    { "name": "connection", "ok": true, "detail": "The Call Control App is active and points at Yappr." },
+    { "name": "outbound_voice_profile", "ok": true, "detail": "Calls may go to: IL, US." },
+    { "name": "numbers", "ok": true, "detail": "2 number(s) are in this Telnyx account." }
+  ],
+  "telnyx": { "connections": [ … ], "outbound_voice_profiles": [ … ] },
+  "numbers": [ { "id": "uuid", "number": "+972XXXXXXXXX", "verified": true } ]
+}
+```
+
+- `connection` fails when no app is chosen, or the app is gone, switched off, or its
+  webhook URL was changed. `outbound_voice_profile` fails when none is attached or it
+  is switched off; when it passes, `detail` lists the countries it allows.
+- **Every test re-proves each number.** One Telnyx no longer lists goes unverified
+  (`ownership_verified_at: null`) and cannot call; found again later, it comes back.
+- `ok` ignores the `numbers` check: a lost number is simply uncallable.
+- **A refused key pauses the account here too** (`key_rejected`), exactly as a refused
+  dial does — `telnyx` is then `null`. A missing app is reported, not paused, by a test.
+
+### POST /carrier-accounts/{id}/reactivate
+
+"Turn back on". Runs the `test` first; if every check but `numbers` passes, it lifts the
+pause: `status` goes back to `untested`, the refusal count resets, and every
+**verified** number is switched back on.
+
+**Scopes:** `carrier_accounts:manage` (shares `test`'s daily limit)
+
+**Response:** `200` `{ "data": account, "checks": [ … ] }`. A failing test is
+`422 CARRIER_TEST_FAILED` with the same `checks` — fix what they show in Telnyx, then
+call it again.
+
+### Status, and what pauses an account
+
+| `status` | Meaning |
+|---|---|
+| `untested` | No call has been answered on the app since it was connected or turned back on |
+| `active` | The last answered call ran on the app |
+| `paused` | Every number on the account is switched off (`is_active: false`), so campaigns stop instead of burning through leads. `POST /calls` from one of them is `400 INVALID_FROM_NUMBER` |
+
+- **At once:** Telnyx refuses the **key** (a `401`, or its "authentication failed"
+  error) on a dial or a test → `key_rejected`; or the dial names a **Call Control App
+  that is gone** → `connection_invalid`.
+- **Counted:** any other refusal — one bad destination, a country the outbound voice
+  profile does not allow, a caller ID Telnyx will not present, a ringing call ended with
+  SIP 401/403/407 — counts once. **Five in a row** pause the account with
+  `carrier_rejections`; an answered call resets the count. A `403` on its own is never
+  read as a refused key.
+- **Not counted:** SIP 404/484/604 on a ringing call — that is the destination number,
+  not the account.
+
+Fix the cause in Telnyx (`pause_reason`, `last_error`), then call `reactivate`.
+
+### Calling from these numbers
+
+There is no new call field: the `from` number decides the route. A number on a carrier
+account that is not paused works everywhere a Yappr-bought number does for outbound —
+`from` on `POST /calls`, a campaign's `from_phone_number_id`, or an agent's outbound
+number (`outbound_agent_id` when adding it, or `PATCH /phone-numbers/:id`).
+
+**When Telnyx refuses a call from one of these numbers.**
+
+- **Before it rings** (Telnyx turns the dial down, refuses the key, or cannot find the
+  app): the call is recorded `failed` and is not retried. If `POST /calls` was placing it
+  right away, it answers **`422`** with the reason in `error` (and no `code`) — "Your
+  Telnyx account refused this call…", or "Calls from this number are paused…" when the
+  account paused — and **no webhook is sent**: that answer is the only notice. A call
+  accepted with `202`, or placed by a campaign, sends `call.failed` with the reason in
+  `data.error_reason` and no `data.hangup_cause`. A refusal by the customer's account is
+  about the account, not the lead: the number called is never added to do-not-call.
+- **While it rings:** the call ends `failed`, and `call.failed` carries
+  `data.hangup_cause` — `carrier_rejected` (SIP 401/403/407, counts toward the five) or
+  `carrier_number_invalid` (SIP 404/484/604, does not count).
+
+The SIP code itself is not in the webhook: the account keeps the last one in
+`last_error.sip_code` on `GET /carrier-accounts/{id}` (`null` when Telnyx refused over
+its API: the call before it rang, a command on it, or a test). The exact Telnyx reason
+is only in the customer's Telnyx portal (call debugging).
+
+| SIP code | Check in Telnyx |
+|---|---|
+| 401, 403, 407 | The outbound voice profile is attached to the app and allows the destination country; the caller ID is a number in this account; the account has balance, and Level 2 for international calls |
+| 404, 484, 604 | The destination number |
+
+---
+
 ## Calls
 
 ### GET /calls
@@ -2623,7 +2970,7 @@ Initiate an outbound call.
 |-------|------|----------|-------|
 | `agent_id` | uuid | no | Optional. Omit it and the `from` number decides: its `outbound_agent_id` places the call, or — if that number has an `outbound_split` configured — the split picks between the bound agent and the second one. An explicit `agent_id` always wins over a split; sending one skips split resolution entirely. A `from` number with no agent attached and no resolvable split is refused with `422 AGENT_NOT_RESOLVED` — *"Attach an agent to this phone number or send agent_id"* — nothing is queued or dialed. When a split resolved the agent, the call carries `metadata.ab_variant` (`"a"`/`"b"`); a value you send in `metadata.ab_variant` yourself is dropped and replaced. A retry under the same `Idempotency-Key` reuses whichever agent the original accepted call resolved to — it never re-rolls, even if you change the split in between. |
 | `to` | string | yes | Destination phone number — strict E.164 format (see Phone validation below) |
-| `from` | string | yes | Caller phone number — strict E.164, must be an active number owned by the company |
+| `from` | string | yes | Caller phone number — strict E.164, must be an active number owned by the company: bought from Yappr, or added from the customer's own Telnyx account (see **Carrier Accounts** above — the call then runs on their Telnyx account) |
 | `metadata` | object | no | JSONB stored in `call_logs.metadata` — arbitrary key-value pairs, not injected into prompt. **Forwarded in real-time to every tool webhook as `call_metadata`** (see [Tool Webhook Payload](#tool-webhook-payload)) — ideal for carrying internal IDs (appointment_id, contact_id, calendar_id) that tool receivers need without requiring a `GET /calls/:id` round-trip. |
 | `variables` | object | no | `Record<string, string>` — substituted into system prompt using `{{VariableName}}` syntax. Also forwarded to tool webhooks as `call_variables`. |
 | `workflow_revision_id` | uuid \| null | no | Workflow agents only. Pins the call to one exact published version instead of whichever is current at dispatch. Take the id from `GET /agents/{id}/workflow/versions` (`data[].id`). Sending it for a non-workflow agent is `422 WORKFLOW_PIN_INVALID`; a version that is not this agent's own is rejected later as `404 WORKFLOW_AGENT_UNAVAILABLE`, the same answer as an unreachable agent. |
@@ -2669,6 +3016,13 @@ agent that exists but is switched off (`is_active: false` — including a fresh
 — see the errors reference above for both.
 
 **`from` is a per-call override, not a fixed binding.** Any active number in the company can be paired with any agent on any outbound call. The `outbound_agent_id` configured on a phone number (via `POST /phone-numbers/configure`) only sets the dashboard's default and does not constrain the API — callers choose `agent_id` + `from` independently per request. This means one number can serve many agents; purchasing a separate number per agent is unnecessary for outbound.
+
+**A `from` number from the customer's own Telnyx account** (`provider: "external"`) is
+refused by that account, not by Yappr, when Telnyx turns the dial down: placed right
+away, `POST /calls` answers `422` with the reason in `error` (no `code`) and **no webhook
+is sent**; accepted with `202` or placed by a campaign, it sends `call.failed` with
+`data.error_reason`. Not retried. On a `paused` carrier account the number is switched
+off, so `from` answers `400 INVALID_FROM_NUMBER`. See **Carrier Accounts** above.
 
 **CRITICAL:** `to` and `from` MUST NOT be the same number. This creates an infinite call loop. The API returns 400 but always verify before calling.
 
@@ -4686,6 +5040,10 @@ member can reach in the dashboard has a public endpoint behind it.
 | POST /phone-numbers/search | `phone_numbers:search` |
 | POST /phone-numbers/purchase | `phone_numbers:purchase` |
 | POST /phone-numbers/configure | `phone_numbers:configure` |
+| GET /carrier-accounts (list/get/status) | `carrier_accounts:read` |
+| POST /carrier-accounts, PATCH/DELETE /carrier-accounts/:id | `carrier_accounts:manage` |
+| POST /carrier-accounts/:id/connection \| /test \| /reactivate | `carrier_accounts:manage` |
+| POST /carrier-accounts/:id/numbers, DELETE /carrier-accounts/:id/numbers/:phone_number_id | `carrier_accounts:manage` |
 | GET /billing | `billing:read` |
 | PATCH /billing (spending limit) | `billing:manage` |
 | POST /billing/setup | `billing:manage` |
