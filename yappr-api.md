@@ -1602,7 +1602,7 @@ When the agent fires `rescheduleAppointment`, the Make.com (or n8n) scenario rec
 
 List all phone numbers owned by the company.
 
-**Scopes:** `phone_numbers:read`
+**Scopes:** `phone_numbers:search` (there is no `phone_numbers:read`)
 
 **Response:**
 ```json
@@ -5287,6 +5287,7 @@ member can reach in the dashboard has a public endpoint behind it.
 | POST /billing/setup | `billing:manage` |
 | POST /billing/topup | `billing:manage` |
 | GET /billing/consumption | `billing:read` |
+| GET /billing/transactions | `billing:read` (refused to a key limited to some agents) |
 | GET /call-windows | none — any authenticated key for the workspace |
 | PUT /call-windows | `call_windows:manage` |
 | GET /calls (list/get) | `calls:read` |
@@ -6018,3 +6019,4 @@ endpoint has — add `product=voice_call` to compare call spend alone.
 | GET /agent-eval/runs (list/get/turns/evaluation) | `agent_eval:read` |
 | POST /agent-eval/runs/:id/cancel | `agent_eval:run` |
 | GET /billing/consumption | `billing:read` |
+| GET /billing/transactions | `billing:read` |
