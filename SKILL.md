@@ -1791,7 +1791,7 @@ Three things to say to the user before you build one, because they surprise peop
 
 | Requirement | How to check |
 |---|---|
-| An agent, with a **positive** `max_call_duration_secs` | `GET /agents/:id` — `0` means unlimited and campaigns refuse it, because worst-case cost would be unbounded |
+| An agent, with a **positive** `max_call_duration_secs` | `GET /agents/:id` — `0` means the agent has no cap of its own, so each call can run to the platform's 65-minute limit; campaigns refuse it, because that worst case is far above any budget |
 | An active from-number | `GET /phone-numbers` — needs `is_active: true` and `status: "active"` |
 | A reachable workspace calling window | `GET /call-windows` — this is the schedule the campaign obeys; confirm the timezone too (dashboard-only) |
 | Credit above the call floor | `GET /billing` |
@@ -1986,7 +1986,7 @@ curl -s "https://api.goyappr.com/campaigns/CAMPAIGN_ID/stats" \
 | `credit_reserve_would_breach_floor` | Balance can't cover the next call's worst case | top up |
 | `budget_exhausted` | The campaign's own budget cap is reached → `paused_budget` | raise `budget_cents`, then `resume` |
 | `from_number_unavailable` | The calling number went inactive → `paused_config` | assign an active number, then `resume` |
-| `agent_has_no_duration_cap` | The agent's max call duration was set to unlimited → `paused_config` | set a positive `max_call_duration_secs`, then `resume` |
+| `agent_has_no_duration_cap` | The agent's max call duration was set to `0` (no cap of its own) → `paused_config` | set a positive `max_call_duration_secs`, then `resume` |
 | `platform_admission_disabled` | The platform paused new campaign admissions; in-flight calls continue | wait; report it if it persists |
 | `resumed_credit_ok` | Auto-resumed after a top-up | none |
 | `completed` | Every contact is done | report the outcome breakdown |
@@ -2031,7 +2031,7 @@ curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads/LEAD_ID" 
 | Finish configuring the campaign before launching. Not set: … | `PATCH` every field it names — no configuration field has a default |
 | Configure at least one stop rule before launching | A non-empty `stop_disposition_ids`, or `stop_on_no_answer` / `stop_on_voicemail` set to `true` |
 | The assigned agent no longer exists | Point `agent_id` at a live agent (`GET /agents`) |
-| An agent on this campaign has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` on every agent the campaign calls with, the A/B test's second agent included — `0` = unlimited, which campaigns refuse because worst-case cost would be unbounded |
+| An agent on this campaign has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` on every agent the campaign calls with, the A/B test's second agent included — `0` = no cap of the agent's own (only the platform's 65-minute limit), which campaigns refuse because that worst case is far above any budget |
 | The second agent on this campaign's A/B test is not available | Point `split.agent_id` at an active agent in this workspace, or send `"split": null` |
 | The phone number assigned to this campaign is no longer active | Pick a number with `is_active: true` and `status: "active"` |
 | This workspace has no upcoming calling window | `PUT /call-windows` (and confirm the workspace timezone, which is dashboard-only) |
@@ -2423,7 +2423,7 @@ Protect against wasted credits from runaway or dead calls.
 
 | Setting | Default | What it controls |
 |---------|---------|-----------------|
-| `max_call_duration_secs` | 600 | Hard cap on total call length. `0` = disabled. |
+| `max_call_duration_secs` | 600 | Hard cap on total call length (maximum 3600). `0` = no cap of the agent's own: the platform still ends the call after 65 minutes, with the disconnect reason `Platform call limit reached`. Campaigns refuse `0`. |
 | `max_continuous_speech_secs` | 120 | Max seconds one party can speak non-stop before hangup. Catches answering machines. `0` = disabled. |
 | `silence_timeout_secs` | 60 | Seconds of caller silence before auto-hangup. Prevents idle/dead calls. |
 

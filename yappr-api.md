@@ -2693,7 +2693,9 @@ Useful for retry / analytics decisions — e.g. don't auto-retry a call that the
 **`disconnect_reason`** — Short human-readable label for why, meant for display. Branch on
 `status` and `ended_by`; treat this as text, because wording changes and labels are added.
 In practice: `Completed`, `No answer`, `Busy`, `Call rejected`, `Cancelled`,
-`Caller inactive`, `Max duration reached`, `Voicemail detected`,
+`Caller inactive`, `Max duration reached`, `Platform call limit reached` (an agent with
+`max_call_duration_secs: 0` has no cap of its own, and the platform ends its call after
+65 minutes), `Voicemail detected`,
 `Answering machine detected`, `Failed`, and — when a handoff never connected —
 `Transfer not answered`, `Transfer destination busy`, `Transfer rejected`,
 `Transfer destination unreachable`, `Transfer never connected`, `Transfer failed`. A
@@ -4177,7 +4179,7 @@ All of these must hold; the first failure is the one you get back, named in `mes
 | Finish configuring the campaign before launching. Not set: … | `PATCH` every field it names — none has a default: `max_attempts`, `max_infra_retries`, `retry_no_answer_seconds`, `retry_completed_seconds`, `randomize_retry_time`, `stop_on_no_answer`, `stop_on_voicemail`, `stop_on_unclassified`, `double_dial_enabled`, `double_dial_gap_seconds`, `max_calls_per_day`, `min_seconds_between_calls`, `max_in_flight` |
 | Configure at least one stop rule before launching | A non-empty `stop_disposition_ids`, or `stop_on_no_answer` / `stop_on_voicemail` set to `true` |
 | The assigned agent no longer exists | Point `agent_id` at a live agent |
-| An agent on this campaign has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` on every agent the campaign calls with, the A/B test's second agent included — `0` means unlimited, which makes the campaign's worst-case cost unbounded |
+| An agent on this campaign has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` on every agent the campaign calls with, the A/B test's second agent included — `0` means the agent has no cap of its own, so each call can run to the platform's 65-minute limit, far above any budget |
 | The second agent on this campaign's A/B test is not available | Point `split.agent_id` at an active agent in this workspace, or send `"split": null` |
 | The phone number assigned to this campaign is no longer active | Pick an `is_active` number with `status: "active"` |
 | This workspace has no upcoming calling window | Fix `PUT /call-windows` (and the workspace timezone, which is dashboard-only) |
@@ -4226,7 +4228,7 @@ Written every tick on both the campaign object and `/stats`. A `running` campaig
 | `credit_reserve_would_breach_floor` | Balance minus the worst-case reservation for the next call would drop under the floor |
 | `budget_exhausted` | `budget_cents` reached → status `paused_budget` |
 | `from_number_unavailable` | The from-number is no longer active → status `paused_config` (not `paused_infra`) |
-| `agent_has_no_duration_cap` | The agent's `max_call_duration_secs` was set to `0` mid-campaign → status `paused_config` |
+| `agent_has_no_duration_cap` | The agent's `max_call_duration_secs` was set to `0` (no cap of its own) mid-campaign → status `paused_config` |
 | `platform_admission_disabled` | Platform-wide admission pause (operational kill switch). In-flight calls and reconciliation continue |
 | `resumed_credit_ok` | Auto-resumed after funding |
 | `completed` | Auto-completed: nothing live left |
