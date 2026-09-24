@@ -2471,8 +2471,10 @@ call has no agent — match on empty, not on a translated word), `A/B`, `Directi
 (only on a `shared_link` call), `Call ID` (the join key to `GET /calls/{id}`), `Lead name`
 (empty when there is no lead, or it was deleted), `Summary`, then one
 `Extracted: <field>` column per `extracted_data` key found in the window — read those by
-heading, not position. The last line is `Total` under `Cost (USD)`. `X-Total-Rows` counts
-the call rows. The file opens with a UTF-8 BOM, so Hebrew names open correctly in a
+heading, not position. Every line under the headings is one call — there is **no `Total`
+line** (there used to be, and a column sum counted the month twice). What the calls cost
+together is the `X-Total-Cost-USD` response header, the same sum a column total over
+`Cost (USD)` gives; `X-Total-Rows` counts the calls. The file opens with a UTF-8 BOM, so Hebrew names open correctly in a
 spreadsheet.
 
 **`Cost (USD)` is empty when no charge is recorded on the call** — one that has not settled
@@ -2486,7 +2488,7 @@ leading `'` when reading the file as data. Phone numbers and plain numbers are n
 prefixed.
 
 **The dashboard's Export CSV is the same fields in the same order, written for people:**
-headings, labels, `Total` and Yes/No in the reader's language, `Started (ISO 8601)` plus an
+headings, labels and Yes/No in the reader's language, `Started (ISO 8601)` plus an
 extra `Started (<zone>)` second column. Read a dashboard file by position; do not match its
 headings against this endpoint's.
 
@@ -2496,10 +2498,11 @@ splitting the window with `from`/`to`, ending each window on the **first of the 
 month** (`to=2026-10-01T00:00:00Z`) rather than a guessed last day. `to` is inclusive, so
 consecutive windows **meet and overlap by one instant**: a call started exactly at that
 boundary is written into both files. Concatenating files means dropping the duplicate
-boundary row from one of the two, and each file's own `Total` still counts it once.
+boundary row from one of the two, and each file's own `X-Total-Cost-USD` still counts it
+once, so adding two files' headers counts it twice.
 
-`X-Total-Rows` (exposed to browser `fetch()`, alongside `Content-Disposition`) carries the
-call-row count, before the `Total` line. The file is the calls that existed the moment you
+`X-Total-Rows` and `X-Total-Cost-USD` (exposed to browser `fetch()`, alongside
+`Content-Disposition`) carry the call count and their cost. The file is the calls that existed the moment you
 asked — one still streaming never lands half-written.
 
 ```bash
@@ -4646,10 +4649,15 @@ Get billing status and balance.
 **Response:**
 ```json
 {
-  "balance_cents": 2500,
   "has_payment_method": true,
-  "subscription_status": "active" | "inactive" | null,
   "billing_email": "s***@domain.com" | null,
+  "balance_cents": 2500,
+  "balance": 25,
+  "currency": "usd",
+  "is_suspended": false,
+  "auto_topup_enabled": false,
+  "auto_topup_amount_cents": 2000 | null,
+  "low_balance_threshold_cents": 500 | null,
   "monthly_budget_cents": 5000 | null,
   "monthly_spend_cents": 1240,
   "monthly_budget_remaining_cents": 3760 | null,
@@ -4658,10 +4666,75 @@ Get billing status and balance.
 }
 ```
 
+There is no subscription field: Yappr is prepaid credit. `balance` is `balance_cents` in
+whole currency units. `is_suspended` is `true` while calling is stopped for a billing
+reason — a suspended workspace still answers this read. Auto top-up is the three
+`auto_topup_enabled` / `auto_topup_amount_cents` (charged each time) /
+`low_balance_threshold_cents` (the balance that triggers it) fields together; all `false`
+or `null` on a workspace that never configured it, and none of them writable here.
+
 `billing_email` is masked (`s***@domain`), never the full address, and `null` when
 unset. `monthly_spend_cents` is reported **whether or not a limit is set** — it is
 month-to-date spend for every workspace, read from the same place `PATCH /billing`
 writes. The other four spend fields are documented under `PATCH /billing` below.
+
+This is the account as it stands now. For its history — every top-up, credit, refund
+and adjustment beside each day's usage, with an opening and closing balance — read
+`GET /billing/transactions`.
+
+---
+
+### GET /billing/transactions
+
+The workspace's billing history as a statement: every change to the credit balance in a
+window, newest first, and the balance at each end of it — the dashboard's **Settings →
+Billing → Transaction History**, addressable.
+
+**Scopes:** `billing:read`. A key limited to some agents is `403 API_KEY_AGENT_SCOPED`
+(the balance is the whole workspace's).
+
+| Param | Default | Notes |
+|---|---|---|
+| `from` | 30 days before `to` | ISO 8601 |
+| `to` | now | ISO 8601, inclusive; a date-only `to` covers that whole day (UTC). `?to=2026-07-31` alone reads July 1 through July 31 |
+| `limit` | 100 | at most 500; caps the rows, never the summary |
+
+Anything else, a timestamp that is not real, a `from` after `to`, or a `from` in the
+future with `to` left out is `400 TRANSACTIONS_QUERY_INVALID`, naming the parameter.
+
+```json
+{
+  "data": [
+    { "id": null, "type": "usage", "product": "voice_call", "date": "2026-09-23",
+      "created_at": "ISO8601", "description": null, "count": 41, "status": "completed",
+      "amount_cents": -412, "affects_balance": true },
+    { "id": "uuid", "type": "top_up", "product": null, "date": "2026-09-21",
+      "created_at": "ISO8601", "description": "Credits top-up", "count": 1,
+      "status": "completed", "amount_cents": 5000, "affects_balance": true }
+  ],
+  "summary": {
+    "opening_balance_cents": 1210, "credits_in_cents": 5000, "credits_out_cents": 3666,
+    "closing_balance_cents": 2544, "card_charges_cents": 0
+  },
+  "balance_cents": 2544,
+  "has_more": false,
+  "range": { "from": "2026-09-01", "to": "2026-09-30" }
+}
+```
+
+- **Rows.** `top_up` (paid credits, in), `gift` (credits Yappr added, in), `usage` (one row
+  per UTC day per product — `voice_call` or `eval_run` — with `count` charges folded in;
+  out), `refund` (a refunded or disputed top-up; out), `adjustment` (a manual correction,
+  either way), `phone_number` (a number's first charge or renewal — paid by card,
+  `affects_balance: false`), `other` (anything newer; trust `affects_balance`). A row whose
+  `status` is not `completed` does not move the balance either.
+- **Signs are the account holder's:** positive put credits in, negative took them out —
+  the opposite of `GET /billing/consumption`, where a charge is positive.
+- **`summary` always adds up:** `opening + credits_in - credits_out = closing`.
+  `card_charges_cents` sums the phone numbers on their own. The closing balance of a window
+  that runs to now is `GET /billing`'s `balance_cents`, and last month's closing balance is
+  this month's opening one.
+- `has_more: true` means the rows were cut at `limit`; narrow the window to read older ones.
 
 ---
 
@@ -5737,26 +5810,32 @@ Aggregated debits from your credit account, bucketed by date and product.
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `from` | ISO8601 | now - 30d | Start of window |
-| `to` | ISO8601 | now | End of window, inclusive. A date-only value covers that whole day (UTC). `from` after `to` is a `400`. |
+| `to` | ISO8601 | now | End of window, inclusive. A date-only `from` or `to` is a whole day **on the report's clock** (`timezone`, below). `from` after `to` is a `400`. |
 | `group_by` | "day" \| "month" \| "total" \| "agent" \| "product" \| "disposition" \| "agent,disposition" \| "source" \| "agent,source" | "day" | Bucket granularity. Anything else is `400` |
 | `product` | enum | (all) | `voice_call` \| `eval_run` \| `phone_number` \| `topup` \| `refund` \| `adjustment`. Anything else (`voice`, `minutes`) is `400 CONSUMPTION_QUERY_INVALID`. |
-| `include_topups` | bool | false | Include positive credit purchases |
+| `include_topups` | bool | false | Include positive credit purchases. `true` or `false` only |
+| `timezone` | IANA name | the workspace's | The clock days, months and date-only windows are read on — by default the workspace's own (the `timezone` set on `PUT /call-windows`, the one the dashboard shows this money on). `timezone=UTC` gives UTC days. An offset such as `+03:00` or an unknown name is `400 CONSUMPTION_QUERY_INVALID` |
+| `sort` | `amount` \| `period` \| `name` | `amount` | Largest first; `period` oldest first (only on `day` / `month`); `name` agent, then outcome, then origin, then product, A to Z (not on `day` / `month`) |
+
+Each parameter at most once; any other is `400 CONSUMPTION_QUERY_INVALID`, by name. A
+charge at 22:30 UTC on 30 September is **1 October** in an `Asia/Jerusalem` workspace,
+and `group_by=day` puts it there.
 
 **Response:**
 ```jsonc
 {
-  "from": "2026-04-07T00:00:00Z",
-  "to":   "2026-05-07T00:00:00Z",
-  "group_by": "day",
   "data": [
     { "period": "2026-05-06", "product": "voice_call", "total_amount_cents": 1240, "count": 18 },
     { "period": "2026-05-06", "product": "eval_run",   "total_amount_cents": 12,   "count": 47 },
     { "period": "2026-05-07", "product": "voice_call", "total_amount_cents": 980,  "count": 14 }
-  ]
+  ],
+  "range": { "from": "…", "to": "…", "group_by": "day", "product": null, "timezone": "Asia/Jerusalem", "sort": "amount" }
 }
 ```
 
-When `group_by=agent` (and on `agent,disposition` and `agent,source`), each row carries an `agent_id` field. Agent grouping currently only populates for `voice_call`.
+`range.timezone` names the clock that was used. Days and months with no charge are not rows.
+
+When `group_by=agent` (and on `agent,disposition` and `agent,source`), each row carries `agent_id` and `agent_name` (archived agents included; two agents can share a name, so key on the id). Agent grouping currently only populates for `voice_call`; `agent_id: null` on `voice_call` is a call whose agent has since been deleted — the charge is kept, never dropped.
 
 **`group_by=agent,disposition`** — cost *and* outcomes in one read: one row per agent per
 outcome, each with its own `count` and `total_amount_cents`.
@@ -5782,8 +5861,9 @@ An origin is a fact about the call a charge belongs to, so a charge with no call
 — a number's monthly rent, a top-up, an eval run — comes back as `source: null`, and a call
 recorded before origins were written down comes back as `source: "unknown"`.
 
-**The window.** `to` is inclusive here too (a date-only `to` is that whole day, UTC), but
-charges are bucketed by when they were debited — a call is debited when it ends. `GET /calls/export` windows on when calls
+**The window.** `to` is inclusive here too (a date-only `to` is that whole day on the
+report's clock — the workspace's unless `timezone` says otherwise — where `GET /calls` and
+the export read a date-only `to` as a UTC day), and charges are bucketed by when they were debited — a call is debited when it ends. `GET /calls/export` windows on when calls
 *started*, with an inclusive `to`. The same `from`/`to` on both reads therefore differs by
 the calls that straddle a boundary and by charges with no call behind them, which only this
 endpoint has — add `product=voice_call` to compare call spend alone.

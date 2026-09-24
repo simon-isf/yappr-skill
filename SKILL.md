@@ -1363,9 +1363,12 @@ instead of paging `GET /calls` and building a CSV yourself:
 GET /calls/export?agent_id=...&from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z
 ```
 
-It takes the same filters `GET /calls` does, and writes the same columns and `Total`
-line the dashboard's own **Export CSV** button does — the file you build here and the
-one a person downloads from the screen are the same file. That is also why it replaces
+It takes the same filters `GET /calls` does, and writes the same columns the dashboard's
+own **Export CSV** button does, in the same order — the file you build here and the one a
+person downloads from the screen carry the same fields. Every line under the headings is
+one call: there is **no `Total` line** in the file, so a column sum or a pivot is right as
+it stands. What the calls cost together is the **`X-Total-Cost-USD`** response header, and
+**`X-Total-Rows`** is how many calls the file holds. That is also why it replaces
 joining `GET /calls`, [`GET /billing/consumption`](yappr-api.md) and
 `GET /dispositions` by hand: one file already has the cost and the outcome together.
 
@@ -1375,13 +1378,13 @@ joining `GET /calls`, [`GET /billing/consumption`](yappr-api.md) and
    (`cursor`, `updated_since`). The file carries each call's `Call ID`, so its rows join
    back to `GET /calls/{id}`.
 2. One export tops out at **10000 rows** (`400 CALLS_EXPORT_TOO_LARGE`, naming the
-   count) rather than being truncated — a file cut short would carry a wrong `Total`
-   that says nothing about it. Split a bigger one by month.
+   count) rather than being truncated — a file cut short would carry wrong totals
+   that say nothing about it. Split a bigger one by month.
 3. End each window on the **first of the next month** (`to=2026-10-01T00:00:00Z`)
    rather than guessing a last day. `to` is inclusive, so a call started at exactly that
    boundary lands in **both** neighbouring files — drop the duplicate on `Started`
-   before adding two files' `Total` lines together, or end a window a second earlier and
-   accept the opposite risk instead.
+   before adding two files' `X-Total-Cost-USD` values together, or end a window a second
+   earlier and accept the opposite risk instead.
 4. `Cost (USD)` reads blank, never `0`, when no charge is recorded on the call — one still
    settling, or one never charged (failed, unanswered, blocked). `cost_status` on
    `GET /calls/{id}` (joined by `Call ID`) tells the two apart: `pending` is worth waiting
@@ -1405,8 +1408,10 @@ GET /billing/consumption?from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z&group
 ```
 
 1. **The file is the call list**: one row per call with its agent, outcome, duration,
-   `Cost (USD)` and `Source`, closed by a `Total` line. Filter it the way `GET /calls` is
-   filtered — `?agent_id=` for one client's agent, `?source=` for one origin.
+   `Cost (USD)` and `Source`, and no total line — the month's call cost is the
+   `X-Total-Cost-USD` response header (`curl -D headers.txt …` keeps it). Filter it the
+   way `GET /calls` is filtered — `?agent_id=` for one client's agent, `?source=` for one
+   origin.
 2. **Consumption is the money**: `group_by=agent,source` gives one row per agent per
    origin — `test` (the workspace's own rehearsals), `shared_link`, `api`, `phone_inbound`,
    `phone_outbound` — so rehearsal spend is separated from the calls that were paid for
@@ -1418,10 +1423,14 @@ GET /billing/consumption?from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z&group
    by agent instead).
 3. **The two totals will not match to the cent, and that is not an error.** The export
    windows on when calls *started*; consumption windows on when charges were *debited* (a
-   call is debited when it ends). Both `to`s are inclusive, and a date-only `to` covers that
-   whole day (UTC). Calls that straddle midnight on the 1st, and charges with no call, make
-   the difference. Say so
-   in the report rather than forcing the two to agree.
+   call is debited when it ends). They also read days on different clocks: the export's
+   bounds are exact instants (a date-only `to` there is a UTC day), while consumption reads
+   days and date-only bounds on the **workspace's** clock unless you pass `timezone=UTC`.
+   Send the same full timestamps to both, as above, and both windows are the same
+   instants. Calls that straddle midnight on the 1st, and charges with no call, make the
+   difference. Say so in the report rather than forcing the two to agree.
+   For the balance itself — opening, every top-up and refund, closing — read
+   `GET /billing/transactions?from=2026-09-01&to=2026-09-30` (its days are UTC).
 4. **Month to date** is `monthly_spend_cents` on `GET /billing` — reported whether or not a
    spending limit is set, measured from `monthly_period_start` (the 1st, 00:00 UTC).
 5. Over 10000 calls in the month, the export refuses (`400 CALLS_EXPORT_TOO_LARGE`) —
