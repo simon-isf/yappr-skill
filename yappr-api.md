@@ -599,8 +599,9 @@ integration off the old body** above). Nothing is written.
 Read a transcript you supply for the values this agent collects, and get them back.
 Nothing is called, nothing is written, and the agent is unchanged — the assertable half
 of a rehearsal, for CI: a browser session (`POST /calls {"type":"web"}`) that nobody
-connects ends `no_answer` with no transcript, so without this there was no
-`extracted_data` to check before a real caller met the parameters.
+connects ends `no_answer` with no transcript — or, on an agent whose mint answers
+`protocol: "call_request"`, never becomes a call at all (`call_id: null`) — so without
+this there was no `extracted_data` to check before a real caller met the parameters.
 
 **Scopes:** `agents:read` — the only read scope that spends anything: each call runs one
 model read of the transcript you send, and it is billed (logged against the workspace,
