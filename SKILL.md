@@ -1462,14 +1462,19 @@ Use `?source=live` for a delivery-health report, and `?source=test&tool_id=…` 
 "did my test reach the endpoint?". Page with `pagination.next_cursor` until
 `has_more` is `false` — cursor, not offset, because the log keeps growing while a long
 read is in flight, and an offset would silently skip or repeat rows. Send `cursor` only
-once you actually have one — like every filter here, an empty value is refused, and a
-cursor that does not read as one of this endpoint's is `400 DELIVERY_CURSOR_INVALID` rather
-than a silent restart from the top. A key with `calls:read` or `tools:read` can read them.
+once you actually have one — like every filter here, an empty value is refused. Cursors
+are signed: one built by hand, edited, taken from `GET /calls`, or saved before signing
+began is `400 DELIVERY_CURSOR_INVALID` rather than a silent restart from the top — a job
+that keeps a cursor between runs reads the first page again on that `400`. A key with
+`calls:read` or `tools:read` can read them.
 
-To see why one failed, open it: `GET /deliveries/{id}` returns the body that was sent and
-what the endpoint answered (header values `[REDACTED]`; bodies need `calls:read`). Once
-the endpoint is fixed, `POST /deliveries/{id}/retry` (`tools:update`) sends that same body
-once more to where the tool points now — only a `failed` delivery, once.
+To see why one failed, open it: `GET /deliveries/{id}` returns the body that was sent,
+where it went (`request.destination`, without query string or credentials) and what the
+endpoint answered (header values `[REDACTED]`; bodies need `calls:read`, the address's path
+needs `tools:read` or `tools:update`). Once the endpoint is fixed,
+`POST /deliveries/{id}/retry` (`tools:update`) sends that same body once more to where the
+tool points **now** — check `retry_target.destination` and `retry_target.changed` first,
+since that is not always where the delivery went. Only a `failed` delivery, once.
 
 Field-by-field reference: `yappr-api.md` → **Deliveries**.
 

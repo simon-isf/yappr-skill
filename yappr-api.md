@@ -4977,11 +4977,12 @@ row of a call's `timeline` (`GET /calls/:id`), field for field, plus `call_id` a
 **Scopes:** `calls:read` **or** `tools:read` — either one.
 
 **Query params:** `tool_id`, `agent_id`, `call_id`, `status` (`delivered` \| `failed` \|
-`pending`), `source` (`live` \| `test`), `from`, `to` (a real ISO 8601 timestamp — a
-month-end its month does not have, like `2026-09-31`, is refused), `limit` (1–200,
-default 50), `cursor`. Anything else, a value outside its set, or a filter sent with no
-value is `400 DELIVERIES_QUERY_INVALID`, same as `GET /calls` — send `cursor` only once
-you have one.
+`pending`), `source` (`live` \| `test`), `from`, `to` (a real ISO 8601 timestamp on the
+row's `at` — a date alone covers that whole day, UTC; a month-end its month does not have,
+like `2026-09-31`, is refused), `limit` (1–200, default 50), `cursor`. Anything else, a
+value outside its set, a filter sent twice or with no value, and a `from` after `to` are
+`400 DELIVERIES_QUERY_INVALID`, same as `GET /calls` — send `cursor` only once you have
+one.
 
 **Response:**
 ```json
@@ -5035,14 +5036,17 @@ report, and `?source=test&tool_id=…` answers "did my test reach the endpoint?"
 
 `agent_id` filters both eras of an agent: deliveries it sent itself, and deliveries its
 tools sent on its calls (a workflow-engine agent sends through its tools). The list is
-summaries; open one with `GET /deliveries/{id}` for what was sent and what came back. No
-URL, header value or credential ever leaves the platform.
+summaries; open one with `GET /deliveries/{id}` for what was sent, where to, and what
+came back. No header value or credential ever leaves the platform.
 
 **Paging is by cursor, not offset** — this log grows while you read it, so an offset
 would silently skip or repeat rows. Follow `pagination.next_cursor` until `has_more` is
-`false`, passing it back unchanged. A cursor that does not read as one of this endpoint's
-is `400 DELIVERY_CURSOR_INVALID` rather than a silent first page; a `GET /calls` cursor is
-not one.
+`false`, passing it back unchanged. **Cursors are signed**, as on `GET /calls`: one built
+by hand, edited, or taken from `GET /calls` is `400 DELIVERY_CURSOR_INVALID` rather than a
+silent first page, so a corrupted loop stops instead of re-reading the newest rows for
+ever. A cursor saved before signing began is refused the same way, once — read the first
+page again and follow the new `next_cursor`. A job that stores a cursor between runs must
+handle that `400` by starting over from the first page.
 
 ```bash
 # Everything that failed yesterday
@@ -5057,25 +5061,33 @@ not a delivery here, never the list) — plus:
 
 | Field | What it is |
 |---|---|
+| `request.destination` | Where it was sent, when it was sent: `scheme://host/path`, without the query string, fragment or credentials; `scheme://host` only when `destination_path_withheld`. `null` when no destination was recorded for it |
+| `request.tool_revision_id` | The workflow tool revision that sent it; `null` for a legacy webhook tool, an agent's own webhook, and older deliveries |
+| `request.recorded` | `true` when the delivery recorded what it was sent with; when `false` (an older delivery), `method` and `header_names` are the sender's **current** ones |
+| `request.method`, `request.header_names` | The method and header names it was sent with. Header values are never returned. |
 | `request.body` | The body as it was sent. A retry re-sends exactly this. For a `GET` tool these fields went as query parameters. |
-| `request.method`, `request.header_names` | How the sender is configured **now**. Header values are never returned. |
+| `retry_target` | Where `POST /deliveries/{id}/retry` would send it **now**: `destination` (same form), `tool_revision_id`, and `changed` — `true` when that is not where this delivery went. `null` when the sender is no longer a webhook with an address |
 | `response.status` | What your endpoint answered; `null` when nothing answered. |
 | `response.body` | What your endpoint answered, as text, at most 2,000 characters. |
 | `retry_of` / `retried_by` | The delivery this one re-sent / the retry that re-sent this one. |
 | `retryable` | `true` when `POST /deliveries/{id}/retry` would send it. |
 | `bodies_withheld` | `true` when the key lacks `calls:read`: both bodies are then `null`. |
+| `destination_path_withheld` | `true` when the key holds neither `tools:read` nor `tools:update`: both destinations are then `scheme://host` (for a Make or Zapier hook the path is the credential). `retry_target.changed` still compares the whole addresses |
 
-**Scopes:** `calls:read` or `tools:read`; the two bodies need `calls:read`.
+**Scopes:** `calls:read` or `tools:read`; the two bodies need `calls:read`, and the
+destinations' paths need `tools:read` or `tools:update`.
 
 Every configured header value is replaced by `[REDACTED]` wherever it appears in either
-body, and no URL is returned. `response.body` is `null` when nothing answered, for
+body (as a value, inside a string, or as a key), and an address is never returned with its
+query string, fragment or credentials. `response.body` is `null` when nothing answered, for
 deliveries made before 2026-09-23, and for a workflow step's refusal (the status is kept,
 not the text) — a retry always keeps the answer.
 
 ### POST /deliveries/:id/retry
 
-Re-sends the stored body once, to where the tool points **now**. `201` with the new
-delivery (`retry_of` = the original). Only a `failed` delivery, and only once per delivery
+Re-sends the stored body once, to where the tool points **now** — read
+`retry_target.destination` and `retry_target.changed` on `GET /deliveries/:id` first. `201`
+with the new delivery, in the `GET /deliveries/:id` shape (`retry_of` = the original). Only a `failed` delivery, and only once per delivery
 — two racing retries send once. Nothing is sent on a refusal: `409 DELIVERY_NOT_RETRYABLE`
 (it was accepted, or has not settled), `409 DELIVERY_ALREADY_RETRIED` (with `retried_by`),
 `409 DELIVERY_SENDER_UNAVAILABLE`. If the retry fails too, retry the retry.
