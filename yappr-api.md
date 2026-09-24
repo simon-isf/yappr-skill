@@ -166,8 +166,10 @@ sent twice or empty, a date that does not exist, and `from` after `to`.
   `stop_disposition_ids` included: send ids from `GET /dispositions`). The message names
   the field.
 - There is no agent filter on `GET /billing/consumption`: use `group_by=agent`.
-- A date-only `to` covers that whole day (UTC): `from=2026-08-01&to=2026-08-31` is all of
-  August.
+- A date-only `to` covers that whole day: a UTC day on `/calls`, `/calls/export`,
+  `/deliveries` and `/billing/transactions`, and a day on the workspace's clock on
+  `/billing/consumption` unless you pass `timezone=UTC`. `from=2026-08-01&to=2026-08-31`
+  is all of August.
 - `expires_at` in the past is refused on do-not-call add and edit and on shared links.
 - `metadata.extracted` on a lead: send it back unchanged or leave it out; changing it is
   `400`.
