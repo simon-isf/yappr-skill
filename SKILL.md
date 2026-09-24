@@ -2359,6 +2359,11 @@ Field-by-field reference: `yappr-api.md` → **API Keys**.
 curl -s "https://api.goyappr.com/billing" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
 
+# Where the balance went: a statement with opening and closing balance, top-ups,
+# refunds and one usage row per day (UTC days; a date-only `to` is that whole day)
+curl -s "https://api.goyappr.com/billing/transactions?from=2026-09-01&to=2026-09-30" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '{summary, has_more}'
+
 # Generate Stripe Checkout link (for adding payment method)
 curl -s -X POST "https://api.goyappr.com/billing/setup" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
