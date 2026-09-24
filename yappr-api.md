@@ -2443,8 +2443,12 @@ returns it. There is no `sip_endpoint_id` filter; match on the field instead.
 
 **`cost_status`** is on every row, beside `cost_cents`: `charged` (the recorded charge;
 final), `not_charged` (`cost_cents: 0`, final — the call failed, went unanswered, was
-blocked, or had no connected time) or `pending` (`cost_cents: null` — still settling).
-Only `pending` is worth polling.
+blocked, had no connected time, or ended more than 24 hours ago with no charge recorded)
+or `pending` (`cost_cents: null` — still running, or ended less than 24 hours ago and not
+yet recorded). Only `pending` is worth polling, and no call stays `pending` more than a day
+after it ended. That 24-hour change is read off the clock and does **not** move
+`updated_at`, so an `updated_since` sync never sees it: re-read a call you stored as
+`pending` by id once it is a day past `ended_at`.
 
 **`metadata`** on a row is your keys, with internal bookkeeping removed. A few platform keys
 stay: `ab_variant` / `ab_variant_fallback`, `share_link_id`, `agent_id` on a dashboard test
@@ -2466,10 +2470,14 @@ changed. This is the dashboard's own **Export CSV**, addressable.
 
 **Columns, in this fixed order:** `Started` (ISO 8601, `+00:00`), `Agent` (empty when the
 call has no agent — match on empty, not on a translated word), `A/B`, `Direction`,
-`Status` (`pending_connection` is a filter value here too), `Disposition`, `From`, `To`,
-`Duration (seconds)`, `Cost (USD)` (a bare decimal, see below), `Source`, `Shared link ID`
+`Status` (`pending_connection` is a filter value here too), `Disposition`, `From`, `To`
+(empty on a browser call; `To` is also empty on a call that arrived on a SIP endpoint),
+`Duration` (whole seconds), `Cost (USD)` (a bare decimal, see below), `Source`, `Shared link ID`
 (only on a `shared_link` call), `Call ID` (the join key to `GET /calls/{id}`), `Lead name`
-(empty when there is no lead, or it was deleted), `Summary`, then one
+(empty when there is no lead, or it was deleted), `Summary`, `Cost status` (`charged`,
+`not_charged`, `pending` — exactly `cost_status`), `Ended by` (exactly `ended_by`; empty
+when nothing recorded it), `Agent ID` (pivot on this, not on `Agent`: two agents can share
+a name), then one
 `Extracted: <field>` column per `extracted_data` key found in the window — read those by
 heading, not position. Every line under the headings is one call — there is **no `Total`
 line** (there used to be, and a column sum counted the month twice). What the calls cost
@@ -2477,10 +2485,10 @@ together is the `X-Total-Cost-USD` response header, the same sum a column total 
 `Cost (USD)` gives; `X-Total-Rows` counts the calls. The file opens with a UTF-8 BOM, so Hebrew names open correctly in a
 spreadsheet.
 
-**`Cost (USD)` is empty when no charge is recorded on the call** — one that has not settled
-yet, and also one that is never charged: failed, unanswered, blocked. Neither is written
-as `0`. Tell the two apart with `cost_status` on `GET /calls/{id}`
-(joined by `Call ID`).
+**`Cost (USD)` is `0.00` on a call that ended without a charge** — failed, unanswered,
+blocked, never connected, or ended more than a day ago with no charge recorded — and
+**empty only while the charge is still pending**. The `Cost status` column says which, so
+the file needs no second read.
 
 **Formula guard.** A `Lead name`, `Summary` or `Extracted:` value that opens with `=`, `+`,
 `-`, `@` or a tab is written with a leading `'`, so a spreadsheet does not run it; strip one
@@ -2752,8 +2760,11 @@ and `null` for short or atypical hangups.
 
 **`cost_cents`** — What the call took out of your workspace's credits. Read it with
 **`cost_status`**: `charged` (the recorded charge; final), `not_charged` (`0`, final — the
-call failed, went unanswered, was blocked, or had no connected time) or `pending` (`null` —
-still settling; the only state worth polling). This is a **different number** from
+call failed, went unanswered, was blocked, or had no connected time; a call that ended
+more than 24 hours ago with no charge recorded reads this too, because nothing came off the
+balance and nothing will) or `pending` (`null` — still running, or ended less than 24 hours
+ago with its charge not yet recorded; the only state worth polling). `null` never means
+free, and `0` never means not settled yet. This is a **different number** from
 `usage.cost_usd` below: `cost_cents`
 is what Yappr billed you, `usage.cost_usd` is what Yappr paid the model provider. Totals
 across calls: `GET /billing/consumption`.

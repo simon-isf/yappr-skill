@@ -1385,10 +1385,12 @@ joining `GET /calls`, [`GET /billing/consumption`](yappr-api.md) and
    boundary lands in **both** neighbouring files — drop the duplicate on `Started`
    before adding two files' `X-Total-Cost-USD` values together, or end a window a second
    earlier and accept the opposite risk instead.
-4. `Cost (USD)` reads blank, never `0`, when no charge is recorded on the call — one still
-   settling, or one never charged (failed, unanswered, blocked). `cost_status` on
-   `GET /calls/{id}` (joined by `Call ID`) tells the two apart: `pending` is worth waiting
-   for, `not_charged` is final at `0`.
+4. `Cost (USD)` is `0.00` on a call that ended without a charge (failed, unanswered,
+   blocked, never connected) and blank only while its charge is still pending. The
+   file's own `Cost status` column (`charged` / `not_charged` / `pending`, exactly
+   `cost_status` on `GET /calls`) says which: `pending` is worth waiting for, and none
+   stays `pending` more than a day after its call ended. `Ended by` and `Agent ID` are
+   columns too — pivot on `Agent ID`, since two agents can share a name.
 5. Columns come in a fixed order, then one `Extracted: <field>` column per collected field
    in the window — read those by heading. The dashboard's own Export CSV has the same
    fields in the same order but translated headings and an extra local-time `Started`
