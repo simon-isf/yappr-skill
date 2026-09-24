@@ -5954,8 +5954,8 @@ and `group_by=day` puts it there.
 {
   "data": [
     { "period": "2026-05-06", "product": "voice_call", "total_amount_cents": 1240, "count": 18 },
-    { "period": "2026-05-06", "product": "eval_run",   "total_amount_cents": 12,   "count": 47 },
-    { "period": "2026-05-07", "product": "voice_call", "total_amount_cents": 980,  "count": 14 }
+    { "period": "2026-05-07", "product": "voice_call", "total_amount_cents": 980,  "count": 14 },
+    { "period": "2026-05-06", "product": "eval_run",   "total_amount_cents": 12,   "count": 47 }
   ],
   "range": { "from": "…", "to": "…", "group_by": "day", "product": null, "timezone": "Asia/Jerusalem", "sort": "amount" }
 }
