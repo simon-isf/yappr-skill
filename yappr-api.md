@@ -1953,23 +1953,22 @@ To have an agent answer them, route the number in Telnyx to a SIP endpoint (abov
 Setting `inbound_agent_id` on one of these numbers is
 `422 INBOUND_NOT_AVAILABLE_ON_EXTERNAL_NUMBER`.
 
-**Switched on per workspace, by Yappr.** It is off by default, and there is no
-self-serve switch. Until Yappr switches the workspace on, every route below answers
-`403 CARRIER_ACCOUNTS_NOT_ENABLED` (body `{error, code, enabled: false}`), nothing is
-sent to Telnyx, and the dashboard shows no **Phone numbers → Your carrier** tab. The
-customer asks Yappr support to switch it on.
+**Available to every workspace.** There is nothing to switch on: any workspace can
+connect its Telnyx account from the dashboard (**Phone numbers → Your carrier**) or
+through the routes below. Yappr can switch the feature off for one workspace in an
+emergency; that workspace's routes then answer `403 CARRIER_ACCOUNTS_NOT_ENABLED` (body
+`{error, code, enabled: false}`) and nothing is sent to Telnyx — contact Yappr support.
 
 **Scopes:** `carrier_accounts:read` (every `GET`) and `carrier_accounts:manage` (every
-other method — `test` included, because it uses the customer's Telnyx key). Both are
-opt-in: no existing key was given them, a new key does not start with them, and the
-dashboard offers the **Your carrier (Telnyx)** scope group only once the workspace is
-switched on. A key without the route's scope gets `401 INSUFFICIENT_SCOPE` — scopes are
-checked before the workspace switch, so such a key never sees the `403` above. In the
-dashboard, only owners and admins can change a carrier account.
+other method — `test` included, because it uses the customer's Telnyx key). Every
+workspace can grant them, but they are opt-in: no existing key was given them and a new
+key does not start with them, so tick the **Your carrier (Telnyx)** scope group in
+Settings → API keys. A key without the route's scope gets `401 INSUFFICIENT_SCOPE`. In
+the dashboard, only owners and admins can change a carrier account.
 
 | Method | Path | What it does | Daily limit |
 |---|---|---|---|
-| GET | `/carrier-accounts/status` | Is this workspace switched on? `{"enabled": true}`, or the `403` | — |
+| GET | `/carrier-accounts/status` | `{"enabled": true}` — or the `403` on a workspace Yappr switched off | — |
 | GET | `/carrier-accounts` | `{ "data": [account] }`, numbers expanded, never `webhook_url` | — |
 | POST | `/carrier-accounts` | Connect a Telnyx account | 10 |
 | GET | `/carrier-accounts/{id}` | One account; `webhook_url` only for a `manage` key | — |

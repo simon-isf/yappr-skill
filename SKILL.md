@@ -1646,16 +1646,7 @@ Use this when the customer already owns numbers at Telnyx and wants agents to ca
 
 **Who bills what.** Telnyx bills the customer's own account for the phone minutes at their rates, Telnyx's own fees (call control, media streaming, recording, noise suppression) and the numbers themselves; none of it appears on the Yappr bill. Yappr bills the agent minutes, at the same per-minute rate as any other call. Say this before they connect — it is the first question they will have.
 
-**0. Check the workspace is switched on.** Yappr switches carrier accounts on workspace by workspace; there is no self-serve toggle.
-
-```bash
-curl -s "https://api.goyappr.com/carrier-accounts/status" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
-```
-
-- `200 {"enabled": true}` — go on.
-- `403 CARRIER_ACCOUNTS_NOT_ENABLED` — not on yet. Stop here and have the customer ask Yappr support to switch it on.
-- `401 INSUFFICIENT_SCOPE` — the key lacks the carrier scopes, which no key has by default. The dashboard's Settings → API keys shows the **Your carrier (Telnyx)** scope group only once the workspace is on: no group means not on yet (ask support); otherwise create a new key with `carrier_accounts:read` and `carrier_accounts:manage`.
+**0. Give the key the carrier scopes.** Carrier accounts are available to every workspace — nothing to switch on. The scopes are opt-in, though: no key has them by default. In Settings → API keys, create a key with the **Your carrier (Telnyx)** group ticked (`carrier_accounts:read` and `carrier_accounts:manage`); without them every carrier route answers `401 INSUFFICIENT_SCOPE`. (A `403 CARRIER_ACCOUNTS_NOT_ENABLED` means Yappr switched the feature off for this workspace in an emergency — contact Yappr support.)
 
 **1. Prerequisites in Telnyx.** The customer does these in their Telnyx portal; confirm each one before calling the API:
 
@@ -1709,7 +1700,6 @@ curl -s -X POST "https://api.goyappr.com/carrier-accounts/ACCOUNT_ID/numbers" \
 
 **Pre-launch checklist for carrier accounts:** all the standard items in Step 5.2 still apply, plus:
 
-- [ ] `GET /carrier-accounts/status` is `200` for this workspace
 - [ ] `POST /carrier-accounts/{id}/test` returns `ok: true`, and the profile's allowed countries cover every destination
 - [ ] Every number shows `ownership_verified_at` set and `is_active: true`
 - [ ] One real call from a carrier number was answered, and the account reads `active`
