@@ -1945,7 +1945,7 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
 
 **Why ids and not labels.** Labels are per-workspace text and are renameable; ids are stable. A stop set stored by label would silently disarm the moment somebody renamed "Not Interested". The API only accepts ids, and every id must belong to this workspace (otherwise `400`).
 
-**Why `No Answer`, `Failed`, and `Voicemail` must NOT go in `stop_disposition_ids`.** Those three labels are *also* auto-assigned by the platform, and the outcome classifier legitimately assigns them to calls where a human really did talk — a receptionist answering a 90-second call can land "No Answer". Put them in the stop set and you permanently retire real conversations as never-reached. Use the booleans instead, which are evaluated on the call's **outcome class** rather than its label:
+**Why `No Answer`, `Failed`, and `Voicemail` must NOT go in `stop_disposition_ids`.** Those three labels are *also* auto-assigned by the platform, and the outcome classifier legitimately assigns them to calls where a human really did talk — a receptionist answering a 90-second call can land "No Answer". Put them in the stop set and you permanently retire real conversations as never-reached. Do not rely on the API to catch it — a stop set holding them has been accepted with `200` — so check the ids against `GET /dispositions` yourself before sending. Use the booleans instead, which are evaluated on the call's **outcome class** rather than its label:
 
 | Instead of putting this in the stop set | Use |
 |---|---|
