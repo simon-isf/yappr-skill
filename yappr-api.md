@@ -5166,7 +5166,7 @@ not a delivery here, never the list) — plus:
 | `request.recorded` | `true` when the delivery recorded what it was sent with; when `false` (an older delivery), `method` and `header_names` are the sender's **current** ones |
 | `request.method`, `request.header_names` | The method and header names it was sent with. Header values are never returned. |
 | `request.body` | The body as it was sent. A retry re-sends exactly this. For a `GET` tool these fields went as query parameters. |
-| `retry_target` | Where `POST /deliveries/{id}/retry` would send it **now**: `destination` (same form), `tool_revision_id`, and `changed` — `true` when that is not where this delivery went. `null` when the sender is no longer a webhook with an address |
+| `retry_target` | Where `POST /deliveries/{id}/retry` would send it **now**: `destination` (same form), `tool_revision_id`, and `changed` — `true` when that is not where this delivery went. On an older delivery (`request.recorded: false`, so no `request.destination`) `changed` is always `false` and tells you nothing. `null` when the sender is no longer a webhook with an address |
 | `response.status` | What your endpoint answered; `null` when nothing answered. |
 | `response.body` | What your endpoint answered, as text, at most 2,000 characters. |
 | `retry_of` / `retried_by` | The delivery this one re-sent / the retry that re-sent this one. |
