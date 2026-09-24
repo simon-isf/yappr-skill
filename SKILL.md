@@ -1354,7 +1354,7 @@ log in the dashboard, so you and they are never reading two different stories.
    `event` that opened each one and the steps inside it. A follow-up that is **missing**
    from the timeline is explained by the call's `follow_ups` member: `state: "waiting"`
    (its result is not ready — read the call again later) or `"skipped"`, with a `reason`
-   per group — `browser_test` (a dashboard test call runs without the workflow),
+   per group — `browser_test` (a dashboard test call that ran without the workflow),
    `no_workflow_run`, `artifact_pending`, `artifact_unavailable` (e.g. the analysis
    failed), `artifact_late`. No `follow_ups` member means nothing needs explaining.
 
