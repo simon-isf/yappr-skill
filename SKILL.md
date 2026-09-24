@@ -757,23 +757,30 @@ Set limits to prevent runaway calls. See Appendix C for values.
 **Create the draft** — use the file-based payload approach (required for Hebrew/special characters). `name` plus `workflow.global_instructions` is the whole body; anything else (`system_prompt`, `type`, `flow_config`) answers `410 AGENT_LEGACY_CREATION_GONE`:
 
 ```bash
+IDEMPOTENCY_KEY=$(python3 -c 'import uuid; print(uuid.uuid4())')
 python3 -c "
-import json, uuid
+import json
 payload = {
     'name': 'Agent Name',
     'language': 'he',
-    'workflow': {'global_instructions': '...'},
-    'idempotency_key': str(uuid.uuid4())
+    'workflow': {'global_instructions': '...'}
 }
 with open('/tmp/agent-payload.json', 'w', encoding='utf-8') as f:
     json.dump(payload, f, ensure_ascii=False)
 "
-curl -s -X POST 'https://api.goyappr.com/agents' \
-  -H 'Authorization: Bearer $YAPPR_API_KEY' \
-  -H 'Idempotency-Key: <the same uuid>' \
-  -H 'Content-Type: application/json' \
+curl -s -X POST "https://api.goyappr.com/agents" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
+  -H "Content-Type: application/json" \
   --data-binary @/tmp/agent-payload.json | jq .
 ```
+
+The key goes in the `Idempotency-Key` **header** only — an `idempotency_key` in the body
+is `400` ("Remove idempotency_key"), like any field the create does not take. Use double
+quotes around every header that carries a `$VARIABLE`: in single quotes the shell sends
+the literal text `$YAPPR_API_KEY` and the request is refused as an invalid key. If the
+response is lost, send the same file with the same `$IDEMPOTENCY_KEY` — you get `200` and
+the same agent, never a second one.
 
 Save the returned `id`. This starts Strict Mode off, with an empty Before/After and no
 publication — see **PHASE 1: Agent Creation** above.
@@ -1000,7 +1007,7 @@ per tool — name, description, and the fields it needs:
 
 ```bash
 python3 -c "
-import json, uuid
+import json
 payload = {
     'name': 'bookAppointment',
     'description': 'Book an appointment. Call only after the caller has confirmed a specific date, time, and their full name.',
@@ -1021,18 +1028,21 @@ payload = {
         'configuration': {'url': 'https://YOUR_EDGE_FUNCTION_URL', 'method': 'POST', 'headers': {}},
         'effect': 'write',
         'timeout_ms': 10000
-    },
-    'idempotency_key': str(uuid.uuid4())
+    }
 }
 with open('/tmp/tool-payload.json', 'w', encoding='utf-8') as f:
     json.dump(payload, f, ensure_ascii=False)
 "
-curl -s -X POST 'https://api.goyappr.com/tools' \
-  -H 'Authorization: Bearer $YAPPR_API_KEY' \
-  -H 'Idempotency-Key: <the same uuid>' \
-  -H 'Content-Type: application/json' \
+IDEMPOTENCY_KEY=$(python3 -c 'import uuid; print(uuid.uuid4())')
+curl -s -X POST "https://api.goyappr.com/tools" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
+  -H "Content-Type: application/json" \
   --data-binary @/tmp/tool-payload.json | jq .
 ```
+
+As with agents, the key is the header, never a body field (the body takes `name`,
+`description` and `workflow` only).
 
 **Tool naming rules:**
 - Name MUST be camelCase English: `bookAppointment`, `logLead`, `checkAvailability`
