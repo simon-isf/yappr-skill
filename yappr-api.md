@@ -2001,12 +2001,13 @@ emergency; that workspace's routes then answer `403 CARRIER_ACCOUNTS_NOT_ENABLED
 other method — `test` included, because it uses the customer's Telnyx key). Every
 workspace can grant them, but they are opt-in: no existing key was given them and a new
 key does not start with them, so tick the **Your carrier (Telnyx)** scope group in
-Settings → API keys. A key without the route's scope gets `401 INSUFFICIENT_SCOPE`. In
+Settings → API keys. A key without the route's scope gets `403 INSUFFICIENT_SCOPE` naming
+the scope — the same status as the emergency switch-off, so branch on `code`. In
 the dashboard, only owners and admins can change a carrier account.
 
 | Method | Path | What it does | Daily limit |
 |---|---|---|---|
-| GET | `/carrier-accounts/status` | `{"enabled": true}` — or the `403` on a workspace Yappr switched off | — |
+| GET | `/carrier-accounts/status` | `{"enabled": true}` — or `403 CARRIER_ACCOUNTS_NOT_ENABLED` on a workspace Yappr switched off. Needs `carrier_accounts:read`: a key without it gets `403 INSUFFICIENT_SCOPE`, which says nothing about the feature | — |
 | GET | `/carrier-accounts` | `{ "data": [account] }`, numbers expanded, never `webhook_url` | — |
 | POST | `/carrier-accounts` | Connect a Telnyx account | 10 |
 | GET | `/carrier-accounts/{id}` | One account; `webhook_url` only for a `manage` key | — |
