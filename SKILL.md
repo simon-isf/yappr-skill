@@ -1278,6 +1278,9 @@ ordinary API calls: create the HTTP tool, then bind it into the workflow documen
    written.
 3. Publish. A trigger step is validated the same as any other step —
    `POST /agents/:id/workflow/validate` returns the exact JSON pointer to fix.
+   A trigger's `event` takes the workflow's own names (`analysis.ready`, not the legacy
+   `call.analyzed`): a legacy name is refused at `/document/after/<n>/event`, by validate
+   and publish if not by the save.
 
 **Sending what the call collected.** The agent's extraction values are the `analysis`
 artifact's `extracted_data`, and they reach a tool through the binding's `inputs` with an
@@ -1289,6 +1292,10 @@ ordinary artifact source — the step needs `"requires": ["analysis"]`:
   "collected":     { "kind": "artifact", "artifact": "analysis", "path": "/extracted_data" }
 }
 ```
+
+Put such a step on `analysis.ready`. On `call.no_answer` or `call.failed` (and so on
+`any_end`, which includes both) it cannot get what it needs, because an unanswered or
+failed call has no analysis — and validate does not warn you about it.
 
 Every parameter is a key on every call, and one the conversation never covered is `null`,
 so a `fallback` never fires: declare a single-field input nullable
