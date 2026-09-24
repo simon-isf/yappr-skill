@@ -5396,6 +5396,12 @@ Connection control is available on deployments that enable the workspace connect
 options returns `{"data": []}`, nothing can be connected in that workspace yet and every
 create will `409`.
 
+`POST /tool-connections/{id}/reconnect` takes `{"mode": "replace"}` and nothing else but
+an optional `locale` — a reconnect without it (or with any other `mode`) is
+`400 CONNECTION_REPLACEMENT_REQUIRED`, and nothing starts. Replace is the only mode: the
+person who opens the handoff signs in again, and the account they choose becomes the
+connection's account.
+
 Give the handoff privately to the intended authorized human, who signs in to Yappr, reviews the target workspace and label, and explicitly claims the browser-bound attempt before receiving the app authorization link. The API key initiator and consenting human are separate identities — a key-started handoff may be claimed by any member of the workspace it is scoped to; a dashboard-started one stays with whoever started it. Treat the URL fragment as a temporary capability: present it only for this consent step; do not log it, persist it in workflow/call data, or include it in voice-agent prompts. Account records belong to the company, not the human who completed consent. Several labeled accounts per app are supported.
 
 Poll the exact attempt with increasing intervals, bounded by `expires_at`. Stop on `completed`, `failed`, `expired`, `cancelled`, or `reconciliation_required`. An ambiguous/lost callback exchange must never be redeemed again automatically. `completed` refers to authorization processing; `connection.state` must independently be `ready` before actions can use it. Other states are `disconnected`, `connecting`, `verifying`, `reconnect_required`, and `degraded`.

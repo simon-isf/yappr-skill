@@ -913,7 +913,8 @@ again is always safe. It only calls off the authorization — the connection rec
 and a provider grant that already completed still needs `DELETE /tool-connections/{id}`
 plus revoking Yappr in the provider's own account settings.
 `POST /tool-connections/{id}/reconnect {"mode":"replace"}` issues a fresh link when you
-need to replace the account instead.
+need to replace the account instead; without `"mode": "replace"` it is
+`400 CONNECTION_REPLACEMENT_REQUIRED`.
 
 **Connecting an app opens one authorization at a time.** Starting another one calls off
 the one that was left open; if the one in the way was opened in a different browser or
@@ -1272,7 +1273,9 @@ ordinary API calls: create the HTTP tool, then bind it into the workflow documen
    }
    ```
    Every step needs a `label` alongside `id` and `binding_id` — a step missing it is
-   refused, and the refusal does not name the field.
+   refused by the save, `422 WORKFLOW_DOCUMENT_INVALID` with `issues[0].path`
+   `/after/0/steps/0/label` (the trigger's and the step's positions), and nothing is
+   written.
 3. Publish. A trigger step is validated the same as any other step —
    `POST /agents/:id/workflow/validate` returns the exact JSON pointer to fix.
 
