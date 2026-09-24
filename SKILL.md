@@ -1307,7 +1307,7 @@ complete list with every value. The ones that matter most here:
 
 **Recommended default trigger set:** `call.no_answer`, `call.failed`, `analysis.ready`.
 
-**Who ended the call (`ended_by`)** — `GET /calls/:id` returns an `ended_by` field that distinguishes hang-up causality: `"caller"` (the human hung up, or the browser closed), `"agent"` (the bot chose to hang up), `"system"` (the platform ended it — e.g. voicemail detection, max duration, a fault, a browser session that expired unused), `"operator"` (a dashboard phone test call's End, or Yappr stopping a stuck call), `"unknown"`, or `null` while the call is live. Useful for retry and analytics logic so you don't auto-retry calls the user intentionally ended. First-write-wins — once set, it isn't overwritten.
+**Who ended the call (`ended_by`)** — `GET /calls/:id` returns an `ended_by` field that distinguishes hang-up causality: `"caller"` (the human hung up, or the browser closed), `"agent"` (the bot chose to hang up), `"system"` (the platform ended it — e.g. voicemail detection, max duration, a fault, a browser session that expired unused), `"operator"` (a dashboard phone test call's End, or Yappr stopping a stuck call), `"unknown"`, or `null` when nothing recorded it — a call still running, or a finished one nobody could attribute, so check `status` before reading `null` as live. Useful for retry and analytics logic so you don't auto-retry calls the user intentionally ended. First-write-wins — once set, it isn't overwritten.
 
 ### Journey — read what happened on a call
 
@@ -1331,14 +1331,20 @@ log in the dashboard, so you and they are never reading two different stories.
 3. Filter for `kind === "transition"` to follow the conversation from step to step, with
    the author's own condition for the route that fired.
 4. `kind === "trigger"` rows are the after-call follow-ups the workspace authored — the
-   `event` that opened each one and the steps inside it.
+   `event` that opened each one and the steps inside it. A follow-up that is **missing**
+   from the timeline is explained by the call's `follow_ups` member: `state: "waiting"`
+   (its result is not ready — read the call again later) or `"skipped"`, with a `reason`
+   per group — `browser_test` (a dashboard test call runs without the workflow),
+   `no_workflow_run`, `artifact_pending`, `artifact_unavailable` (e.g. the analysis
+   failed), `artifact_late`. No `follow_ups` member means nothing needs explaining.
 
 A failure is already a sentence in `error` / `error_message`. Read it to the customer as
 it stands; do not translate it into internal vocabulary, and do not branch on its wording
 — branch on `status`, which is `succeeded`, `failed` or `pending` on every row that has
 one, and `delivered` / `failed` / `pending` on a delivery. Payloads, URLs, headers and
-credentials are deliberately not in the timeline, so if the answer needs the body that was
-sent, it is on their side to log. (The same response's older `tool_calls` and `events`
+credentials are deliberately not in the timeline; if the answer needs the body that was
+sent and what their endpoint answered, open the delivery by its `id` —
+`GET /deliveries/{id}`. (The same response's older `tool_calls` and `events`
 members do still carry them, and are superseded — do not build new work on them.)
 
 Field-by-field reference: `yappr-api.md` → **GET /calls/:id** → `timeline`.

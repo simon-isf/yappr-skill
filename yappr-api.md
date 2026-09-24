@@ -626,12 +626,16 @@ not free because the scope is read-only).
 }
 ```
 
+For a `date` parameter the answer also carries `extracted_data_precision`, as on
+`GET /calls/:id`.
+
 **Extracted dates.** A `date` parameter is read from the day the call started, in the
 workspace time zone — on a real call and here (`reference_time`, echoed as
 `reference_date` and `timezone`). A day and month with no year → the next time it comes
 round (never the past); "today" / "tomorrow" / "in a week" → counted from the call day;
 "next Sunday" / "on Tuesday" → the first such day after the call day; a year the caller
-said is kept; "after the holidays" → `null`.
+said is kept; a month with no day ("sometime in November", "next month") → `null` with
+precision `month` and that month; "after the holidays" → `null` with precision `unknown`.
 
 `extracted_data` is keyed by your parameters and nothing else: a key the model invented
 is dropped, a parameter it left out is still a key with `null` — meaning the conversation
@@ -2335,9 +2339,9 @@ List calls with optional filters and pagination.
 
 | Param | Type | Default | Notes |
 |-------|------|---------|-------|
-| `limit` | int | 20 | max 100 |
-| `offset` | int | 0 | counts from the top of a list that grows while you read it. Send this or `cursor`, not both |
-| `cursor` | string | — | continue exactly where the last page stopped: `pagination.next_cursor`, opaque, on every page. This is the one to build a job on — an offset silently repeats or skips rows when calls arrive mid-walk. Cursors are signed: only a `pagination.next_cursor` from this endpoint works — a hand-built one, or one from `/deliveries`, is `400 CALLS_CURSOR_INVALID`, never a silent first page |
+| `limit` | int | 20 | 1–100 — never more than 100 rows a page, whatever you send; read `pagination.limit` for what you got |
+| `offset` | int | 0 | counts from the top of a list that grows while you read it. Send this or `cursor`, not both. An offset past the end is `400 CALLS_QUERY_INVALID` naming how many calls match — stop paging at `pagination.total` |
+| `cursor` | string | — | continue exactly where the last page stopped: `pagination.next_cursor`, opaque, on every page. This is the one to build a job on — an offset silently repeats or skips rows when calls arrive mid-walk. Cursors are signed: only a `pagination.next_cursor` from this endpoint works — a hand-built one, or one from `/deliveries`, is `400 CALLS_CURSOR_INVALID`, never a silent first page. **A cursor carries only the position, not the filters:** send the same filters with every page. Sent with other filters, or none, it is answered `200` from that position under whatever filters came with it — not refused |
 | `agent_id` | uuid | — | filter by agent; anything that is not a uuid is `400 CALLS_QUERY_INVALID`, and an agent that is not in this workspace is `404 CALL_AGENT_UNKNOWN` |
 | `status` | string | — | `pending_connection` (a browser session nobody has connected yet), `ringing`, `in_progress`, `completed`, `failed`, `no_answer`, `transferred`, `dnc_blocked` (destination on the company DNC list — no carrier leg, no charge) |
 | `direction` | string | — | `inbound`, `outbound`, `web_call` |
@@ -2558,6 +2562,8 @@ Get full details of a single call, including resolved lead and disposition objec
   },
   "summary": "string | null",
   "extracted_data": { /* present only when extraction ran — see note below */ },
+  "extracted_data_precision": { "<date parameter>": { "precision": "day" | "month" | "unknown", "month": "YYYY-MM | null" } },
+  "follow_ups": { "state": "waiting" | "skipped", "groups": [ { "reason": "string", "steps": ["string"] } ] },
   "recording_url": "string | null",
   "ended_by": "caller" | "agent" | "system" | "operator" | "unknown" | null,
   "disconnect_reason": "string | null",
@@ -2677,6 +2683,17 @@ parameter is missing. An object of nothing but nulls is a real answer: extractio
 the call said none of it. See **Extraction parameters have a kind** above for what each
 value looks like per kind.
 
+**`extracted_data_precision`** — *Present only for an agent with a `date` parameter, on a
+call analysed since it was recorded.* One entry per `date` parameter:
+`{"precision": "day", "month": "2026-10"}` when the caller gave a day (the value is that
+day); `{"precision": "month", "month": "2026-11"}` when they gave a month and no day —
+"sometime in November", "next month" — and the value is **`null`**, because a month's 1st
+stored as a date would be a guess a CRM books; `{"precision": "unknown", "month": null}`
+when they gave neither ("after the holidays") or nothing. Read it before acting on a
+`null` date: `month` means call back that month and ask which day. It is on this read
+(and the extraction dry run) only — a webhook or an After step reading `/extracted_data`
+sees just the `null`, so re-read the call when a `null` date matters.
+
 **`source`** — Where the call came from, the answer to "what did my own testing cost,
 versus the link I sent out." `test` is a rehearsal you started yourself — the agent's
 Test tab, or a test phone call from the dashboard. `shared_link` is a call placed through
@@ -2735,7 +2752,7 @@ error class, and it is ours, not yours to read.
 | `"system"` | Yappr ended it — the silence timeout, the maximum-duration cap, an answering machine, a fault that took the call down, the watchdog, or a browser session that expired unused. |
 | `"operator"` | Ended from the platform side by a person: the End button on a dashboard **phone** test call, or Yappr stopping a call found still open after its conversation had ended (`disconnect_reason` `Ended by operator`). |
 | `"unknown"` | The carrier reported the ending but did not say which side dropped the call. |
-| `null` | Call has not yet ended, or nothing could attribute it. |
+| `null` | Nothing has recorded it: a call still running, or a finished one no producer attributed. Do not read `null` as "still live" — check `status`. |
 
 **A transfer records nothing at the handover.** Once the caller is bridged to a person the
 leg is still up, so whoever hangs up after that is the answer and the carrier supplies it.
@@ -2752,7 +2769,11 @@ In practice: `Completed`, `No answer`, `Busy`, `Call rejected`, `Cancelled`,
 `Caller inactive`, `Max duration reached`, `Platform call limit reached` (an agent with
 `max_call_duration_secs: 0` has no cap of its own, and the platform ends its call after
 65 minutes), `Voicemail detected`,
-`Answering machine detected`, `Failed`, and — when a handoff never connected —
+`Answering machine detected`, `Ended by operator`, `Ended by the platform: stuck call`
+(a call still open ten minutes after its agent's maximum duration: Yappr closes it with
+`ended_by: "system"` and bills it only up to the last sign of life within that maximum;
+nothing reported about it later changes its status, duration or charge), `Failed`, and —
+when a handoff never connected —
 `Transfer not answered`, `Transfer destination busy`, `Transfer rejected`,
 `Transfer destination unreachable`, `Transfer never connected`, `Transfer failed`. A
 handoff that did connect leaves the reason to the call's own ending. Also first-write-wins,
@@ -2774,6 +2795,13 @@ across calls: `GET /billing/consumption`.
 The two engines report in different units and the leg says which: a Gemini voice bills tokens split by modality (`audio_input_tokens`, `text_input_tokens`, `audio_output_tokens`, `cached_input_tokens`), a GPT voice bills seconds of live audio (`audio_seconds`, with the token fields `null`). `backend_unpriced: true` means the reasoning model's tokens were counted but have no published rate yet, so `cost_usd` is the voice model alone.
 
 **No `usage` member is not a cost of zero** — a call that never reached the model, and every call from before this shipped, have no reading at all. This is what Yappr pays the provider, not what the call charged against the workspace's credits.
+
+**`transcript` can be rewritten once, later, on a browser call.** Yappr re-reads an older
+browser call's recording one side at a time when its caller's words had landed inside
+agent turns, and replaces the turns only when both speakers come back. The rewrite moves
+`updated_at` (so an `updated_since` sync picks it up) but sends no webhook and fires no
+After step — `transcript.ready` is sent once, when the transcript first appears. A copy
+you stored earlier is not wrong, just older: keep the newer `updated_at`.
 
 **`transcript_live`** — *Present only when the model produced one.* The voice model's own transcript, recorded turn by turn while the call was happening, rather than transcribed from the recording afterwards. A SECOND, independent account of the same conversation; it does not replace `transcript`, which stays what `transcript.ready` carries and what the summary and extraction are built from.
 
@@ -2850,6 +2878,26 @@ agent's own record of that step never came back; that is not a failure.
 appointment, read the `delivery` rows: one per attempt-set, whichever part of Yappr sent
 it — an after-call follow-up step and a workspace webhook both land in the same ledger
 and come back in the same shape.
+
+**`follow_ups`** — *Present only when one of the agent's follow-ups (After steps) did not
+run on this call.* A follow-up that ran shows up in `timeline` as a `trigger` row, then its
+`tool` and `delivery` rows; this member explains the ones that did not. It is absent when
+there is nothing to explain — every follow-up started, the workflow had none, or the agent
+has no published workflow.
+
+```json
+"follow_ups": { "state": "skipped", "groups": [ { "reason": "browser_test", "steps": ["Send to CRM"] } ] }
+```
+
+`state` is `waiting` when every group is still waiting for the result it runs on — read
+the call again later — and `skipped` otherwise: at least one follow-up will not run on
+this call. Reasons: `browser_test` (a dashboard test call that ran without the workflow;
+`steps` lists every published follow-up), `no_workflow_run` (any other call that ran
+without it, such as a share-link or Web SDK call), `artifact_pending` (the result it runs
+on is still being produced), `artifact_unavailable` (that result was never produced — the
+analysis failed, or the transcript was empty), `artifact_late` (the call's run closed
+before the result arrived). The three `artifact_*` groups also carry `event` and
+`artifact`. Treat a reason you do not recognise as `skipped`.
 
 **An older call** has no `phase` rows and no `transition` rows of the newer kind; its
 transcript, tool rows and deliveries still come back here unchanged. Read each row's
