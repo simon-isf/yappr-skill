@@ -1611,16 +1611,34 @@ List all phone numbers owned by the company.
     {
       "id": "uuid",
       "number": "+972XXXXXXXXX",
-      "status": "active" | "pending_requirements",
+      "friendly_name": "string | null",
+      "provider": "telnyx" | "external",
+      "status": "active" | "pending_requirements" | "suspended",
+      "is_active": true,
       "inbound_agent_id": "uuid | null",
       "outbound_agent_id": "uuid | null",
       "inbound_split": { "agent_id": "uuid", "percent": 30 } | null,
       "outbound_split": { "agent_id": "uuid", "percent": 30 } | null,
-      "created_at": "ISO8601"
+      "sip_inbound_configured": true,
+      "sip_outbound_configured": true,
+      "country_code": "string | null",
+      "monthly_cost": 0 | null,
+      "created_at": "ISO8601",
+      "carrier_account": { "id": "uuid", "name": "string", "provider": "telnyx", "status": "untested" | "active" | "paused" } | null,
+      "ownership_verified_at": "ISO8601 | null"
     }
   ]
 }
 ```
+
+`provider` is `telnyx` for a number bought from Yappr and `external` for a number in the
+customer's own Telnyx account (see **Carrier Accounts** below). Only an `external` number
+carries `carrier_account` — the account it calls through, never its key — and
+`ownership_verified_at`: when the customer's Telnyx key last proved the number is theirs;
+`null` means Telnyx no longer lists it and it cannot place calls until a carrier-account
+test finds it again. On an `external` number `monthly_cost` is `null`: Yappr charges
+nothing for it. A campaign or `POST /calls` needs `is_active: true` and
+`status: "active"`.
 
 `inbound_split` / `outbound_split` is the number's two-agent A/B test on that
 direction, or `null` when it always answers with the one bound agent.
