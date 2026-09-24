@@ -4144,7 +4144,7 @@ The enrolled contacts and their per-contact state, oldest enrollment first.
 
 **Scopes:** `campaigns:read`
 
-**Query params:** `status` (comma-separated; an unknown status is `400 CAMPAIGNS_QUERY_INVALID`, naming it), `phone`, `limit` (default 50, clamped to 1–200), `offset`.
+**Query params:** `status` (comma-separated; an unknown status is `400 CAMPAIGNS_QUERY_INVALID`, naming it), `phone`, `limit` (default 50; above 200 reads as 200, a negative as 1, and `0` or a value that is not a number as 50), `offset`.
 
 `phone` finds a contact by the number you know, in any format: `0501234567`,
 `050-123-4567`, `+972501234567` and `00972501234567` find the same contact, and part of a
@@ -4775,9 +4775,9 @@ Get billing status and balance.
 }
 ```
 
-There is no subscription field: Yappr is prepaid credit. `balance` is `balance_cents` in
-whole currency units. `is_suspended` is `true` while calling is stopped for a billing
-reason — a suspended workspace still answers this read. Auto top-up is the three
+There is no subscription field: Yappr is prepaid credit. `balance` is `balance_cents` / 100:
+the same amount in currency units, with decimals (`98.47`). `is_suspended` is `true` while
+calling is stopped for a billing reason — a suspended workspace still answers this read. Auto top-up is the three
 `auto_topup_enabled` / `auto_topup_amount_cents` (charged each time) /
 `low_balance_threshold_cents` (the balance that triggers it) fields together, none of
 them writable here. `auto_topup_enabled` says whether it is on; the amount and threshold
