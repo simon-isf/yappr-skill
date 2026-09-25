@@ -169,9 +169,11 @@ A query parameter or body field an endpoint does not read is a `400` that names 
 what the endpoint does read — never silently ignored. That holds for **writes** too,
 deletes included: `DELETE /agents/{id}?bogus=1` is refused and archives nothing, and
 `POST /tools?dry_run=true` is refused rather than creating the tool. Send a write's
-settings in its body. (The one read that ignores extra parameters is the signed
-`recording_url`, because audio players add their own.) Codes: `AGENTS_QUERY_INVALID`,
-`TOOLS_QUERY_INVALID`, `CONSUMPTION_QUERY_INVALID`, `CAMPAIGNS_QUERY_INVALID`,
+settings in its body. A few reads do not refuse one, so never rely on them to:
+`GET /campaigns/{id}/leads` (which also takes a `limit` or `offset` that is not a number),
+`GET /sip-endpoints` and `GET /sip-endpoints/{id}`, every read under `/carrier-accounts`,
+and the signed `recording_url`, which audio players open with parameters of their own.
+Codes: `AGENTS_QUERY_INVALID`, `TOOLS_QUERY_INVALID`, `CONSUMPTION_QUERY_INVALID`, `CAMPAIGNS_QUERY_INVALID`,
 `CALLS_QUERY_INVALID`, `LEADS_QUERY_INVALID`, `DELIVERIES_QUERY_INVALID`,
 `DO_NOT_CALL_REQUEST_INVALID`, `API_KEY_REQUEST_INVALID`, `LEAD_REQUEST_INVALID`,
 `WEB_CALL_REQUEST_INVALID`, `CAMPAIGN_REQUEST_INVALID`. The same `400` refuses a parameter
