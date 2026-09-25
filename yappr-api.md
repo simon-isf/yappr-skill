@@ -108,8 +108,16 @@ used to be `401` on most routes and `403` on a few; it is `403` everywhere now, 
 means only that the key itself was not accepted. Never read a `403` as a dead key: rotating
 it changes nothing — widen its scopes in the dashboard, or issue a key that holds the scope.
 
-- `404 RESOURCE_ID_INVALID` — the id in the path is not a UUID. A malformed id is a
-  refusal, never the collection behind it.
+- `404 RESOURCE_ID_INVALID` — the id in the path is not a UUID, on every route and every
+  verb, a second id in the path (`/tools/{id}/tests/{test_id}`,
+  `/calls/{id}/recording/revoke`) included. A malformed id is a refusal, never the
+  collection behind it; it stays `404`, not `400`.
+- `404 ROUTE_NOT_FOUND` — the API serves no such path: a sub-path no route has
+  (`DELETE /agents/{id}/nonsense`), a resource that does not exist, or a path with an
+  empty segment — a doubled slash (`/agents//{id}`) is refused, never read as the
+  collapsed path. It is answered before any scope or agent check, and nothing is read or
+  changed. The message names what the API serves at the deepest part of the path it
+  recognised.
 - `400 invalid_destination` — the ONLY code for a `to` that cannot be dialled, malformed or
   unreachable. `INVALID_TO_NUMBER` no longer exists.
 - `400 INVALID_FROM_NUMBER`, `400 SELF_CALL_NOT_ALLOWED` — the other two number refusals.
@@ -158,7 +166,11 @@ it changes nothing — widen its scopes in the dashboard, or issue a key that ho
 ### The API refuses what it does not read
 
 A query parameter or body field an endpoint does not read is a `400` that names it and lists
-what the endpoint does read — never silently ignored. Codes: `AGENTS_QUERY_INVALID`,
+what the endpoint does read — never silently ignored. That holds for **writes** too,
+deletes included: `DELETE /agents/{id}?bogus=1` is refused and archives nothing, and
+`POST /tools?dry_run=true` is refused rather than creating the tool. Send a write's
+settings in its body. (The one read that ignores extra parameters is the signed
+`recording_url`, because audio players add their own.) Codes: `AGENTS_QUERY_INVALID`,
 `TOOLS_QUERY_INVALID`, `CONSUMPTION_QUERY_INVALID`, `CAMPAIGNS_QUERY_INVALID`,
 `CALLS_QUERY_INVALID`, `LEADS_QUERY_INVALID`, `DELIVERIES_QUERY_INVALID`,
 `DO_NOT_CALL_REQUEST_INVALID`, `API_KEY_REQUEST_INVALID`, `LEAD_REQUEST_INVALID`,
@@ -305,8 +317,10 @@ its response, not `null`.
 
 A `legacy` row carries the same twenty-five fields plus `type: "prompt" | "flow"`,
 `system_prompt`, `flow_config`, `webhook_url`, `webhook_events`, `webhook_headers`,
-`tools` and `idempotency_key`, real values, not empties: `system_prompt` is the prompt
-driving the call, `flow_config` the graph on a `flow` agent, and `idempotency_key` is
+`tools` and `idempotency_key`, real values, not empties — except `webhook_headers`, whose
+**values are write-only**: a read returns the header names and never what they are set
+to, so a secret sent there does not come back to any key. Send the value again with
+`PATCH /agents/:id` to change it. `system_prompt` is the prompt driving the call, `flow_config` the graph on a `flow` agent, and `idempotency_key` is
 whatever the retired create path wrote (often `null`). Branch on `execution_version`,
 never on field count or on `type` alone — `"prompt"` and `"flow"` are a closing set (no
 agent is created into them any more), not a growing one, and existing agents in them
@@ -369,7 +383,8 @@ never on a read.
 An agent created before the workflow engine keeps `type: "prompt"` or `"flow"` and every
 field it has always returned — `system_prompt`, `flow_config`, `webhook_url`,
 `webhook_events`, `webhook_headers`, `tools`, and `idempotency_key` (whatever the retired
-create path wrote for it, often `null`) — real values, unchanged. `voice` is the voice
+create path wrote for it, often `null`) — real values, unchanged, except that
+`webhook_headers` names its headers without their values (write-only). `voice` is the voice
 name a caller hears; the engine behind it is never set directly.
 
 **Turn-taking and interruption.** An agent stops the instant the caller starts
@@ -620,7 +635,8 @@ For a workflow agent the response is the workflow Agent object: `type: "workflow
 with `system_prompt`, `flow_config`, `webhook_url`, `webhook_events`,
 `webhook_headers` and `tools` **absent** — not null, not empty — same as
 `GET /agents/:id`. Read the canonical workflow document, not those legacy fields.
-A legacy agent's PATCH response still carries them as real values, unchanged.
+A legacy agent's PATCH response still carries them as real values, unchanged — header
+values excepted: `webhook_headers` comes back with names only.
 
 **A refused field is named.** Sending `webhook_url`, `webhook_events`,
 `webhook_headers`, `system_prompt`, `flow_config` or `tools` to a workflow agent is
