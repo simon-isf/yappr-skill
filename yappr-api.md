@@ -3158,8 +3158,9 @@ before 2026-09-16 carry neither key.
 - Opening it needs no `Authorization` header and answers `200` with the audio itself — no
   redirect to follow. `HEAD` answers with the same headers and no body, and a `Range`
   request gets just the bytes it asks for, so an `<audio>` element can seek.
-- A link lasts **7 to 8 days**: `exp` is the end of the UTC day eight days after it was
-  issued, so two reads of the call on one day return the same link. It is not permanent —
+- A link lasts **7 to 8 days**: `exp` is 00:00 UTC eight days after the UTC day it was
+  issued on (a link read on 25 September expires at 00:00 UTC on 3 October), so two reads
+  of the call on one day return the same link. It is not permanent —
   for a later play, read the call again; every read issues a current link.
 - Anyone holding a link can play the recording until it expires. To take links back, see
   **POST /calls/:id/recording/revoke** below.
