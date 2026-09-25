@@ -2128,7 +2128,8 @@ Let agents call **from numbers the customer already owns at Telnyx** — nothing
 no Yappr number bought. Yappr places each call on a Call Control App in the customer's
 own Telnyx account, with an API key they gave Yappr, so **Telnyx bills their account**
 for the phone minutes and its own fees (call control, media streaming, recording, noise
-suppression). **Yappr bills the agent minutes** at the usual per-minute rate. The agent,
+suppression). **Yappr bills the agent minutes** at its Phone calls price — the same as a
+call from a number bought from Yappr, not lowered for the phone minutes Telnyx bills them. The agent,
 the recording, the transcript and the webhooks are the same as on any other call, and
 the recording is copied into Yappr when the call ends.
 
@@ -2143,8 +2144,8 @@ through the routes below. Yappr can switch the feature off for one workspace in 
 emergency; that workspace's routes then answer `403 CARRIER_ACCOUNTS_NOT_ENABLED` (body
 `{error, code, enabled: false}`) and nothing is sent to Telnyx — contact Yappr support.
 
-**Scopes:** `carrier_accounts:read` (every `GET`) and `carrier_accounts:manage` (every
-other method — `test` included, because it uses the customer's Telnyx key). Every
+**Scopes:** `carrier_accounts:read` (every `GET` but `/carrier-accounts/status`, which any
+key reads) and `carrier_accounts:manage` (every other method — `test` included, because it uses the customer's Telnyx key). Every
 workspace can grant them, but they are opt-in: no existing key was given them and a new
 key does not start with them, so tick the **Your carrier (Telnyx)** scope group in
 Settings → API keys. A key without the route's scope gets `403 INSUFFICIENT_SCOPE` naming
@@ -2153,7 +2154,7 @@ the dashboard, only owners and admins can change a carrier account.
 
 | Method | Path | What it does | Daily limit |
 |---|---|---|---|
-| GET | `/carrier-accounts/status` | `{"enabled": true}` — or `403 CARRIER_ACCOUNTS_NOT_ENABLED` on a workspace Yappr switched off. Needs `carrier_accounts:read`: a key without it gets `403 INSUFFICIENT_SCOPE`, which says nothing about the feature | — |
+| GET | `/carrier-accounts/status` | `{"enabled": true}` — or `403 CARRIER_ACCOUNTS_NOT_ENABLED` on a workspace Yappr switched off. Needs no scope: any valid key for the workspace reads it, Read-only included; a key limited to some agents is `403 API_KEY_AGENT_SCOPED` (carrier accounts belong to the whole workspace) | — |
 | GET | `/carrier-accounts` | `{ "data": [account] }`, numbers expanded, never `webhook_url` | — |
 | POST | `/carrier-accounts` | Connect a Telnyx account | 10 |
 | GET | `/carrier-accounts/{id}` | One account; `webhook_url` only for a `manage` key | — |
@@ -5573,7 +5574,8 @@ member can reach in the dashboard has a public endpoint behind it.
 | POST /phone-numbers/search | `phone_numbers:search` |
 | POST /phone-numbers/purchase | `phone_numbers:purchase` |
 | POST /phone-numbers/configure | `phone_numbers:configure` |
-| GET /carrier-accounts (list/get/status) | `carrier_accounts:read` |
+| GET /carrier-accounts (list/get) | `carrier_accounts:read` |
+| GET /carrier-accounts/status | none — any valid key for the workspace (not one limited to some agents) |
 | POST /carrier-accounts, PATCH/DELETE /carrier-accounts/:id | `carrier_accounts:manage` |
 | POST /carrier-accounts/:id/connection \| /test \| /reactivate | `carrier_accounts:manage` |
 | POST /carrier-accounts/:id/numbers, DELETE /carrier-accounts/:id/numbers/:phone_number_id | `carrier_accounts:manage` |
