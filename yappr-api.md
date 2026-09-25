@@ -3449,6 +3449,7 @@ Any other field is `400 WEB_CALL_REQUEST_INVALID`, naming it.
   "call_id": "uuid | null",
   "token": "wcs_…",
   "expires_at": "ISO8601",
+  "cancel_url": "…",
   "agent_id": "…",
   "agent_name": "…",
   "protocol": "offer",
@@ -3466,8 +3467,35 @@ Any other field is `400 WEB_CALL_REQUEST_INVALID`, naming it.
 **The call exists at once.** `call_id` is readable with `GET /calls/{call_id}` straight
 away, with status `pending_connection` until the browser connects; then the same id runs
 the call. Unused, it settles `no_answer` (`failure.code: "session_expired"`,
-`ended_by: "system"`, `cost_cents: 0`) about a minute after the token expires — mint on
-click, not on page load. A `pending_connection` row holds no line and costs nothing until a browser connects.
+`ended_by: "system"`, `cost_cents: 0`) as soon as it is read after `expires_at` —
+`GET /calls/{id}`, `GET /calls` and the export each settle a lapsed session before they
+answer, so `?status=pending_connection` never lists one — and, if nobody reads it, at the
+next five-minute sweep. A token a browser spent on a connection that never came up settles
+a minute after it expires. Mint on click, not on page load. A `pending_connection` row
+holds no line and costs nothing until a browser connects.
+
+**Discarding a session nobody will use — `cancel_url`.** Every mint returns `cancel_url`,
+on both protocols. `POST` it with the session token as the `x-yappr-web-token` header and
+no body (or `{}`), from your server or from the page you handed the token to; it takes the
+token, never the secret key. `200 {"status": "cancelled", "call_id": …}`: the token is
+spent, so no browser can use it. An `offer` session's waiting call ends at once as an
+operator's end — `ended_by: "operator"`, `disconnect_reason: "Ended by operator"`, no
+`failure`, `cost_cents: 0` — exactly as `POST /calls/:id/end` below ends it; a
+`call_request` session answers `call_id: null`, and this is the only way to take one back.
+Sending it again answers the same. `200 {"status": "expired"}` when the token had already
+expired. `409 WEB_SESSION_ALREADY_USED` once a browser used it: end the call it started,
+or stop the call request it created with that request's own `cancel_url`.
+`400 WEB_SESSION_CANCEL_INVALID` for a body; `401` for a missing or unknown token.
+
+**Ending an unopened session with the secret key — `POST /calls/:id/end`**
+(`calls:create`). For an `offer` session's call still at `pending_connection`: `200
+{"id", "status": "no_answer", "ended_at", "ended_by": "operator"}`, final at once —
+`GET /calls/:id` then reads `ended_by: "operator"`, `disconnect_reason: "Ended by operator"`,
+`cost_cents: 0` and **no** `failure` member, and a browser that later tries the token is
+turned away. It takes no body (`400 CALL_END_INVALID`). It is not a hang-up: a call a
+browser opened, a phone call or a settled call is `409 CALL_NOT_PENDING`, naming its
+`status`, and nothing changes. A missing call is `404 NOT_FOUND`; `503 CALL_END_UNAVAILABLE`
+changed nothing — send it again.
 
 With `protocol: "call_request"` the mint answers `call_id: null`: the call request reports
 the call's id once it starts. Such an agent cannot take `lead_id` — `422
@@ -5612,6 +5640,8 @@ member can reach in the dashboard has a public endpoint behind it.
 | POST /calls | `calls:create` |
 | GET /calls/:id/recording (the signed `recording_url`) | none — the link's signature |
 | POST /calls/:id/recording/revoke | `calls:create` |
+| POST /calls/:id/end (an unopened browser session) | `calls:create` |
+| POST `cancel_url` (a web mint's) | none — the session token, as `x-yappr-web-token` |
 | GET /call-requests/:id | `calls:read` |
 | POST /call-requests/:id/cancel | `calls:create` |
 | GET /dispositions (list/get) | `dispositions:read` |
