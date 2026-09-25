@@ -166,14 +166,26 @@ it changes nothing — widen its scopes in the dashboard, or issue a key that ho
 
 ### The API refuses what it does not read
 
-A query parameter or body field an endpoint does not read is a `400` that names it and lists
-what the endpoint does read — never silently ignored. That holds for **writes** too,
-deletes included: `DELETE /agents/{id}?bogus=1` is refused and archives nothing, and
+A query parameter an endpoint does not read is a `400` that names it and lists what the
+endpoint does read — never silently ignored. That holds for **writes** too, deletes
+included: `DELETE /agents/{id}?bogus=1` is refused and archives nothing, and
 `POST /tools?dry_run=true` is refused rather than creating the tool. Send a write's
 settings in its body. A few reads do not refuse one, so never rely on them to:
 `GET /campaigns/{id}/leads` (which also takes a `limit` or `offset` that is not a number),
 `GET /sip-endpoints/{id}`, every read under `/carrier-accounts`,
 and the signed `recording_url`, which audio players open with parameters of their own.
+
+A body field is refused the same way on most creates and edits: agents, workflow tools,
+campaigns, API keys, SIP endpoints, recording revokes, and every write on `/leads`,
+`/do-not-call`, `/lead-tags`, `/dispositions`, `/shared-links`, `/call-windows` and
+`/agent-eval`. Some writes may drop a body field they do not read instead, so never rely on
+them to refuse one: `/phone-numbers`, `/carrier-accounts`, `/billing`, `/call-requests`,
+enrolling contacts (`POST /campaigns/{id}/leads`) and a campaign's `launch`, `pause`,
+`resume` and `stop`, `/agents/{id}/flow/…`, `POST /deliveries/{id}/retry`, a tool created
+or changed with `type`, and a phone call through `POST /calls` to an agent that does not run
+a workflow (a browser session, `"type": "web"`, refuses one on any agent). Send only the
+fields a route's section lists.
+
 Codes: `AGENTS_QUERY_INVALID`, `TOOLS_QUERY_INVALID`, `CONSUMPTION_QUERY_INVALID`, `CAMPAIGNS_QUERY_INVALID`,
 `CALLS_QUERY_INVALID`, `LEADS_QUERY_INVALID`, `DELIVERIES_QUERY_INVALID`,
 `DO_NOT_CALL_REQUEST_INVALID`, `API_KEY_REQUEST_INVALID`, `LEAD_REQUEST_INVALID`,
