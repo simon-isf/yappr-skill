@@ -2395,6 +2395,12 @@ curl -s "https://api.goyappr.com/billing" \
 curl -s "https://api.goyappr.com/billing/transactions?from=2026-09-01&to=2026-09-30" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq '{summary, has_more, range}'
 
+# A top-up row's `payment` says what the card was charged (total_charged_cents, VAT
+# included), the VAT, and the invoice number when there is one (a checkout top-up has
+# none). The same statement as the dashboard's Export CSV file: add format=csv.
+curl -s "https://api.goyappr.com/billing/transactions?from=2026-09-01&to=2026-09-30&format=csv" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" -o statement.csv
+
 # Generate Stripe Checkout link (for adding payment method)
 curl -s -X POST "https://api.goyappr.com/billing/setup" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \

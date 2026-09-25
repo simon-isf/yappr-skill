@@ -5051,9 +5051,10 @@ Billing → Transaction History**, addressable.
 | `from` | 30 days before `to` | ISO 8601; a date-only `from` starts that day on the statement's clock |
 | `to` | now | ISO 8601, inclusive; a date-only `to` covers that whole day on the statement's clock. `?to=2026-07-31` alone reads July 1 through July 31 |
 | `timezone` | the workspace's | IANA name. The clock the usage days and date-only `from`/`to` are read on — by default the workspace's own (the `timezone` set on `PUT /call-windows`, the clock the dashboard shows this money on; UTC for a workspace that never set one), as on `GET /billing/consumption`. `timezone=UTC` gives UTC days |
-| `limit` | 100 | at most 500; caps the rows, never the summary |
+| `limit` | 100 | at most 500; caps the rows, never the summary. With `format=csv`, up to 1,000 |
+| `format` | `json` | `csv` for the statement as a file (below); `Accept: text/csv` with no `format` asks for the file too |
 
-Anything else, a timestamp that is not real, an offset such as `+03:00` or an unknown
+Anything else, a `format` other than `json` or `csv`, a timestamp that is not real, an offset such as `+03:00` or an unknown
 name in `timezone`, a `from` after `to` (on the clock the statement is read on), or a
 `from` in the future with `to` left out is `400 TRANSACTIONS_QUERY_INVALID`, naming the
 parameter. A late-evening charge lands on the next day in an `Asia/Jerusalem` workspace,
@@ -5064,10 +5065,12 @@ exactly as the dashboard's Transaction History shows it.
   "data": [
     { "id": null, "type": "usage", "product": "voice_call", "date": "2026-09-23",
       "created_at": "ISO8601", "description": null, "count": 41, "status": "completed",
-      "amount_cents": -412, "affects_balance": true },
+      "amount_cents": -412, "affects_balance": true, "payment": null },
     { "id": "uuid", "type": "top_up", "product": null, "date": "2026-09-21",
       "created_at": "ISO8601", "description": "Credits top-up", "count": 1,
-      "status": "completed", "amount_cents": 5000, "affects_balance": true }
+      "status": "completed", "amount_cents": 5000, "affects_balance": true,
+      "payment": { "invoice_number": "string | null", "total_charged_cents": 5900,
+                   "vat_cents": 900, "currency": "usd" } }
   ],
   "summary": {
     "opening_balance_cents": 1210, "credits_in_cents": 5000, "credits_out_cents": 3666,
@@ -5102,6 +5105,37 @@ are on: the `timezone` as you sent it, or the workspace's.
   that runs to now is `GET /billing`'s `balance_cents`, and last month's closing balance is
   this month's opening one.
 - `has_more: true` means the rows were cut at `limit`; narrow the window to read older ones.
+- **`payment`** is on every row: `null` except on a `top_up`, where it is
+  `{invoice_number, total_charged_cents, vat_cents, currency}` — what the card was charged,
+  VAT included (`amount_cents` is the credits, before VAT), the VAT in it, and the number
+  printed on the invoice when there is one: an automatic top-up has one, a checkout top-up
+  has none (`invoice_number: null`). A field the payment record does not hold is `null` —
+  an older top-up may lack the total or the VAT. Match a card-statement line by the row's
+  `date` and `total_charged_cents`. No payment processor id is ever returned.
+- A `gift` row's `description` is always "Credits from Yappr".
+
+**One row — `GET /billing/transactions/{id}`** (`billing:read`; a key limited to some
+agents is `403 API_KEY_AGENT_SCOPED`): the row by the `id` a list row carries, in the list's
+shape plus `timezone`, the clock its `date` is on. `?timezone=` picks another clock and is
+the only query parameter it takes — anything else is `400 TRANSACTIONS_QUERY_INVALID`. A
+`usage` row has no id: the id of one call's charge is `404 NOT_FOUND` (a call's cost is on
+`GET /calls/{id}`), and so is an id not in this workspace; one that is not a UUID is
+`404 RESOURCE_ID_INVALID`.
+
+**As a file — `format=csv`** (or `Accept: text/csv` with no `format`): the dashboard's
+Export CSV, line for line — a UTF-8 BOM, the header
+`Date,Description,Type,Status,Amount (USD),Credits,Balance after (credits)`, the opening
+balance, the rows oldest first with the balance each one left, the closing balance and
+"Figures as of …" on the statement's clock. Up to 1,000 rows (`limit` lowers it); a window
+holding more says "Showing the newest 1,000 entries" under the opening balance. No payment
+columns. It arrives as an attachment named `transactions-<from>_<to>.csv`.
+
+**How a call is charged**, for reconciling a `usage` day against `GET /calls`: per second,
+at the per-minute price in force when the call ends (a phone call's price, or a browser
+call's), rounded up to the next cent. A call passed to a person is two charges: up to the
+handoff at the call's own price, from the handoff to the end at the transfer price; the
+two parts add up to the call's length and each is rounded up on its own. Both double
+where AI training is switched off. The prices are under Billing → Prices in the dashboard.
 
 ---
 
@@ -5548,7 +5582,7 @@ member can reach in the dashboard has a public endpoint behind it.
 | POST /billing/setup | `billing:manage` |
 | POST /billing/topup | `billing:manage` |
 | GET /billing/consumption | `billing:read` |
-| GET /billing/transactions | `billing:read` (refused to a key limited to some agents) |
+| GET /billing/transactions, GET /billing/transactions/:id | `billing:read` (refused to a key limited to some agents) |
 | GET /call-windows | none — any authenticated key for the workspace |
 | PUT /call-windows | `call_windows:manage` |
 | GET /calls (list/get) | `calls:read` |
