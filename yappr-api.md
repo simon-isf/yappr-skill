@@ -2223,7 +2223,9 @@ no Yappr number bought. Yappr places each call on a Call Control App in the cust
 own Telnyx account, with an API key they gave Yappr, so **Telnyx bills their account**
 for the phone minutes and its own fees (call control, media streaming, recording, noise
 suppression). **Yappr bills the agent minutes** at its Phone calls price — the same as a
-call from a number bought from Yappr, not lowered for the phone minutes Telnyx bills them. The agent,
+call from a number bought from Yappr, not lowered for the phone minutes Telnyx bills them.
+A call with a Palestinian Authority number at either end, which pays a premium price on a
+number bought from Yappr, pays the plain Phone calls price here. The agent,
 the recording, the transcript and the webhooks are the same as on any other call, and
 the recording is copied into Yappr when the call ends.
 
@@ -5310,7 +5312,13 @@ at the per-minute price in force when the call ends (a phone call's price, or a 
 call's), rounded up to the next cent. A call passed to a person is one charge in two parts,
 so it counts once in a `usage` row's `count`: up to the handoff at the call's own price,
 from the handoff to the end at the transfer price; the two parts add up to the call's
-length and each is rounded up on its own. Both double where AI training is switched off. The prices are under Billing → Prices in the dashboard.
+length and each is rounded up on its own. Both double where AI training is switched off.
+A call with a Palestinian Authority number at either end (`+97222`, `+97242`, `+97282`,
+`+97292`, `+97256` or `+97259`) is charged a flat premium price instead, $1.00 a minute,
+for the whole call — both parts of a handoff — and doubled the same way; a call placed on
+the workspace's own Telnyx account (see **Carrier Accounts**) never pays it. The prices are
+under Billing → Prices in the dashboard, which lists the premium under "Charged in this
+period" once a call has paid it.
 
 ---
 
