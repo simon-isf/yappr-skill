@@ -170,13 +170,28 @@ it changes nothing — widen its scopes in the dashboard, or issue a key that ho
 ### The API refuses what it does not read
 
 A query parameter an endpoint does not read is a `400` that names it and lists what the
-endpoint does read — never silently ignored. That holds for **writes** too, deletes
-included: `DELETE /agents/{id}?bogus=1` is refused and archives nothing, and
-`POST /tools?dry_run=true` is refused rather than creating the tool. Send a write's
-settings in its body. A few reads do not refuse one, so never rely on them to:
-`GET /campaigns/{id}/leads` (which also takes a `limit` or `offset` that is not a number),
-`GET /sip-endpoints/{id}`, every read under `/carrier-accounts`,
-and the signed `recording_url`, which audio players open with parameters of their own.
+endpoint does read — never silently ignored. A few reads do not refuse one, so never rely
+on them to: `GET /campaigns/{id}/leads` (which also takes a `limit` or `offset` that is not
+a number), `GET /sip-endpoints/{id}`, every read under `/carrier-accounts`, and the signed
+`recording_url`, which audio players open with parameters of their own.
+
+**A write's query string is not where its settings go.** Every write — a create, a change,
+a delete or an action — refuses a query parameter it does not read, and one sent twice or
+with no value, before anything is read or changed: `DELETE /agents/{id}?bogus=1` is
+`400 AGENTS_QUERY_INVALID` and the agent is untouched, and `POST /tools?dry_run=true` is
+refused rather than creating the tool. Three writes read one: `POST /campaigns/{id}/launch`
+and `POST /campaigns/{id}/resume` take `dry_run`, and `DELETE /lead-tags/{id}` takes `force`
+(anything else there is `400 LEAD_TAG_DELETE_INVALID`). The code is the route family's:
+`AGENTS_QUERY_INVALID`, `TOOLS_QUERY_INVALID`, `CALLS_QUERY_INVALID` (on `/call-requests`
+too), `LEADS_QUERY_INVALID`, `CAMPAIGNS_QUERY_INVALID`, `DO_NOT_CALL_REQUEST_INVALID`,
+`PHONE_NUMBERS_QUERY_INVALID`, `SIP_ENDPOINT_QUERY_INVALID`,
+`CARRIER_ACCOUNTS_QUERY_INVALID`, `BILLING_QUERY_INVALID`, `DELIVERIES_QUERY_INVALID`,
+`API_KEY_REQUEST_INVALID`, `REPORT_ISSUE_QUERY_INVALID`, and the lead-tag, disposition,
+shared-link, calling-hours and eval families' own codes (`POST /tools/attach` and `/detach`
+answer `TOOL_ATTACHMENT_REQUEST_INVALID`). Three answer it their own way: connected
+accounts with `400 CONNECTION_INVALID`, the workflow's save, check, publish and rebind with
+`400 WORKFLOW_REQUEST_INVALID`, and starting a tool test with
+`422 WORKFLOW_TOOL_TEST_INVALID`. Send a write's settings in its body.
 
 A body field is refused the same way on most creates and edits: agents, workflow tools,
 campaigns, API keys, SIP endpoints, recording revokes, and every write on `/leads`,
