@@ -113,11 +113,14 @@ it changes nothing — widen its scopes in the dashboard, or issue a key that ho
   `/calls/{id}/recording/revoke`) included. A malformed id is a refusal, never the
   collection behind it; it stays `404`, not `400`.
 - `404 ROUTE_NOT_FOUND` — the API serves no such path: a sub-path no route has
-  (`DELETE /agents/{id}/nonsense`), a resource that does not exist, or a path with an
-  empty segment — a doubled slash (`/agents//{id}`) is refused, never read as the
-  collapsed path. It is answered before any scope or agent check, and nothing is read or
-  changed. The message names what the API serves at the deepest part of the path it
-  recognised.
+  (`DELETE /agents/{id}/nonsense`), a resource that does not exist, or an id left empty
+  (`GET /calls/` could be `GET /calls/{id}` with no id, so it is refused rather than read
+  as the list). A trailing slash that cannot be an id left empty is ignored: `POST /calls/`
+  is `POST /calls`. A doubled slash is merged into one before the request reaches the API,
+  so `GET //calls` is served as `GET /calls` and `GET /agents//{id}` as `GET /agents/{id}`;
+  do not count on one being turned away. It is answered before any scope or agent check,
+  and nothing is read or changed. The message names what the API serves at the deepest
+  part of the path it recognised.
 - `400 invalid_destination` — the ONLY code for a `to` that cannot be dialled, malformed or
   unreachable. `INVALID_TO_NUMBER` no longer exists.
 - `400 INVALID_FROM_NUMBER`, `400 SELF_CALL_NOT_ALLOWED` — the other two number refusals.
