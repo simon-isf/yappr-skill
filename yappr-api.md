@@ -172,7 +172,7 @@ deletes included: `DELETE /agents/{id}?bogus=1` is refused and archives nothing,
 `POST /tools?dry_run=true` is refused rather than creating the tool. Send a write's
 settings in its body. A few reads do not refuse one, so never rely on them to:
 `GET /campaigns/{id}/leads` (which also takes a `limit` or `offset` that is not a number),
-`GET /sip-endpoints` and `GET /sip-endpoints/{id}`, every read under `/carrier-accounts`,
+`GET /sip-endpoints/{id}`, every read under `/carrier-accounts`,
 and the signed `recording_url`, which audio players open with parameters of their own.
 Codes: `AGENTS_QUERY_INVALID`, `TOOLS_QUERY_INVALID`, `CONSUMPTION_QUERY_INVALID`, `CAMPAIGNS_QUERY_INVALID`,
 `CALLS_QUERY_INVALID`, `LEADS_QUERY_INVALID`, `DELIVERIES_QUERY_INVALID`,
