@@ -167,10 +167,10 @@ sent twice or empty, a date that does not exist, and `from` after `to`.
   `stop_disposition_ids` included: send ids from `GET /dispositions`). The message names
   the field.
 - There is no agent filter on `GET /billing/consumption`: use `group_by=agent`.
-- A date-only `to` covers that whole day: a UTC day on `/calls`, `/calls/export`,
-  `/deliveries` and `/billing/transactions`, and a day on the workspace's clock on
-  `/billing/consumption` unless you pass `timezone=UTC`. `from=2026-08-01&to=2026-08-31`
-  is all of August.
+- A date-only `to` covers that whole day: a UTC day on `/calls`, `/calls/export` and
+  `/deliveries`, and a day on the workspace's clock on `/billing/consumption` and
+  `/billing/transactions` unless you pass `timezone` (`timezone=UTC` for UTC days).
+  `from=2026-08-01&to=2026-08-31` is all of August.
 - `expires_at` in the past is refused on do-not-call add and edit and on shared links.
 - `metadata.extracted` on a lead: send it back unchanged or leave it out; changing it is
   `400`.
@@ -4906,12 +4906,16 @@ Billing → Transaction History**, addressable.
 
 | Param | Default | Notes |
 |---|---|---|
-| `from` | 30 days before `to` | ISO 8601 |
-| `to` | now | ISO 8601, inclusive; a date-only `to` covers that whole day (UTC). `?to=2026-07-31` alone reads July 1 through July 31 |
+| `from` | 30 days before `to` | ISO 8601; a date-only `from` starts that day on the statement's clock |
+| `to` | now | ISO 8601, inclusive; a date-only `to` covers that whole day on the statement's clock. `?to=2026-07-31` alone reads July 1 through July 31 |
+| `timezone` | the workspace's | IANA name. The clock the usage days and date-only `from`/`to` are read on — by default the workspace's own (the `timezone` set on `PUT /call-windows`, the clock the dashboard shows this money on; UTC for a workspace that never set one), as on `GET /billing/consumption`. `timezone=UTC` gives UTC days |
 | `limit` | 100 | at most 500; caps the rows, never the summary |
 
-Anything else, a timestamp that is not real, a `from` after `to`, or a `from` in the
-future with `to` left out is `400 TRANSACTIONS_QUERY_INVALID`, naming the parameter.
+Anything else, a timestamp that is not real, an offset such as `+03:00` or an unknown
+name in `timezone`, a `from` after `to` (on the clock the statement is read on), or a
+`from` in the future with `to` left out is `400 TRANSACTIONS_QUERY_INVALID`, naming the
+parameter. A late-evening charge lands on the next day in an `Asia/Jerusalem` workspace,
+exactly as the dashboard's Transaction History shows it.
 
 ```json
 {
@@ -4928,17 +4932,27 @@ future with `to` left out is `400 TRANSACTIONS_QUERY_INVALID`, naming the parame
     "closing_balance_cents": 2544, "card_charges_cents": 0
   },
   "balance_cents": 2544,
+  "as_of": "ISO8601",
   "has_more": false,
-  "range": { "from": "2026-09-01", "to": "2026-09-30" }
+  "range": { "from": "2026-08-31T21:00:00.000Z", "to": "2026-09-30T20:59:59.999Z",
+             "timezone": "Asia/Jerusalem" }
 }
 ```
 
+`range` is the window that was read, as instants, and `range.timezone` the clock its days
+are on: the `timezone` you sent (as the zone database spells it), or the workspace's.
+`from=2026-09-01&to=2026-09-30` on an `Asia/Jerusalem` workspace reads from 21:00 UTC on
+31 August. `as_of` is when the statement was read.
+
 - **Rows.** `top_up` (paid credits, in), `gift` (credits Yappr added, in), `usage` (one row
-  per UTC day per product — `voice_call` or `eval_run` — with `count` charges folded in;
-  out), `refund` (a refunded or disputed top-up; out), `adjustment` (a manual correction,
-  either way), `phone_number` (a number's first charge or renewal — paid by card,
-  `affects_balance: false`), `other` (anything newer; trust `affects_balance`). A row whose
-  `status` is not `completed` does not move the balance either.
+  per day per product on the statement's clock — `voice_call` or `eval_run` — with `count`
+  charges folded in; out), `refund` (a refunded or disputed top-up; out), `adjustment` (a
+  manual correction, either way), `phone_number` (a number's first charge or renewal —
+  paid by card, `affects_balance: false`), `starting_balance` (a balance no other row
+  records, dated where the history begins; before it the balance is 0), `other` (anything
+  newer; trust `affects_balance`). Today's `usage` row reads `status: "in_progress"`: the
+  day is still running on that clock and the row keeps growing, but what it shows has
+  already moved the balance. Any other row whose `status` is not `completed` has not.
 - **Signs are the account holder's:** positive put credits in, negative took them out —
   the opposite of `GET /billing/consumption`, where a charge is positive.
 - **`summary` always adds up:** `opening + credits_in - credits_out = closing`.
