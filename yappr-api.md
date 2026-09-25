@@ -5307,10 +5307,10 @@ columns. It arrives as an attachment named `transactions-<from>_<to>.csv`.
 
 **How a call is charged**, for reconciling a `usage` day against `GET /calls`: per second,
 at the per-minute price in force when the call ends (a phone call's price, or a browser
-call's), rounded up to the next cent. A call passed to a person is two charges: up to the
-handoff at the call's own price, from the handoff to the end at the transfer price; the
-two parts add up to the call's length and each is rounded up on its own. Both double
-where AI training is switched off. The prices are under Billing → Prices in the dashboard.
+call's), rounded up to the next cent. A call passed to a person is one charge in two parts,
+so it counts once in a `usage` row's `count`: up to the handoff at the call's own price,
+from the handoff to the end at the transfer price; the two parts add up to the call's
+length and each is rounded up on its own. Both double where AI training is switched off. The prices are under Billing → Prices in the dashboard.
 
 ---
 
