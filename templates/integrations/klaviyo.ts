@@ -38,7 +38,9 @@ export interface KlaviyoEventProperties {
   disposition?: string;
   call_duration_seconds?: number;
   agent_name?: string;
-  recording_url?: string;
+  /** The Yappr call id. Store this, not recording_url: a recording link expires
+   * after 7-8 days; read the call again for a current one. */
+  call_id?: string;
   [key: string]: unknown;
 }
 

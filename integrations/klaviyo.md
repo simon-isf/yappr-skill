@@ -98,7 +98,7 @@ Returns empty `data: []` if not found.
         "disposition": "appointment_set",
         "call_duration_seconds": 187,
         "agent_name": "Sales Bot",
-        "recording_url": "https://..."
+        "call_id": "a1b2c3d4-..."
       },
       "time": "2024-02-15T10:30:00Z",
       "value": 1
@@ -108,6 +108,9 @@ Returns empty `data: []` if not found.
 ```
 
 Response: `202 Accepted` (async processing).
+
+Send the Yappr call `id`, not `recording_url`: a recording link expires after 7–8 days, so
+a stored one stops playing. Read the call again (`GET /calls/{id}`) for a current link.
 
 ### POST /profile-import — Bulk upsert profiles
 
