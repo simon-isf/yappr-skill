@@ -2557,7 +2557,7 @@ number. Use in retry-throttle logic (automation platforms like Make.com/n8n get 
       "analysis": { "status": "done" | "pending" | "skipped" | "failed", "reason": "string | null", "completed_at": "ISO8601 | null" },
       "recording_url": "string | null",
       "disposition": { "id": "uuid", "label": "string", "color": "#hex" },
-      "lead": { "...full lead object with tags..." }
+      "lead": { "...full lead object with tags — {id} alone without leads:read..." }
     }
   ],
   "pagination": {
@@ -2830,6 +2830,12 @@ and analysis keeps the timestamp its loop windows on.
 **`metadata`** — The metadata object you attached at `POST /calls` (or at a browser-session
 mint). Empty object `{}` if none was provided. Internal bookkeeping is removed; the few
 platform keys that stay are listed under **GET /calls** above.
+
+**`lead`** — The lead the call was matched to, with its tags, for a key with `leads:read`.
+A key without `leads:read` reads it as `{id}` alone — here and on `GET /calls` rows — and
+`search` on `GET /calls` matches no lead names for it. The dashboard's **Standard** preset
+has no `leads:read`: add **Read** under **Leads** with **Edit scopes**, or read
+`GET /leads/{id}` with a key that holds it.
 
 **`extracted_data`** — Present **only when extraction ran**: an agent with no
 `extraction_parameters`, a call too short to analyse, or an analysis that failed all
@@ -4805,7 +4811,9 @@ reaches the whole workspace, as every key always has; a key issued with them rea
 those agents — see **Limit a key to some agents** below.
 
 **Dashboard presets.** **Standard** = agents and tools read + create + update, calls read +
-create. **Read-only** = the reads of agents, tools, `phone_numbers:search`, calls,
+create — no `leads:read`, so a Standard key reads a call's `lead` as `{id}` alone and its
+`GET /calls?search=` matches no lead names (add **Read** under **Leads** with **Edit scopes**
+when an integration needs the contact). **Read-only** = the reads of agents, tools, `phone_numbers:search`, calls,
 dispositions, leads, lead tags, campaigns, flows, agent eval, integrations,
 tool-connections, shared links, do-not-call and SIP endpoints — no billing, API keys or
 affiliates. **Full access** = every scope.

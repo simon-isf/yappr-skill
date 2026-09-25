@@ -2359,6 +2359,11 @@ it can be granted through `POST /api-keys`. A key holding neither it
 nor `api_keys:manage` gets `403 INSUFFICIENT_SCOPE` on `GET /api-keys`, and so do `POST` and
 `DELETE` without `api_keys:manage` — a missing scope is `403` on every route.
 
+**A call's contact is `leads:read`'s.** A key without it reads a call's `lead` as `{id}`
+alone (`GET /calls`, `GET /calls/{id}`), and a name in `GET /calls?search=` matches agents
+only. The dashboard's **Standard** preset has no `leads:read` — give a key that syncs calls
+into a CRM **Read** under **Leads**, or read `GET /leads/{id}` with one that has it.
+
 **A per-client key is `agent_ids`.** Scopes say what a key may do; `agent_ids` (1–100
 agent ids on `POST /api-keys`) says which agents it may do it to. Leave it out for a key
 that reaches the whole workspace. A limited key reaches only its agents, their calls and
