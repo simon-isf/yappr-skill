@@ -113,9 +113,10 @@ it changes nothing — widen its scopes in the dashboard, or issue a key that ho
 - `400 invalid_destination` — the ONLY code for a `to` that cannot be dialled, malformed or
   unreachable. `INVALID_TO_NUMBER` no longer exists.
 - `400 INVALID_FROM_NUMBER`, `400 SELF_CALL_NOT_ALLOWED` — the other two number refusals.
-- `400 WORKFLOW_AGENT_REQUEST_INVALID` — `POST /agents` with something missing; `error`
-  names the field. `410 AGENT_LEGACY_CREATION_GONE` is only for a body that ASKS for the
-  retired kind (`system_prompt`, `type`, `flow_config`, `tools`, `tool_ids`, `prompt`,
+- `400 WORKFLOW_AGENT_REQUEST_INVALID` — `POST /agents` with something missing, a
+  `template` other than `inbound`, `qualify` or `reminder`, or a template together with
+  instructions; `error` names the field. `410 AGENT_LEGACY_CREATION_GONE` is only for a
+  body that ASKS for the retired kind (`system_prompt`, `type`, `flow_config`, `tools`, `tool_ids`, `prompt`,
   `webhook_url`, `webhook_events`, `webhook_headers`).
 - `422 WORKFLOW_TOOL_REQUEST_INVALID` / `422 WORKFLOW_TOOL_TEST_INVALID` — carry
   `issues[0].path`, a JSON pointer at the offending field.
@@ -419,16 +420,54 @@ Create one unpublished draft using
 `{"name":"Reception assistant","language":"en","workflow":{"global_instructions":"Help callers with their questions."}}`
 and an `Idempotency-Key` header (16–128 letters, digits, `_` or `-`). Only name,
 description (optional, up to 2,000 characters), language (`he` default or `en`),
-authoring_locale (optional, `he` or `en`) and workflow.global_instructions (optional,
-up to 100,000 characters) are accepted in this branch. Name is trimmed and limited to
-200 characters. IDs, name on the canonical workflow, and execution ownership are
-assigned by Yappr; never send execution_version, publication pointers, legacy
+authoring_locale (optional, `he` or `en`), template (optional, below) and
+workflow.global_instructions (optional, up to 100,000 characters) are accepted. Name is
+trimmed and limited to 200 characters. IDs, name on the canonical workflow, and execution
+ownership are assigned by Yappr; never send execution_version, publication pointers, legacy
 type/flow_config/system_prompt, or caller-owned IDs.
 
 `authoring_locale` is `"he"` or `"en"` — the language Yappr writes the new agent's
 starting step names, their instructions and the closing route condition in, text that
 is read in the editor, never spoken on the call. It defaults to `language`: send the
 language of whoever is reading, not the language of the call.
+
+**Start from a template.** Send `template` instead of your own instructions and the agent
+starts with the instructions the dashboard's **New agent** form offers:
+
+| `template` | Starts an agent that… |
+|---|---|
+| `inbound` | answers incoming calls: greets, understands the request, answers it or takes a message |
+| `qualify` | calls a lead back: checks who it reached, learns the need, agrees the next step |
+| `reminder` | confirms a booked appointment: confirms it, moves it or takes the time the person prefers |
+
+```bash
+curl -s -X POST "https://api.goyappr.com/agents" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Front desk", "language": "en", "template": "inbound"}' | jq .id
+```
+
+The starter is written in `authoring_locale` (which defaults to `language`) and is ordinary
+instructions: read it with `GET /agents/:id/workflow`, change it with
+`PUT /agents/:id/workflow`. Leave `workflow` out. A template **and** non-empty
+`workflow.global_instructions` is `400 WORKFLOW_AGENT_REQUEST_INVALID` ("Send a template or
+workflow.global_instructions, not both"), and so is any `template` other than the three
+names. A template's name does not set which way the agent calls: that is the number's job.
+
+**Numbers carry the direction, not agents.** An agent has no inbound or outbound setting;
+the same agent can answer calls and place them. What decides it:
+- **To answer calls**, make it a number's `inbound_agent_id` (`PATCH /phone-numbers/:id`)
+  or a SIP endpoint's (`POST /sip-endpoints`). `inbound` on `GET /agents` and
+  `GET /agents/:id` lists the numbers and endpoints that route calls to it.
+- **To place calls**, send its `agent_id` to `POST /calls` with a `from` number, or make it
+  that number's `outbound_agent_id`: a call from the number sent without an `agent_id` uses
+  it. A number from the customer's own Telnyx account is outbound only.
+- **No number yet?** A browser call (`POST /calls` with `"type": "web"`, the dashboard's
+  Test Call) reaches the agent without one.
+
+So an "inbound agent" and an "outbound agent" are the same `POST /agents`; the number you
+bind it to afterwards is what makes it one or the other.
 
 The response has the standard Agent fields plus read-only execution_version and
 published_workflow_revision_id. Draft creation returns 201; an identical normalized
@@ -471,7 +510,8 @@ Moving an integration off the old body:
 **Scopes:** `agents:create`
 
 **Request body:** `name`, optional `description`, `language` and `authoring_locale`, and
-`workflow.global_instructions`. Nothing else is accepted.
+either `workflow.global_instructions` or a `template` (`inbound`, `qualify`, `reminder`).
+Nothing else is accepted.
 
 **Response:** `201` — the agent object, as an unpublished draft. `200` on an idempotent
 replay. Both echo the `Idempotency-Key` you sent as `idempotency_key`, so the response
@@ -3144,7 +3184,7 @@ agent that exists but is switched off (`is_active: false` — including a fresh
 `POST /agents/:id/duplicate` copy, which always starts off) is `409 WORKFLOW_AGENT_INACTIVE`
 — see the errors reference above for both.
 
-**`from` is a per-call override, not a fixed binding.** Any active number in the company can be paired with any agent on any outbound call. The `outbound_agent_id` configured on a phone number (via `POST /phone-numbers/configure`) only sets the dashboard's default and does not constrain the API — callers choose `agent_id` + `from` independently per request. This means one number can serve many agents; purchasing a separate number per agent is unnecessary for outbound.
+**`from` is a per-call override, not a fixed binding.** Any active number in the company can be paired with any agent on any outbound call. The `outbound_agent_id` configured on a phone number (via `POST /phone-numbers/configure` or `PATCH /phone-numbers/:id`) only picks the agent when a call sends no `agent_id` (see `agent_id` above) and sets the dashboard's default; it does not constrain the API — callers choose `agent_id` + `from` independently per request. This means one number can serve many agents; purchasing a separate number per agent is unnecessary for outbound.
 
 **A `from` number from the customer's own Telnyx account** (`provider: "external"`) is
 refused by that account, not by Yappr, when Telnyx turns the dial down: placed right
@@ -5236,10 +5276,11 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 Four dashboard surfaces have no endpoint — carry your own equivalent rather than looking
 for one:
 
-- **No `GET /agent-templates`.** The four starter agents offered on agent creation are
-  dashboard copy in two languages. Carry your own starter text as
-  `workflow.global_instructions` on `POST /agents`, or duplicate a tuned agent with
-  `POST /agents/:id/duplicate`.
+- **No `GET /agent-templates`.** Nothing lists the starters or returns their text before
+  an agent exists. Create from one by name — `template: "inbound"`, `"qualify"` or
+  `"reminder"` on `POST /agents` — and read what it wrote with
+  `GET /agents/:id/workflow`; or carry your own text as `workflow.global_instructions`, or
+  duplicate a tuned agent with `POST /agents/:id/duplicate`.
 - **No `GET /changelog`.** The dashboard's What's new page is TS modules shipped with
   the dashboard build. Link customers to the dashboard page itself.
 - **No `POST /chat`.** The dashboard's builder chat is not a public endpoint — build

@@ -18,9 +18,11 @@ This skill is organized into phases. Work through them sequentially. Each phase'
 ### One kind of agent
 
 There is one kind of agent. Never ask the user to choose a prompt or a flow type:
-follow discovery, then POST /agents with a name and an explicit workflow starter as
-documented in yappr-api.md. Keep an Idempotency-Key across identical retries. Read the
-server-owned draft, edit Before/During/After, and explicitly Save/validate/publish.
+follow discovery, then POST /agents with a name and either your own
+workflow.global_instructions or a `template` (`inbound`, `qualify`, `reminder`) as
+documented in yappr-api.md. Never ask whether the agent is inbound or outbound either:
+an agent has no direction. The phone number it is bound to decides that. Keep an
+Idempotency-Key across identical retries. Read the server-owned draft, edit Before/During/After, and explicitly Save/validate/publish.
 Strict Mode starts off. Creation/publication alone does not establish runtime readiness
 or authorize test calls. Archive is distinct from reversible deactivation.
 
@@ -513,7 +515,7 @@ Ask these in a natural conversation, not as a form. Group related questions. Ada
 
 **Business & call type:**
 1. What is the primary goal of this agent? (appointment booking / lead qualification / outbound sales / inbound support / survey / other)
-2. Call direction: inbound, outbound, or both?
+2. Call direction: inbound, outbound, or both? (This decides how the **numbers** are bound in Phase 5 — `inbound_agent_id` to answer, `outbound_agent_id` or `agent_id` on `POST /calls` to place — not how the agent is created. One agent can do both.)
 3. Language: Hebrew, English, or both?
 4. Do you need multiple agents for different use cases — e.g., a sales agent and a support agent with different prompts, voices, or tools?
 
@@ -550,8 +552,8 @@ After gathering answers, output a discovery config you'll use throughout the rem
 DISCOVERY CONFIG
 ================
 Agents needed: [list each agent with its purpose, language, tone]
-Agent type: prompt / flow (per the Decision section above; one per agent)
-Call direction: inbound / outbound / both
+Starting point: template inbound / qualify / reminder, or own instructions (one per agent)
+Call direction: inbound / outbound / both (bound on the number, not the agent)
 Languages: he / en
 Tools needed: [list tool names and their integrations]
 Scheduling system: [name or none]
@@ -574,9 +576,10 @@ Dispositions to create: [any gaps between current dispositions and what's needed
 For each agent identified in discovery, run this phase. If multiple agents are needed, complete one at a time.
 
 > **Creating an agent** is always the same call: `POST /agents` with `name` plus
-> `workflow.global_instructions`. Any other create body is refused with `410`. Create the
-> draft that way, then build what the two sections below describe inside its workflow
-> document.
+> `workflow.global_instructions`, or `name` plus a `template` (`inbound`, `qualify`,
+> `reminder`) to start from the dashboard's starter text. A body asking for the old prompt
+> or flow kind is refused with `410`. Create the draft that way, then build what the two
+> sections below describe inside its workflow document.
 
 **One agent, two shapes of conversation.** Every agent is a workflow agent, and the
 two sections below are how you fill its document in, not two kinds of thing to choose
@@ -754,7 +757,7 @@ Set limits to prevent runaway calls. See Appendix C for values.
 
 ### Step 1.8 — API Calls to Make
 
-**Create the draft** — use the file-based payload approach (required for Hebrew/special characters). `name` plus `workflow.global_instructions` is the whole body; anything else (`system_prompt`, `type`, `flow_config`) answers `410 AGENT_LEGACY_CREATION_GONE`:
+**Create the draft** — use the file-based payload approach (required for Hebrew/special characters). `name` plus `workflow.global_instructions` is the whole body (or `name` plus `template` — `inbound`, `qualify` or `reminder` — for the dashboard's starter text, never both); a legacy field (`system_prompt`, `type`, `flow_config`) answers `410 AGENT_LEGACY_CREATION_GONE`:
 
 ```bash
 IDEMPOTENCY_KEY=$(python3 -c 'import uuid; print(uuid.uuid4())')
@@ -1172,7 +1175,7 @@ curl -s -X POST "https://api.goyappr.com/calls" \
 
 CRITICAL: `to` and `from` must never be the same number.
 
-**One number, many agents.** The `from` field is a per-call override. Any active number in the company can be paired with any agent — the phone number's `outbound_agent_id` only seeds the dashboard default, it does not constrain the API. Users do NOT need to buy a separate number for each agent. Reuse a single outbound number across every agent; just change `agent_id` per call.
+**One number, many agents.** The `from` field is a per-call override. Any active number in the company can be paired with any agent — the phone number's `outbound_agent_id` only picks the agent when a call sends no `agent_id` (and seeds the dashboard default); it does not constrain the API. Users do NOT need to buy a separate number for each agent. Reuse a single outbound number across every agent; just change `agent_id` per call.
 
 **Pattern 2: Supabase Call Queue**
 Best for: high volume, scheduled/batched outbound, retry logic, deduplication.
@@ -1634,7 +1637,7 @@ curl -s -X POST "https://api.goyappr.com/phone-numbers/configure" \
 
 Status `pending_requirements`: regulatory approval needed (Israeli numbers, 1–3 business days). Number is reserved and subscription is active — it will start working once approved.
 
-**Note on `outbound_agent_id`:** this field only controls two things — (1) the default agent the dashboard uses when the user presses "Call" on the number's page, and (2) nothing else. It does NOT restrict which agent can initiate outbound calls from this number via the API. `POST /calls` accepts any `agent_id` + any active company-owned `from` number combination per request. Do not recommend purchasing extra numbers just to run multiple agents — one outbound number is enough to serve all agents.
+**Note on `outbound_agent_id`:** it is the agent that places a call from this number when `POST /calls` sends no `agent_id` (a number with none, and no split, answers `422 AGENT_NOT_RESOLVED`), and the dashboard's default when the user presses "Call" on the number's page. It does NOT restrict which agent can initiate outbound calls from this number via the API: an explicit `agent_id` always wins, and `POST /calls` accepts any `agent_id` + any active company-owned `from` number combination per request. Do not recommend purchasing extra numbers just to run multiple agents — one outbound number is enough to serve all agents.
 
 **Note on `inbound_agent_id`:** this one DOES matter — it's the agent that answers when someone calls this number. It is a real 1:1 binding. If two agents need to handle inbound, they need two numbers.
 
