@@ -3581,10 +3581,11 @@ Any other field is `400 WEB_CALL_REQUEST_INVALID`, naming it.
 away, with status `pending_connection` until the browser connects; then the same id runs
 the call. Unused, it settles `no_answer` (`failure.code: "session_expired"`,
 `ended_by: "system"`, `cost_cents: 0`) as soon as it is read after `expires_at` —
-`GET /calls/{id}`, `GET /calls` and the export each settle a lapsed session before they
-answer, so `?status=pending_connection` never lists one — and, if nobody reads it, at the
-next five-minute sweep. A token a browser spent on a connection that never came up settles
-a minute after it expires. Mint on click, not on page load. A `pending_connection` row
+`GET /calls/{id}` settles it at any age before it answers, and `GET /calls` and the export
+settle the lapsed sessions minted in the last hour (up to 100 a read) before they answer —
+and otherwise at the next five-minute sweep. So `?status=pending_connection` can still list
+a lapsed session older than that hour, or beyond those 100, until the sweep reaches it. A token a browser spent
+on a connection that never came up settles a minute after it expires. Mint on click, not on page load. A `pending_connection` row
 holds no line and costs nothing until a browser connects.
 
 **Discarding a session nobody will use — `cancel_url`.** Every mint returns `cancel_url`,
