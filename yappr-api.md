@@ -108,10 +108,13 @@ used to be `401` on most routes and `403` on a few; it is `403` everywhere now, 
 means only that the key itself was not accepted. Never read a `403` as a dead key: rotating
 it changes nothing — widen its scopes in the dashboard, or issue a key that holds the scope.
 
-- `404 RESOURCE_ID_INVALID` — the id in the path is not a UUID, on every route and every
-  verb, a second id in the path (`/tools/{id}/tests/{test_id}`,
-  `/calls/{id}/recording/revoke`) included. A malformed id is a refusal, never the
-  collection behind it; it stays `404`, not `400`.
+- `404 RESOURCE_ID_INVALID` — the resource's id in the path is not a UUID, on every
+  resource and every verb (`/agents/not-an-id`, `/calls/not-an-id/end`,
+  `/carrier-accounts/not-an-id`, `/billing/transactions/not-an-id`). On a route with two
+  ids, `/tools/{id}/tests/{test_id}` and `/carrier-accounts/{id}/numbers/{phone_number_id}`,
+  the first is checked this way and a second that is not a UUID is that route's own not
+  found (`404 WORKFLOW_TOOL_TEST_NOT_FOUND`, `404 NUMBER_NOT_FOUND`). A malformed id is a
+  refusal, never the collection behind it; it stays `404`, not `400`.
 - `404 ROUTE_NOT_FOUND` — the API serves no such path: a sub-path no route has
   (`DELETE /agents/{id}/nonsense`), a resource that does not exist, or an id left empty
   (`GET /calls/` could be `GET /calls/{id}` with no id, so it is refused rather than read
