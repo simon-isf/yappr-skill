@@ -4988,7 +4988,7 @@ exactly as the dashboard's Transaction History shows it.
 ```
 
 `range` is the window that was read, as instants, and `range.timezone` the clock its days
-are on: the `timezone` you sent (as the zone database spells it), or the workspace's.
+are on: the `timezone` as you sent it, or the workspace's.
 `from=2026-09-01&to=2026-09-30` on an `Asia/Jerusalem` workspace reads from 21:00 UTC on
 31 August. `as_of` is when the statement was read.
 
