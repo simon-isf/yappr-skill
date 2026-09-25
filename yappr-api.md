@@ -907,7 +907,21 @@ carries `node_id` (that step's `conversation.nodes[].id`) and `label` (its label
 document); both are optional and absent on an issue about the document as a whole. Use
 them to point the author at the step instead of at the JSON pointer — e.g.
 `unreachable_node` arrives once per unreachable step with `path:
-/conversation/nodes/<id>`.
+/conversation/nodes/<n>` (the step's position) and the step in `node_id`. `path` is a JSON
+pointer into the document by position, the style a refused save uses
+(`/bindings/0/inputs/order_id`, `/conversation/nodes/2`, `/after/0/steps/0`); a problem
+with an input a step reads is at that input on the binding the step runs, with the step in
+`node_id`. Check and publish name every issue at once: every binding and every step is
+checked before the answer, so one problem no longer hides the others.
+
+**Save refuses a binding that can never work.** `PUT /agents/{id}/workflow` answers
+`422 WORKFLOW_DOCUMENT_INVALID` for a binding input the bound tool does not have — its input
+schema lists its properties and closes them with `"additionalProperties": false`
+(`unknown_input`) — and for a `stored` source reading a path the document's `stored_schema`
+does not declare (`unknown_source_path`), each at `/bindings/<n>/inputs/<field>`, beside any
+other issue in the document. A draft may still be unfinished: an input with no source yet,
+a `request` source, and a tool whose input schema is left open or is written with `$ref` or
+a combinator are saved and left to Check.
 
 **Strict Mode governs `conversation`-kind edges only.** Off (the default), the model may
 also end the call, restate, or diverge from a wired edge when the caller's words call for
