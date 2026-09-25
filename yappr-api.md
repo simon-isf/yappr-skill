@@ -2543,6 +2543,8 @@ number. Use in retry-throttle logic (automation platforms like Make.com/n8n get 
       "tool_calls_count": 2,
       "ab_variant": "a" | "b" | null,
       "source": "test" | "shared_link" | "api" | "phone_inbound" | "phone_outbound" | "unknown",
+      "provider": "external" | "telnyx" | null,
+      "carrier_account": { "id": "uuid", "name": "string", "provider": "telnyx", "status": "untested" | "active" | "paused" } | null,
       "cost_cents": 12,
       "cost_status": "charged" | "not_charged" | "pending",
       "metadata": { "...": "your keys" },
@@ -2577,6 +2579,17 @@ it dialled no number — and carries **`sip_endpoint_id`**. Its `from` is whatev
 customer's phone system sent as the caller, which may not be a phone number. The
 endpoint's URI is its credential, so neither this list, `GET /calls/:id` nor the export
 returns it. There is no `sip_endpoint_id` filter; match on the field instead.
+
+**Whose carrier the call ran on — `provider` and `carrier_account`**, on every call read
+(this list and `GET /calls/:id`). `provider` speaks `GET /phone-numbers`' words:
+`external` — placed on the workspace's own Telnyx account (see **Carrier Accounts**), which
+billed its phone minutes; `cost_cents` is Yappr's charge beside that. `telnyx` — Yappr's
+carrier: a number bought from Yappr, a SIP endpoint, or a number removed since. `null` — a
+browser call, which has no phone side. `carrier_account` is `{id, name, provider, status}`,
+the four fields a number's `carrier_account` has, on an `external` call; it is `null` on any
+other call and `null` for a key without `carrier_accounts:read` — `provider: "external"`
+still says the call ran on the workspace's own account. An account removed since keeps its
+`id`, with the other three fields `null`.
 
 **`cost_status`** is on every row, beside `cost_cents`: `charged` (the recorded charge;
 final), `not_charged` (`cost_cents: 0`, final — the call failed, went unanswered, was
@@ -2678,6 +2691,8 @@ Get full details of a single call, including resolved lead and disposition objec
   "duration_seconds": 0,
   "source": "test" | "shared_link" | "api" | "phone_inbound" | "phone_outbound" | "unknown",
   "shared_link_id": "uuid",
+  "provider": "external" | "telnyx" | null,
+  "carrier_account": { "id": "uuid", "name": "string", "provider": "telnyx", "status": "untested" | "active" | "paused" } | null,
   "cost_cents": 12,
   "cost_status": "charged" | "not_charged" | "pending",
   "updated_at": "ISO8601",
@@ -2837,6 +2852,10 @@ from the dashboard reads `test`, not `phone_outbound`, which is the separation
 `?source=` on `GET /calls` exists for. A call recorded before any of this was written
 reads `unknown`, which `?source=` will not accept as a filter value. `shared_link_id` is
 absent on every call that is not `shared_link`.
+
+**`provider` / `carrier_account`** — Whose carrier the phone side ran on: `external` (the
+workspace's own Telnyx account), `telnyx` (Yappr's) or `null` (a browser call), and the
+account on an `external` call — see **GET /calls** above.
 
 **`analysis`** — Where the call's post-call pass stands: `{ "status": "pending" | "done"
 | "skipped" | "failed", "reason": <code|null>, "completed_at": <iso|null> }`, present on
