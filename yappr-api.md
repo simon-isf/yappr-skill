@@ -1157,6 +1157,21 @@ HTTP example (no request is dispatched by saving):
 }
 ```
 
+**An HTTP tool's address must stay public.** When the tool is built, a host that is
+loopback, private, link-local or a cloud-metadata address — written that way, or whose DNS
+answers include one — is `422 WORKFLOW_TOOL_REQUEST_INVALID` with `url_not_public` at
+`/workflow/configuration/url`. A host written as a number in a shortened, octal or
+hexadecimal form is refused too: `url_not_public` when it spells a private address,
+`url_host_form` when it spells a public one (write a hostname, or four plain decimal
+numbers). Some such bodies are stopped by the network edge with an HTML `403` instead;
+nothing is created either way. Every call resolves the host again and connects only to the
+address it checked, so a name that has turned private since (rebinding) is refused and
+nothing is sent: a workflow tool test reads `status: "blocked"`, `outcome.effect_status:
+"not_dispatched"` and `outcome.error_code: "url_resolves_private"`, with no delivery row and
+nothing to reconcile; a legacy tool test answers `400` "Webhook URL's hostname resolves to
+a loopback, private or link-local address; use a public address"; an agent's webhook is not
+retried.
+
 HTTP schemas are explicit; timeouts are 1–60,000 ms. App definitions use
 `{kind:"app", metadata_id, connection_id, fixed_inputs}`: select the exact ready local
 account and only policy-permitted typed fixed fields. The provider's full raw schema
