@@ -2386,9 +2386,12 @@ into a CRM **Read** under **Leads**, or read `GET /leads/{id}` with one that has
 
 **A per-client key is `agent_ids`.** Scopes say what a key may do; `agent_ids` (1–100
 agent ids on `POST /api-keys`) says which agents it may do it to. Leave it out for a key
-that reaches the whole workspace. A limited key reaches only its agents, their calls and
-charges, the leads they called (read only), their deliveries and the campaigns they
-answer; everything the workspace shares (tools, numbers, dispositions, the do-not-call
+that reaches the whole workspace. Ask such a key only for scopes it can use: with
+`agent_ids`, a workspace-wide scope (`agents:create`, `tools:create`, `phone_numbers:*`,
+`billing:manage`, `leads:manage`, `dispositions:*` and the like) is `400
+API_KEY_REQUEST_INVALID` naming each, and no key is issued. A limited key reaches only its
+agents, their calls and charges, the leads they called (read only), their deliveries and
+the campaigns they answer; everything the workspace shares (tools, numbers, dispositions, the do-not-call
 list, calling hours, other keys) is `403 API_KEY_AGENT_SCOPED`, and naming another agent is
 `403 AGENT_OUTSIDE_KEY_SCOPE`. It cannot create or duplicate agents, and `POST /calls` must
 name one of its agents and call from a number one of them uses. There is no key update

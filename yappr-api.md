@@ -5034,7 +5034,8 @@ Nothing else is read: an unknown body field is `400 API_KEY_REQUEST_INVALID` nam
 A name belongs to **one active key**, compared without regard to case (`Client-A` is taken
 while `client-a` is live): a second is `409 API_KEY_NAME_TAKEN`, and two creates sent at
 once under one name get one key and one `409`. There is no update — `PATCH`/`PUT
-/api-keys/{id}` is `405`: change scopes, agents or the end date in the dashboard
+/api-keys/{id}` is `405` with `Allow: GET, DELETE` (`Allow: GET, POST` on `/api-keys`),
+and its message says where a key is changed: change scopes, agents or the end date in the dashboard
 (Settings → API keys → **Edit scopes**, whose *When this key stops working* keeps the end
 date as it is, removes it, or sets a new one 7, 30, 90 or 365 days out), or issue a
 replacement and revoke the old key. Saving Edit scopes with a new end date changes the
@@ -5052,7 +5053,15 @@ as its `expires_at`) or stops at once, for a secret that leaked.
 
 `POST /api-keys` takes `agent_ids`: 1–100 agent ids. Leave it out (or send `null`) for a
 key that reaches the whole workspace. An id that is not a live agent here is
-`400 API_KEY_AGENT_UNKNOWN`; an empty list is `400 API_KEY_REQUEST_INVALID`.
+`400 API_KEY_AGENT_UNKNOWN`; an empty list is `400 API_KEY_REQUEST_INVALID`. With
+`agent_ids`, `POST /api-keys` also refuses every scope a key limited to agents can never use,
+because each opens only routes the whole workspace shares — `agents:create`,
+`tools:create`, `phone_numbers:*`, `billing:manage`, `dispositions:*`, `leads:manage`,
+`lead_tags:*`, `agent_eval:*`, `integrations:*`, `tool-connections:*`, `shared_links:*`,
+`do_not_call:*`, `sip_endpoints:*`, `call_windows:manage`, `affiliates:read`, `api_keys:*`
+and `carrier_accounts:*` — with `400 API_KEY_REQUEST_INVALID` naming each, and nothing is
+issued. `tools:read` and `tools:update` stay usable: with them the key reads and retries its
+agents' deliveries.
 
 A limited key reaches only: its agents (`/agents`, no create or duplicate), their calls
 (`/calls`, `/calls/export`; `POST /calls` must send one of its agents as `agent_id`, and a
@@ -5100,8 +5109,9 @@ move your integration onto it, then revoke the old one.
 
 **Errors** (all three endpoints): `400 API_KEY_REQUEST_INVALID` (`name` missing/over 100
 characters, `scopes` missing/empty/not an array of strings, an empty or oversized
-`agent_ids`, an `expires_at` without a time zone or already past, a query parameter on the
-list, or a field the endpoint does not read); `400 API_KEY_AGENT_UNKNOWN` (an
+`agent_ids`, a scope a key limited to agents can never use, an `expires_at` without a time
+zone or already past, a query parameter on the list, or a field the endpoint does not
+read); `400 API_KEY_AGENT_UNKNOWN` (an
 `agent_ids` entry that is not a live agent here); `400
 API_KEY_SCOPE_UNKNOWN` (a requested scope does not exist — check it against the Scope
 Map); `403 INSUFFICIENT_SCOPE` (the two `GET`s: neither `api_keys:read` nor
