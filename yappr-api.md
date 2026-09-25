@@ -6499,7 +6499,7 @@ recorded before origins were written down comes back as `source: "unknown"`.
 or `telnyx` — a number bought from Yappr. A call's charge goes to the number it used (the
 number it called from, or the number that answered it), a number's monthly rent to that
 number. A charge with no number behind it — a browser call, a SIP endpoint call, an eval
-run, a top-up — lands in one row with `phone_number_id: null`; a number removed since keeps
+run, a top-up — lands in one row per product with `phone_number_id: null`; a number removed since keeps
 its id, with `phone_number` and `provider` `null`.
 
 **The window.** `to` is inclusive here too (a date-only `to` is that whole day on the
