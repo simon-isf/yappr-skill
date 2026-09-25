@@ -88,7 +88,7 @@ curl -s -X POST "https://api.goyappr.com/resource" \
 | 401 | `MISSING_KEY` (nothing sent), `INVALID_KEY` (a key was sent and is not ours, or is revoked), `EXPIRED_KEY` — the key itself was not accepted | Fix the key. Even a `401` carries `X-RateLimit-*` (`Remaining` = `Limit`: nothing was counted). |
 | 402 | Billing — insufficient balance or no payment method (`BILLING_ERROR`), or the workspace's own monthly spending limit is reached (`SPEND_BUDGET_REACHED`, see **PATCH /billing**) | Guide to billing setup, or raise the limit |
 | 403 | `INSUFFICIENT_SCOPE` — the key is fine but lacks a scope; the message names it. Also a resource in another workspace or a protected one | Widen the key in Settings → API keys, or use one that holds the scope. Never rotate on a `403`. |
-| 404 | `AGENT_NOT_FOUND` — the agent in the path, or the `agent_id` a request names, is not in this workspace | The public API answers a missing agent this way. Another `404` code under `/agents/{id}` means the agent is there and something else is missing. Campaign, phone-number and carrier-number bodies answer it too, naming the field (a campaign's `agent_id` or `split.agent_id`; a number's `inbound_agent_id`, `outbound_agent_id`, `inbound_split.agent_id` or `outbound_split.agent_id`); call requests keep `404 WORKFLOW_AGENT_UNAVAILABLE` for an agent that is archived or switched off (below). |
+| 404 | `AGENT_NOT_FOUND` — the agent in the path, or the `agent_id` a request names, is not in this workspace | The public API answers a missing agent this way, filters included: `agent_id` on `GET /calls`, `GET /calls/export` and `GET /shared-links` (an archived agent still filters). Another `404` code under `/agents/{id}` means the agent is there and something else is missing. Campaign, phone-number and carrier-number bodies answer it too, naming the field (a campaign's `agent_id` or `split.agent_id`; a number's `inbound_agent_id`, `outbound_agent_id`, `inbound_split.agent_id` or `outbound_split.agent_id`); call requests keep `404 WORKFLOW_AGENT_UNAVAILABLE` for an agent that is archived or switched off (below). |
 | 429 | Rate limit or concurrent call limit | Wait and retry |
 | 500 | Server error | Retry once; if persistent, report |
 
@@ -2477,7 +2477,7 @@ List calls with optional filters and pagination.
 | `limit` | int | 20 | 1–100 — never more than 100 rows a page, whatever you send; read `pagination.limit` for what you got |
 | `offset` | int | 0 | counts from the top of a list that grows while you read it. Send this or `cursor`, not both. An offset past the end is `400 CALLS_QUERY_INVALID` naming how many calls match — stop paging at `pagination.total` |
 | `cursor` | string | — | continue exactly where the last page stopped: `pagination.next_cursor`, opaque, on every page. This is the one to build a job on — an offset silently repeats or skips rows when calls arrive mid-walk. Cursors are signed: only a `pagination.next_cursor` from this endpoint works — a hand-built one, or one from `/deliveries`, is `400 CALLS_CURSOR_INVALID`, never a silent first page. **A cursor carries only the position, not the filters:** send the same filters with every page. Sent with other filters, or none, it is answered `200` from that position under whatever filters came with it — not refused |
-| `agent_id` | uuid | — | filter by agent; anything that is not a uuid is `400 CALLS_QUERY_INVALID`, and an agent that is not in this workspace is `404 CALL_AGENT_UNKNOWN` |
+| `agent_id` | uuid | — | filter by agent; anything that is not a uuid is `400 CALLS_QUERY_INVALID`, and an agent that is not in this workspace is `404 AGENT_NOT_FOUND`, never an empty page. An archived agent still filters: its calls are still its calls |
 | `search` | string | — | 2–100 characters: the start of a call id (8 hex characters or more, with dashes where an id has them — the 8 the dashboard shows are enough), a phone number at either end of the call (matched exactly, as `callee` / `caller` are), or part of an agent's or a live lead's name, case-insensitive, archived agents included. Digits that could be either an id or a number are searched both ways. A lead's name is searched only for a key with `leads:read`; for any other key a name matches agents alone, so a name only a lead carries finds no calls. More than 300 matching names is `400 CALLS_QUERY_INVALID` — send more of the name, or `agent_id` / `lead_id` |
 | `lead_id` | uuid | — | Calls with that lead — the only way to find a browser call attached to a lead, which has no number at either end. A lead that is not live in this workspace (unknown, or deleted) is `404 NOT_FOUND` |
 | `carrier_account_id` | uuid | — | Calls placed on that carrier account: signed for it, or placed from one of its numbers. Needs `carrier_accounts:read` (without it, `403 INSUFFICIENT_SCOPE`); an account not in this workspace is `404 CARRIER_ACCOUNT_NOT_FOUND` |
@@ -4722,7 +4722,8 @@ for a link made with an API key. There is no delete — `PATCH /shared-links/{id
 
 ### GET /shared-links
 
-List shared links. Optional `?agent_id=` filter.
+List shared links. Optional `?agent_id=` filter: an agent this workspace does not have is
+`404 AGENT_NOT_FOUND`, not an empty list; an archived agent's links are still listed.
 
 **Scopes:** `shared_links:read`
 
