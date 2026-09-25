@@ -3926,7 +3926,7 @@ Create a lead.
 |-------|------|----------|-------|
 | `phone_number` | string | yes | E.164 or the local Israeli form (`0501234567`); normalised on write |
 | `name` | string | no | |
-| `email` | string | no | |
+| `email` | string \| null | no | An email address (`name@example.com`), trimmed; `""` or `null` leaves it empty. Anything else is `400 LEAD_REQUEST_INVALID` naming `email`, and nothing is written |
 | `source` | string | no | `api` (default), `manual` or `csv_import`. Any other value is `400 INVALID_LEAD_SOURCE`, never silently rewritten. `call` is Yappr's own and cannot be claimed. |
 | `tags` | string[] | no | Tag names, matched exactly — resolved to IDs server-side. One unknown name is `400 INVALID_TAG_NAMES` and nothing is written |
 | `tag_ids` | uuid[] | no | Alternative to `tags` — pass UUIDs directly. One unknown id is `400 INVALID_TAG_IDS`. Send one of the two, not both: `tags` wins when both are present |
@@ -3946,7 +3946,7 @@ Update a lead.
 | Field | Type | Notes |
 |-------|------|-------|
 | `name` | string | |
-| `email` | string | |
+| `email` | string \| null | An email address (`name@example.com`), or `null` / `""` to clear it. Anything else is `400 LEAD_REQUEST_INVALID` naming `email`, and nothing is written |
 | `tags` | string[] | Replaces all existing tags |
 | `tag_ids` | uuid[] | Replaces all existing tags |
 | `long_term_context` | string | |
