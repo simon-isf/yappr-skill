@@ -917,7 +917,11 @@ and a provider grant that already completed still needs `DELETE /tool-connection
 plus revoking Yappr in the provider's own account settings.
 `POST /tool-connections/{id}/reconnect {"mode":"replace"}` issues a fresh link when you
 need to replace the account instead; without `"mode": "replace"` it is
-`400 CONNECTION_REPLACEMENT_REQUIRED`.
+`400 CONNECTION_REPLACEMENT_REQUIRED`. A reconnect replaces a sign-in nobody has opened yet;
+one a person is in the middle of answers `409 CONNECTION_ATTEMPT_OPEN` naming it
+(`attempt.id`) — let it finish, or cancel it and reconnect. Every connection shows the
+sign-in still open on it as `open_attempt` (or `null`), and `app_name` is the app's display
+name ("Google Calendar") beside the `toolkit` slug.
 
 **Connecting an app opens one authorization at a time.** Starting another one calls off
 the one that was left open; if the one in the way was opened in a different browser or

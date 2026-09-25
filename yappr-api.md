@@ -5745,6 +5745,16 @@ an optional `locale` — a reconnect without it (or with any other `mode`) is
 person who opens the handoff signs in again, and the account they choose becomes the
 connection's account.
 
+**Reconnecting beside an open sign-in.** A connection holds one open sign-in at a time, and
+every connection read carries it as `open_attempt` — `{id, status, expires_at}`, whoever
+started it, or `null` — beside `app_name`, the app's display name ("Google Calendar") for
+its `toolkit` slug. A reconnect replaces a sign-in nobody has opened yet
+(`open_attempt.status: "pending_human"`) and answers `201` with the new `handoff_url`. If a
+person is in the middle of one, it answers `409 CONNECTION_ATTEMPT_OPEN` with
+`attempt {id, status, expires_at}`: let it finish, or
+`POST /tool-connections/attempts/{attempt.id}/cancel` and reconnect again. It is not an
+outage — do not retry it blindly.
+
 Give the handoff privately to the intended authorized human, who signs in to Yappr, reviews the target workspace and label, and explicitly claims the browser-bound attempt before receiving the app authorization link. The API key initiator and consenting human are separate identities — a key-started handoff may be claimed by any member of the workspace it is scoped to; a dashboard-started one stays with whoever started it. Treat the URL fragment as a temporary capability: present it only for this consent step; do not log it, persist it in workflow/call data, or include it in voice-agent prompts. Account records belong to the company, not the human who completed consent. Several labeled accounts per app are supported.
 
 Poll the exact attempt with increasing intervals, bounded by `expires_at`. Stop on `completed`, `failed`, `expired`, `cancelled`, or `reconciliation_required`. An ambiguous/lost callback exchange must never be redeemed again automatically. `completed` refers to authorization processing; `connection.state` must independently be `ready` before actions can use it. Other states are `disconnected`, `connecting`, `verifying`, `reconnect_required`, and `degraded`.
@@ -5765,7 +5775,7 @@ or wait: an attempt nobody finishes is closed server-side ten minutes after it s
 The workspace also has a ceiling of 120 starts in ten minutes, counted whatever became of
 them, so connecting and cancelling in a loop is refused the same way.
 
-Safe read DTOs expose only local Yappr IDs, toolkit, label, verified provider identity when available, readiness, decimal-string `binding_revision`/`authorization_epoch`, disconnect progress and timestamps. Replacement increments immutable identity and authorization generations for future bindings; pinned work never silently changes accounts. Disconnect blocks new actions immediately, while already sent actions may finish. Where a `DELETE` settles, in `disconnect_progress`: `record_deleted` — nothing was ever bound to this connection, so there is nothing left to take back (the usual outcome for an authorization that was never finished); `manual_revocation_required` — an account was bound, so a human should remove Yappr's access in the provider account's own app-access settings too; `unknown` — that step needs reconciliation, read the connection again; `pending` — local denial is committed and the upstream step has not reported yet, so read the connection again for its settled value. `none` means the connection has not been disconnected. Connection deletion is not proof that a grant was revoked.
+Safe read DTOs expose only local Yappr IDs, toolkit, `app_name`, label, verified provider identity when available, the `open_attempt` above, readiness, decimal-string `binding_revision`/`authorization_epoch`, disconnect progress and timestamps. Replacement increments immutable identity and authorization generations for future bindings; pinned work never silently changes accounts. Disconnect blocks new actions immediately, while already sent actions may finish. Where a `DELETE` settles, in `disconnect_progress`: `record_deleted` — nothing was ever bound to this connection, so there is nothing left to take back (the usual outcome for an authorization that was never finished); `manual_revocation_required` — an account was bound, so a human should remove Yappr's access in the provider account's own app-access settings too; `unknown` — that step needs reconciliation, read the connection again; `pending` — local denial is committed and the upstream step has not reported yet, so read the connection again for its settled value. `none` means the connection has not been disconnected. Connection deletion is not proof that a grant was revoked.
 
 **Who started it.** Every record carries `created_by` (whoever started the first
 authorization) and `started_by` (whoever started the most recent one — a replacement is
