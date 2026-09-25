@@ -1364,8 +1364,12 @@ log in the dashboard, so you and they are never reading two different stories.
    from the timeline is explained by the call's `follow_ups` member: `state: "waiting"`
    (its result is not ready — read the call again later) or `"skipped"`, with a `reason`
    per group — `browser_test` (a dashboard test call that ran without the workflow),
-   `no_workflow_run`, `artifact_pending`, `artifact_unavailable` (e.g. the analysis
-   failed), `artifact_late`. No `follow_ups` member means nothing needs explaining.
+   `no_workflow_run`, `artifact_pending`, `artifact_unavailable` (the analysis failed or
+   was skipped — those steps will not run), `artifact_late`. No `follow_ups` member means
+   nothing needs explaining. An `analysis` reading `failed` / `no_summary` kept nothing —
+   no summary, outcome or extracted values — and no `call.analyzed` follows: stop polling.
+   A browser rehearsal has no caller number, so it creates or updates no lead and runs no
+   `lead.ready` follow-up.
 
 A failure is already a sentence in `error` / `error_message`. Read it to the customer as
 it stands; do not translate it into internal vocabulary, and do not branch on its wording

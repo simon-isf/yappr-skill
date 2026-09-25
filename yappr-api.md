@@ -2939,8 +2939,10 @@ means read them (and `done` with no `extracted_data` is a real answer — the pa
 the call said none of it, which is what every call made before its parameters existed
 will say); `skipped` means nothing is coming and nothing is wrong
 (`call_too_short` — under 3 seconds — `call_did_not_complete`, `no_transcript`); `failed`
-means nothing is coming and something is wrong (`analysis_failed`, `analysis_unavailable`
-— worth an alert). A call handed to a human reads `pending` / `call_in_progress` until
+means nothing is coming and something is wrong (`analysis_failed`, `analysis_unavailable`,
+`no_summary` — worth an alert). `done` always comes with a `summary`: a pass that came back
+without one on every attempt reads `failed` / `no_summary`, keeps nothing it produced (no
+`summary`, `disposition` or `extracted_data`) and sends no `call.analyzed` — stop polling. A call handed to a human reads `pending` / `call_in_progress` until
 that leg ends; the pass runs after. Expect the values within a minute or two of the call
 ending; anything still `pending` after 10 minutes is stuck. Prefer the `call.analyzed`
 webhook to polling.
@@ -3128,7 +3130,19 @@ without it, such as a share-link or Web SDK call), `artifact_pending` (the resul
 on is still being produced), `artifact_unavailable` (that result was never produced — the
 analysis failed, or the transcript was empty), `artifact_late` (the call's run closed
 before the result arrived). The three `artifact_*` groups also carry `event` and
-`artifact`. Treat a reason you do not recognise as `skipped`.
+`artifact`. A group waiting on the analysis (`event: "analysis.ready"`) reads
+`artifact_unavailable` — state `skipped`, `execution.summary.follow_up_state: "cancelled"` —
+as soon as `analysis` reads `failed` or `skipped` with a `completed_at`: those steps will
+not run. Before that it reads `artifact_pending` (state `waiting`). Treat a reason you do
+not recognise as `skipped`.
+
+**Rehearsals and leads.** A browser rehearsal (the Test tab, or a
+`POST /calls {"type":"web"}` session) has no caller number, so lead processing skips it: no
+lead is created or updated, no `lead.created` / `lead.updated` is sent and no `lead.ready`
+follow-up runs; the analysis still runs. Processed after all: a Test-tab call with a
+simulated phone number, and a session minted with `lead_id` (an `offer` session — a
+`call_request` one refuses `lead_id` with `422 WEB_LEAD_UNSUPPORTED`). A dashboard test phone
+call is processed like any call.
 
 **An older call** has no `phase` rows and no `transition` rows of the newer kind; its
 transcript, tool rows and deliveries still come back here unchanged. Read each row's
