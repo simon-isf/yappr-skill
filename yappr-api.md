@@ -1272,8 +1272,10 @@ lists them, and `GET /tools/{id}` reads one, both in a short form: `id`, `name`,
 `POST /tools/{id}/restore` (`tools:update`; no body — a field is
 `422 WORKFLOW_TOOL_REQUEST_INVALID`): it answers the whole tool as `GET /tools/{id}` does,
 switched on, with `restored` (`false` when it was not archived, so a repeat is safe). A
-change, a test, its schema or its bindings on an archived tool is `404 WORKFLOW_NOT_FOUND`,
-whose message names `GET /tools?status=archived` and the restore — restore it first.
+change, its schema or its bindings on an archived tool is `404 WORKFLOW_NOT_FOUND`, whose
+message names `GET /tools?status=archived` and the restore — restore it first. A test on
+one is `404 WORKFLOW_TOOL_TEST_NOT_FOUND` ("Tool test not found."), which names neither:
+restore the tool, then test it.
 Restoring a creation that never built is `409 WORKFLOW_TOOL_NOT_READY`: it was never
 archived, so fix it with the `PATCH` above or remove it with `DELETE /tools/{id}`.
 
