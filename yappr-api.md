@@ -2915,18 +2915,24 @@ that leg ends; the pass runs after. Expect the values within a minute or two of 
 ending; anything still `pending` after 10 minutes is stuck. Prefer the `call.analyzed`
 webhook to polling.
 
-**`failure`** — Present only on a call whose `status` is `failed` or `no_answer`. A call
-that completed has **no** `failure` member at all — check for the member, not for a value
-in it.
+**`failure`** — Present only on a call whose `status` is `failed` or `no_answer`, and not
+on one ended on purpose from outside it (`ended_by: "operator"` — `POST /calls/{id}/end`, a
+web mint's `cancel_url`, an End button): its `ended_by` and `disconnect_reason` already say
+why it stopped, and its timeline has no failed phase. A call that completed has **no**
+`failure` member at all — check for the member, not for a value in it.
 
 `failure.code` is stable and is what you branch on; `failure.reason` is one sentence for
 a person and its wording changes. `failure.stage` is `dialing`, `connecting`,
-`conversation` or `null`. `failure.at` is when the failure was recorded, or `null`.
+`conversation` or `null`. `failure.at` is when the failure was recorded, or the call's
+`ended_at` when it recorded no moment of its own.
 
 Codes: `no_answer`, `busy`, `rejected`, `cancelled`, `unreachable` (all `dialing`);
 `caller_left` — a browser call the caller closed, or navigated away from, before it
 connected — `network_blocked` — a browser call the caller's own network never let
-connect — and `voice_unavailable` (all three `connecting`); `call_interrupted` and `transfer_failed` (both
+connect — `session_expired` — a browser session nobody opened before its token expired —
+and `voice_unavailable` (all four `connecting`); a browser session ended through the API
+before such an end was recorded as the operator's reads `cancelled` at `connecting` with
+`ended_by: "system"`; `call_interrupted` and `transfer_failed` (both
 `conversation`); `unknown` when nothing recorded why. Treat a code you do not recognise
 as `unknown` rather than as an error in your integration.
 
@@ -2945,7 +2951,7 @@ error class, and it is ours, not yours to read.
 | `"caller"` | The far end went away first — the human on the line hung up, or the browser closed the connection (a browser test call's End button included). |
 | `"agent"` | The agent chose to end the call: its end-call tool, the End step of its flow, or its closing line followed by a hangup. |
 | `"system"` | Yappr ended it — the silence timeout, the maximum-duration cap, an answering machine, a fault that took the call down, the watchdog, or a browser session that expired unused. |
-| `"operator"` | Ended from the platform side by a person: the End button on a dashboard **phone** test call, or Yappr stopping a call found still open after its conversation had ended (`disconnect_reason` `Ended by operator`). |
+| `"operator"` | Ended on purpose from outside the call: an End button that actually ended it (a dashboard **phone** test call's), `POST /calls/{id}/end` on a browser session nobody opened (or its mint's `cancel_url`), or Yappr stopping a call found still open after its conversation had ended. Only a deliberate action that ended the call writes it, with `disconnect_reason` `Ended by operator`, and such a call has no `failure`. |
 | `"unknown"` | The carrier reported the ending but did not say which side dropped the call. |
 | `null` | Nothing has recorded it: a call still running, or a finished one no producer attributed. Do not read `null` as "still live" — check `status`. |
 
@@ -2998,7 +3004,7 @@ agent turns, and replaces the turns only when both speakers come back. The rewri
 After step — `transcript.ready` is sent once, when the transcript first appears. A copy
 you stored earlier is not wrong, just older: keep the newer `updated_at`.
 
-**`transcript_live`** — *Present only when the model produced one.* The voice model's own transcript, recorded turn by turn while the call was happening, rather than transcribed from the recording afterwards. A SECOND, independent account of the same conversation; it does not replace `transcript`, which stays what `transcript.ready` carries and what the summary and extraction are built from.
+**`transcript_live`** — *Always present:* the turns, or `null` until the first ones arrive (and on a call that never had any). The voice model's own transcript, recorded turn by turn while the call was happening, rather than transcribed from the recording afterwards. It fills while the call runs — six turns at a time, or within six seconds of a turn — and the rest arrives when the call ends; a batch that fails to arrive is not sent again, so a turn can be missing here. A SECOND, independent account of the same conversation; it does not replace `transcript`, which is the complete one, what `transcript.ready` carries and what the summary and extraction are built from.
 
 Roles are structural — the caller's audio and the agent's audio are separate streams — so a role here cannot be misattributed the way a speaker-diarizer's can. `interrupted: true` on an agent turn means the caller talked over it; a model's transcript can run ahead of its own voice, so those turns may contain words the caller never heard. Read `transcript` unless you have a specific reason to prefer the model's own account.
 
