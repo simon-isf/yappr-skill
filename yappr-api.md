@@ -228,6 +228,18 @@ sent twice or empty, a date that does not exist, and `from` after `to`.
   campaign create or edit body is `CAMPAIGN_REQUEST_INVALID` (a disposition label in
   `stop_disposition_ids` included: send ids from `GET /dispositions`). The message names
   the field.
+- A refusal names every problem at once: an unknown field no longer hides the value errors
+  beside it — `400 WORKFLOW_SETTINGS_REQUEST_INVALID` on `PATCH /agents/{id}` names the stray
+  field and each value the settings cannot hold (`settings_value_invalid`) in one
+  `issues[]`, and a campaign create or edit reads its values past an unknown field. A
+  campaign's bad `from_phone_number_id` (`400 INVALID_FROM_NUMBER`) lists an `agent_id` or
+  `split.agent_id` that names no agent here in the same `issues[]` (`agent_not_found`),
+  rather than leaving it for the next try.
+- `POST /campaigns/{id}/archive` is `405 METHOD_NOT_ALLOWED` with no `Allow` header, because
+  no method is served there: a campaign is archived with `DELETE /campaigns/{id}`. Only a
+  campaign id gets that answer — `POST /campaigns/defaults/archive`, or a segment that is not
+  an id, is `404 ROUTE_NOT_FOUND`. Every other `405` carries `Allow`, listing the methods the
+  path takes.
 - There is no agent filter on `GET /billing/consumption`: use `group_by=agent`.
 - A date-only `to` covers that whole day: a UTC day on `/calls`, `/calls/export` and
   `/deliveries`, and a day on the workspace's clock on `/billing/consumption` and
