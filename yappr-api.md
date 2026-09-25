@@ -3083,12 +3083,16 @@ The two engines report in different units and the leg says which: a Gemini voice
 
 **No `usage` member is not a cost of zero** — a call that never reached the model, and every call from before this shipped, have no reading at all. This is what Yappr pays the provider, not what the call charged against the workspace's credits.
 
-**`transcript` can be rewritten once, later, on a browser call.** Yappr re-reads an older
-browser call's recording one side at a time when its caller's words had landed inside
-agent turns, and replaces the turns only when both speakers come back. The rewrite moves
-`updated_at` (so an `updated_since` sync picks it up) but sends no webhook and fires no
-After step — `transcript.ready` is sent once, when the transcript first appears. A copy
-you stored earlier is not wrong, just older: keep the newer `updated_at`.
+**`transcript` can be rewritten once, later.** Yappr may re-read an older call's recording
+one side at a time — a browser call, or a phone call recorded with each side on its own
+channel — when its turns had landed on the wrong speaker, and replaces the turns only when
+both speakers come back. The summary is then written again from the new turns; the outcome
+and the extracted values stay as first sent. The rewrite moves `updated_at` (so an
+`updated_since` sync picks it up) but sends no webhook and fires no After step —
+`transcript.ready` is sent once, when the transcript first appears. A copy you stored
+earlier is not wrong, just older: keep the newer `updated_at`. Turns are in the order they
+were said: a short reply said in the middle of the other side's turn splits that turn and
+sits where it was said.
 
 **`transcript_live`** — *Always present:* the turns, or `null` until the first ones arrive (and on a call that never had any). The voice model's own transcript, recorded turn by turn while the call was happening, rather than transcribed from the recording afterwards. It fills while the call runs — six turns at a time, or within six seconds of a turn — and the rest arrives when the call ends; a batch that fails to arrive is not sent again, so a turn can be missing here. A SECOND, independent account of the same conversation; it does not replace `transcript`, which is the complete one, what `transcript.ready` carries and what the summary and extraction are built from.
 
