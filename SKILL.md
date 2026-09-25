@@ -1372,6 +1372,13 @@ members do still carry them, and are superseded — do not build new work on the
 
 Field-by-field reference: `yappr-api.md` → **GET /calls/:id** → `timeline`.
 
+**The recording.** `recording_url` opens with no key and plays the audio directly, but it
+is a signed link that **expires after 7–8 days** — never store it as the recording's
+permanent address. Store the call `id` and read the call again when someone wants to
+listen. A link that leaked (pasted into a ticket or a chat) is taken back with
+`POST /calls/:id/recording/revoke`; that call's `updated_at` moves, so a sync on
+`updated_since` picks up the new link.
+
 **Finding it in the dashboard.** The Call Logs page answers at `/call-logs` (and at
 `/calls`, which redirects there). Its filters live in the address — `from`, `to` (both
 `YYYY-MM-DD`, read as whole days in the workspace timezone), `outcome` (comma-separated

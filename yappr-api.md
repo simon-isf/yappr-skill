@@ -3123,9 +3123,17 @@ with no echo cancellation than a caller cutting in that precisely. Calls placed
 before 2026-09-16 carry neither key.
 
 **Recording URL notes:**
-- `recording_url` is a permanent signed URL (contains `?sig=...` — do not modify)
-- Opening it redirects (302) to the audio file — no Authorization header needed
-- Redirect target is short-lived (~10 min); re-fetch `recording_url` if expired
+- `recording_url` is a signed link on the API host carrying `exp` (when it stops opening,
+  in Unix seconds) and `sig`. Use it exactly as returned: a changed `exp` or `sig` is
+  refused.
+- Opening it needs no `Authorization` header and answers `200` with the audio itself — no
+  redirect to follow. `HEAD` answers with the same headers and no body, and a `Range`
+  request gets just the bytes it asks for, so an `<audio>` element can seek.
+- A link lasts **7 to 8 days**: `exp` is the end of the UTC day eight days after it was
+  issued, so two reads of the call on one day return the same link. It is not permanent —
+  for a later play, read the call again; every read issues a current link.
+- Anyone holding a link can play the recording until it expires. To take links back, see
+  **POST /calls/:id/recording/revoke** below.
 
 ---
 
@@ -3481,9 +3489,61 @@ The browser presents the token as the `x-yappr-web-token` header to the endpoint
 
 ### GET /calls/:id/recording
 
-Redirect to a call recording. Returns 302 to a short-lived signed audio URL.
+The `recording_url` a call read returns (and `call.recording_url` in a follow-up's
+payload) is this route plus a signature. It takes **no API key**: the signature is the
+permission, so the link works as an `<audio src>`, a download link or a `curl` target. It
+answers `200` with the audio directly, and answers `HEAD` and `Range` requests, so a
+player can read its length and seek. Never build or edit one — read the call for it.
 
-**Scopes:** `calls:read`
+**Scopes:** none — the link's own signature.
+
+| Status | Code | Why |
+|---|---|---|
+| 403 | `RECORDING_LINK_EXPIRED` | Past its `exp`. Read the call again for a new link. |
+| 403 | `RECORDING_LINK_REVOKED` | The call's links were revoked after this one was issued. Read the call again. |
+| 403 | `RECORDING_LINK_INVALID` | Not a link Yappr issued, or it was changed. Use `recording_url` exactly as returned. |
+| 404 | `NOT_FOUND` | The call has no recording (yet). |
+| 503 | `RECORDING_LINK_UNAVAILABLE` | The link could not be checked just now. Try again in a moment. |
+
+A link issued before links started expiring has no `exp`; it keeps opening until the
+call's links are revoked.
+
+### POST /calls/:id/recording/revoke
+
+Takes back every recording link issued for one call so far — for a `recording_url` that
+was pasted somewhere it should not be (a ticket, a chat, a shared document). It takes no
+body and no query parameters: either is `400 RECORDING_REVOKE_INVALID`, naming it, and
+nothing is revoked.
+
+**Scopes:** `calls:create`. A key limited to some agents revokes only its agents' calls.
+
+```bash
+curl -s -X POST "https://api.goyappr.com/calls/CALL_ID/recording/revoke" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+
+**Response:** `200`
+```json
+{
+  "call_id": "uuid",
+  "revoked_at": "ISO8601",
+  "recording_url": "https://api.goyappr.com/calls/<call id>/recording?exp=…&sig=… | null"
+}
+```
+
+From `revoked_at` on, every earlier link for the call answers `403 RECORDING_LINK_REVOKED`
+— the old links with no `exp` included. `recording_url` is a new link that works (`null`
+while the call has no recording), and later reads of the call return new links too;
+revoking again takes those back as well. The call's `updated_at` moves, so a sync on
+`GET /calls?updated_since=` picks up the new link instead of keeping the dead one. The
+recording itself is not deleted, and the dashboard still plays it.
+
+| Status | Code | Why |
+|---|---|---|
+| 400 | `RECORDING_REVOKE_INVALID` | A body field or query parameter was sent. Nothing was revoked. |
+| 404 | `NOT_FOUND` | No call with this id in this workspace, or a call of an agent the key is not limited to. |
+| 404 | `RESOURCE_ID_INVALID` | The id in the path is not an id. |
+| 503 | `RECORDING_LINK_UNAVAILABLE` | Nothing was revoked. Try again in a moment. |
 
 ---
 
@@ -5338,6 +5398,8 @@ member can reach in the dashboard has a public endpoint behind it.
 | GET /calls (list/get) | `calls:read` |
 | GET /calls/export | `calls:read` |
 | POST /calls | `calls:create` |
+| GET /calls/:id/recording (the signed `recording_url`) | none — the link's signature |
+| POST /calls/:id/recording/revoke | `calls:create` |
 | GET /call-requests/:id | `calls:read` |
 | POST /call-requests/:id/cancel | `calls:create` |
 | GET /dispositions (list/get) | `dispositions:read` |
