@@ -88,7 +88,7 @@ curl -s -X POST "https://api.goyappr.com/resource" \
 | 401 | `MISSING_KEY` (nothing sent), `INVALID_KEY` (a key was sent and is not ours, or is revoked), `EXPIRED_KEY` — the key itself was not accepted | Fix the key. Even a `401` carries `X-RateLimit-*` (`Remaining` = `Limit`: nothing was counted). |
 | 402 | Billing — insufficient balance or no payment method (`BILLING_ERROR`), or the workspace's own monthly spending limit is reached (`SPEND_BUDGET_REACHED`, see **PATCH /billing**) | Guide to billing setup, or raise the limit |
 | 403 | `INSUFFICIENT_SCOPE` — the key is fine but lacks a scope; the message names it. Also a resource in another workspace or a protected one | Widen the key in Settings → API keys, or use one that holds the scope. Never rotate on a `403`. |
-| 404 | `AGENT_NOT_FOUND` — the agent in the path, or the `agent_id` a request names, is not in this workspace | The public API answers a missing agent this way. Another `404` code under `/agents/{id}` means the agent is there and something else is missing. Campaign, phone-number and carrier-number bodies answer it too, naming the field (`agent_id`, `split.agent_id`, `inbound_agent_id`, `outbound_agent_id`); call requests keep `404 WORKFLOW_AGENT_UNAVAILABLE` for an agent that is archived or switched off (below). |
+| 404 | `AGENT_NOT_FOUND` — the agent in the path, or the `agent_id` a request names, is not in this workspace | The public API answers a missing agent this way. Another `404` code under `/agents/{id}` means the agent is there and something else is missing. Campaign, phone-number and carrier-number bodies answer it too, naming the field (a campaign's `agent_id` or `split.agent_id`; a number's `inbound_agent_id`, `outbound_agent_id`, `inbound_split.agent_id` or `outbound_split.agent_id`); call requests keep `404 WORKFLOW_AGENT_UNAVAILABLE` for an agent that is archived or switched off (below). |
 | 429 | Rate limit or concurrent call limit | Wait and retry |
 | 500 | Server error | Retry once; if persistent, report |
 
@@ -138,7 +138,8 @@ it changes nothing — widen its scopes in the dashboard, or issue a key that ho
 - `404 AGENT_NOT_FOUND` vs `422 INVALID_SPLIT` — an agent field on a campaign or a phone
   number that names no agent in this workspace (it does not exist, belongs to another
   workspace, or is archived) is `404 AGENT_NOT_FOUND`, and the message names the field
-  (`agent_id`, `split.agent_id`, `inbound_agent_id`, `outbound_agent_id`). It used to be
+  (on a campaign `agent_id` or `split.agent_id`; on a number `inbound_agent_id`,
+  `outbound_agent_id`, `inbound_split.agent_id` or `outbound_split.agent_id`). It used to be
   `422 INVALID_AGENT`. `422 INVALID_SPLIT` is only about the shape of an A/B split: a
   `percent` outside 1–99, the second agent the same as the first, or a split that is
   neither an object nor `null`.
@@ -1884,7 +1885,7 @@ SIP endpoints carry no split at all.
 |---|---|---|
 | 404 | — | No such number in this workspace |
 | 422 | `INVALID_SPLIT` | `percent` outside 1–99, the split's second agent is the one already bound, or the split is neither an object nor `null` |
-| 404 | `AGENT_NOT_FOUND` | `inbound_agent_id`, `outbound_agent_id` or a split's `agent_id` is not an agent in this workspace (made up, another workspace's, or archived) — `message` names the field. It used to be `422 INVALID_AGENT` |
+| 404 | `AGENT_NOT_FOUND` | `inbound_agent_id`, `outbound_agent_id`, `inbound_split.agent_id` or `outbound_split.agent_id` is not an agent in this workspace (made up, another workspace's, or archived) — `message` names the field. It used to be `422 INVALID_AGENT` |
 | 400 | — | A field this endpoint does not update, or the number is still `pending_requirements` |
 
 ---
