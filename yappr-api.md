@@ -2592,7 +2592,8 @@ newer `updated_at` (the overlap hands you some calls twice, by design). A call y
 while its `analysis.status` was still `pending` is worth re-reading by id until it settles.
 `updated_at` moves on every analysis change, including a `failed` / `analysis_unavailable`
 outcome, which is written within about 5 minutes of the 10-minute mark — so an analysis
-that never finishes still reaches a sync windowed on `updated_since`.
+that never finishes still reaches a sync windowed on `updated_since`. It also moves when the
+call's recording links are revoked (a new `recording_url`) and when its lead is deleted.
 While paging by cursor, `pagination.total` counts the calls still ahead of the cursor, not
 the whole list.
 
@@ -3722,8 +3723,13 @@ The browser presents the token as the `x-yappr-web-token` header to the endpoint
 The `recording_url` a call read returns (and `call.recording_url` in a follow-up's
 payload) is this route plus a signature. It takes **no API key**: the signature is the
 permission, so the link works as an `<audio src>`, a download link or a `curl` target. It
-answers `200` with the audio directly, and answers `HEAD` and `Range` requests, so a
-player can read its length and seek. Never build or edit one — read the call for it.
+answers `200` with the audio itself, never a redirect, with its own `Content-Type`
+(`audio/ogg` or `audio/mpeg`) and a `Content-Disposition` naming `recording-<call id>`.
+`HEAD` answers the same headers with no body, and `Range` is honoured — `206` with
+`Content-Range`, `416` past the end — so a player can read its length and seek.
+`Cache-Control: private, no-store`: nothing on the way keeps a copy a revoke could not
+reach. A recording covers the conversation, so `duration_seconds` can run a few seconds
+longer than it. Never build or edit one — read the call for it.
 
 **Scopes:** none — the link's own signature.
 
@@ -4115,7 +4121,9 @@ Update a lead.
 
 ### DELETE /leads/:id
 
-Soft-delete a lead.
+Soft-delete a lead. Every call it was on moves its `updated_at` and stops carrying `lead`,
+so a sync on `GET /calls?updated_since=` picks the change up. A lead's own edits move the
+lead's `updated_at`, not its calls'.
 
 **Scopes:** `leads:manage`
 
