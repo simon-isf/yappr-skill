@@ -4105,19 +4105,24 @@ Create a campaign. **It always lands as `draft`** — `status` is not writable, 
 
 **Response:** `201` — full campaign object.
 
-**No configuration field has a default.** Only `name` is required to create, but every
-field you leave out stays `null`, and `POST /campaigns/:id/launch` then answers
-`422 CAMPAIGN_NOT_READY` naming each one. The **Suggested** column below is what the
-dashboard prefills for a person, not what the API substitutes for you. Send every field on
-create, or fill the gaps with `PATCH` before launching — how often to call someone and when
-to stop are decisions the platform will not make on your behalf.
+**`stop_disposition_ids` is the one field with a default.** Only `name` is required to
+create. A create that leaves `stop_disposition_ids` out stores the suggested stop set —
+`GET /campaigns/defaults` → `settings.stop_disposition_ids`: this workspace's Interested,
+Appointment Set, Not Interested, Issue Resolved, Transferred to a Person, Wrong Number and
+Do Not Call, those it still has — so a new campaign stops on Interested. Send `[]` for no
+stop outcome, or your own ids; either is kept as sent, and a `PATCH` without the field
+leaves the set alone. Every other field you leave out stays `null`, and
+`POST /campaigns/:id/launch` then answers `422 CAMPAIGN_NOT_READY` naming each one. The
+**Suggested** column below is what the dashboard prefills for a person, not what the API
+substitutes for you. Send every field on create, or fill the gaps with `PATCH` before
+launching — how often to call someone is a decision the platform will not make on your
+behalf.
 
-To start from what the dashboard offers, `GET /campaigns/defaults` (`campaigns:read`) →
-`settings`, merge `name`, `agent_id`, `from_phone_number_id` and `regulatory_basis`, and
-`POST` it. Its `stop_disposition_ids` are this workspace's Interested, Appointment Set, Not
-Interested, Issue Resolved, Transferred to a Person, Wrong Number and Do Not Call — a lead
-who says they are interested is handed to you by the outcome and its follow-ups, not
-dialled again; `calling_window` is in the workspace timezone (Sun–Thu in Israel).
+To start from everything the dashboard offers, `GET /campaigns/defaults`
+(`campaigns:read`) → `settings`, merge `name`, `agent_id`, `from_phone_number_id` and
+`regulatory_basis`, and `POST` it. A lead who says they are interested is then handed to
+you by the outcome and its follow-ups, not dialled again; `calling_window` is in the
+workspace timezone (Sun–Thu in Israel).
 
 #### Client-writable fields
 
@@ -4131,7 +4136,7 @@ This exact allowlist applies to both `POST` and `PATCH`. **Any other key — inc
 | `from_phone_number_id` | uuid | — | Required before launch; must be an active number the workspace owns |
 | `split` | object \| null | null | Optional two-agent A/B test — `{ "agent_id": "...", "percent": 1-99 }`. `percent` is the **second** agent's share of contacts; `agent_id` on the campaign above takes the rest. See [Testing two agents on a campaign](#testing-two-agents-on-a-campaign) below |
 | `calling_window` | object | `{}` | Optional narrowing of the workspace calling hours for this campaign — it can never widen them. `{}` follows the workspace hours; see [retry_rules and calling_window](#retry_rules-and-calling_window) |
-| `stop_disposition_ids` | uuid[] | `[]` | Array of **disposition ids**, never labels. Every id must belong to this workspace, or `400`. `No Answer`, `Failed`, `Voicemail` and `Unclassified` are refused (`400`, naming the outcome and the switch to use instead) — see [Stop outcomes the platform assigns](#stop-outcomes-the-platform-assigns) |
+| `stop_disposition_ids` | uuid[] | the suggested stop set — **also what a create that leaves it out stores** | Array of **disposition ids**, never labels. Left out on `POST`, it is `GET /campaigns/defaults`' set, Interested included; `[]` arms no outcome; left out on `PATCH`, the set stays as it is. Every id must belong to this workspace, or `400`. `No Answer`, `Failed`, `Voicemail` and `Unclassified` are refused (`400`, naming the outcome and the switch to use instead) — see [Stop outcomes the platform assigns](#stop-outcomes-the-platform-assigns) |
 | `stop_on_no_answer` | boolean | `false` | Retire a contact the first time nobody picks up |
 | `stop_on_voicemail` | boolean | `false` | Retire a contact on a voicemail-class outcome |
 | `stop_on_unclassified` | boolean | `false` | What to do when the outcome that arrives is `Unclassified` — the call happened but matched none of your outcomes. `false` retries, `true` retires. Not a timeout: a contact is never advanced without an outcome |
@@ -4496,7 +4501,7 @@ All of these must hold; the first failure is the one you get back, named in `mes
 | Assign an agent before launching | `PATCH` with `agent_id` |
 | Assign a phone number to call from before launching | `PATCH` with `from_phone_number_id` |
 | `regulatory_basis` is required before launching | `PATCH` with one of the five bases |
-| Finish configuring the campaign before launching. Not set: … | `PATCH` every field it names — none has a default: `max_attempts`, `max_infra_retries`, `retry_no_answer_seconds`, `retry_completed_seconds`, `randomize_retry_time`, `stop_on_no_answer`, `stop_on_voicemail`, `stop_on_unclassified`, `double_dial_enabled`, `double_dial_gap_seconds`, `max_calls_per_day`, `min_seconds_between_calls`, `max_in_flight` |
+| Finish configuring the campaign before launching. Not set: … | `PATCH` every field it names — none of these has a default: `max_attempts`, `max_infra_retries`, `retry_no_answer_seconds`, `retry_completed_seconds`, `randomize_retry_time`, `stop_on_no_answer`, `stop_on_voicemail`, `stop_on_unclassified`, `double_dial_enabled`, `double_dial_gap_seconds`, `max_calls_per_day`, `min_seconds_between_calls`, `max_in_flight` |
 | Configure at least one stop rule before launching | A non-empty `stop_disposition_ids`, or `stop_on_no_answer` / `stop_on_voicemail` set to `true` |
 | The assigned agent no longer exists | Point `agent_id` at a live agent |
 | An agent on this campaign has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` on every agent the campaign calls with, the A/B test's second agent included — `0` means the agent has no cap of its own, so each call can run to the platform's 65-minute limit, far above any budget |
@@ -4565,7 +4570,7 @@ Rules that matter:
 
 - **`stop_disposition_ids` holds disposition ids, never labels.** Labels are renameable per workspace; ids are stable. Read them from `GET /dispositions`.
 - **`No Answer`, `Failed`, `Voicemail` and `Unclassified` are refused in `stop_disposition_ids`** (`400 CAMPAIGN_REQUEST_INVALID`, naming each). The platform assigns them by itself, even to real conversations, so in the stop set one would retire people you actually reached. Use `stop_on_no_answer` / `stop_on_voicemail` / `stop_on_unclassified` instead, which are evaluated on the call's outcome rather than its label.
-- **Put `Interested` in the stop set** (`GET /campaigns/defaults` does), so a lead who said yes is handed over by the outcome's follow-ups instead of being dialled again.
+- **Keep `Interested` in the stop set** (a create that leaves the set out stores it, as `GET /campaigns/defaults` does), so a lead who said yes is handed over by the outcome's follow-ups instead of being dialled again.
 - **There is no built-in "reached a human" rule.** To stop calling people you have already spoken to, create a disposition for that outcome (`POST /dispositions`) and put its id in `stop_disposition_ids`.
 - **Outcomes are classified asynchronously after the call ends**, typically within seconds but occasionally much later. A contact sits in `awaiting_disposition` until its outcome arrives, however long that takes — there is no timeout that decides without one, and only that contact waits while the campaign keeps calling everyone else. `stop_on_unclassified` decides what happens when the outcome that arrives is `Unclassified`. The platform will not redial a contact in `awaiting_disposition`, and neither should you.
 - **A disposition that is a stop rule on a live campaign cannot be deleted.** `DELETE /dispositions/:id` is refused at the database layer (it surfaces as a `500`, not a clean error) rather than silently disarming your kill switch. Remove the id from every non-terminal campaign's `stop_disposition_ids` first. (The 10 seeded defaults are `403 PROTECTED` anyway, so this bites on custom outcomes.)
@@ -4581,9 +4586,9 @@ Rules that matter:
 
 | Status | Code / shape | Cause |
 |---|---|---|
-| 400 | `CAMPAIGN_REQUEST_INVALID` on a create/edit body (message names the field); `CAMPAIGN_QUERY_INVALID` on a list | Unknown or read-only key (`retry_rules` included), out-of-range value, a `calling_window` that is not an object or sets hours without a `tz`, stop-disposition id from another workspace or a label instead of an id, `No Answer` / `Failed` / `Voicemail` / `Unclassified` in `stop_disposition_ids`, a `budget_cents` below one call's hold, empty PATCH, editing a terminal campaign, enrolling into a terminal campaign, over 1,000 contacts in one enroll |
+| 400 | `CAMPAIGN_REQUEST_INVALID` on a create/edit body (message names the field); `CAMPAIGNS_QUERY_INVALID` on a list | Unknown or read-only key (`retry_rules` included), out-of-range value, a `calling_window` that is not an object or sets hours without a `tz`, stop-disposition id from another workspace or a label instead of an id, `No Answer` / `Failed` / `Voicemail` / `Unclassified` in `stop_disposition_ids`, a `budget_cents` below one call's hold, empty PATCH, editing a terminal campaign, enrolling into a terminal campaign, over 1,000 contacts in one enroll |
 | 400 | `INVALID_FROM_NUMBER` | `from_phone_number_id` is not an id, or not a phone number in this workspace (made up, another workspace's, or released). Nothing was written; send an `id` from `GET /phone-numbers` |
-| 404 | — | Campaign not in this workspace (or archived); contact not enrolled |
+| 404 | `NOT_FOUND` | Campaign not in this workspace (or archived); contact not enrolled. A campaign id that is not a UUID is `404 RESOURCE_ID_INVALID` |
 | 409 | `CAMPAIGN_NOT_STOPPABLE` | Stopping a half-built draft — archive it with `DELETE` |
 | 409 | `CONFLICT` | Launch raced another campaign for one of the draft's contacts — send it again |
 | 422 | `CAMPAIGN_NOT_READY` | Launch preflight failed; `message` names the single blocking cause |

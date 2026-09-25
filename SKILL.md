@@ -1859,7 +1859,7 @@ Three things to say to the user before you build one, because they surprise peop
 
 ### Step 6.1 — Create the draft
 
-Name is the only field required to create, but **no configuration field has a default**: whatever you leave out stays `null`, and launch refuses with `422 CAMPAIGN_NOT_READY` naming it. Pass what you already know now; every field is PATCH-able later, and Steps 6.3–6.4 fill the rest.
+Name is the only field required to create. `stop_disposition_ids` is **the one field with a default**: left out, the draft stops on the suggested outcomes (`GET /campaigns/defaults`, Interested included); `[]` arms none. Every other field you leave out stays `null`, and launch refuses with `422 CAMPAIGN_NOT_READY` naming it. Pass what you already know now; every field is PATCH-able later, and Steps 6.3–6.4 fill the rest.
 
 ```bash
 curl -s -X POST "https://api.goyappr.com/campaigns" \
@@ -1959,7 +1959,7 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
 
 **Why ids and not labels.** Labels are per-workspace text and are renameable; ids are stable. A stop set stored by label would silently disarm the moment somebody renamed "Not Interested". The API only accepts ids, and every id must belong to this workspace (otherwise `400`).
 
-**Put `Interested` in the stop set.** Left out, a lead who said yes is dialled again up to `max_attempts` — the worst call to repeat. Stop on it and hand the lead over with a follow-up on the outcome (After triggers, Phase 4). `GET /campaigns/defaults` includes it.
+**Keep `Interested` in the stop set.** Left out, a lead who said yes is dialled again up to `max_attempts` — the worst call to repeat. Stop on it and hand the lead over with a follow-up on the outcome (After triggers, Phase 4). A create that sends no `stop_disposition_ids` already stops on it, and `GET /campaigns/defaults` includes it — so when you send your own set, keep it in.
 
 **`No Answer`, `Failed`, `Voicemail` and `Unclassified` cannot go in `stop_disposition_ids`.** The platform assigns them by itself — `No Answer` on every unanswered ring, `Failed` on every dial that did not go through, `Voicemail` and `Unclassified` even on a call someone answered — so in a stop set one would retire the contact the first time it lands, before any retry. The API refuses them: `400 CAMPAIGN_REQUEST_INVALID`, naming each outcome and the switch to use, and nothing is written. Use the booleans instead, which are evaluated on the call's **outcome class** rather than its label:
 
@@ -1971,7 +1971,7 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
 | `Failed` | nothing — a failed dial is retried until `max_attempts`; a call that never went out at all is retried on the separate `max_infra_retries` budget and never uses an attempt |
 | "we reached a human, we're done" | a disposition of your own for that outcome (`POST /dispositions`), its id in `stop_disposition_ids` — there is no built-in human-connect rule |
 
-A launch needs at least one stop rule — a non-empty `stop_disposition_ids`, or `stop_on_no_answer` or `stop_on_voicemail` set to `true`. Nothing is armed by default, and all three booleans must be sent (none has a default). A campaign whose whole point is "keep calling until they book" should arm the real outcome set, or people who already said no will be redialled until the attempt cap.
+A launch needs at least one stop rule — a non-empty `stop_disposition_ids`, or `stop_on_no_answer` or `stop_on_voicemail` set to `true`. A create that leaves `stop_disposition_ids` out arms the suggested set (Interested, Appointment Set, Not Interested, Issue Resolved, Transferred to a Person, Wrong Number, Do Not Call — those the workspace has); `[]` arms none. The three booleans have no default: send all three. A campaign whose whole point is "keep calling until they book" should arm the real outcome set, or people who already said no will be redialled until the attempt cap.
 
 **Two independent stop conditions, whichever fires first:** `max_attempts` and the stop set. Everything that isn't a stop outcome retries after `retry_completed_seconds`, and an unanswered call retries after `retry_no_answer_seconds`.
 
@@ -2093,7 +2093,7 @@ curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads/LEAD_ID" 
 | Assign an agent before launching | `PATCH` with `agent_id` |
 | Assign a phone number to call from before launching | `PATCH` with `from_phone_number_id` |
 | `regulatory_basis` is required before launching | `PATCH` with `lawful_basis_confirmed` / `consent` / `existing_customer` / `non_marketing` / `registry_screened` — ask the user which is true |
-| Finish configuring the campaign before launching. Not set: … | `PATCH` every field it names — no configuration field has a default |
+| Finish configuring the campaign before launching. Not set: … | `PATCH` every field it names — none of them has a default (only `stop_disposition_ids` does) |
 | Configure at least one stop rule before launching | A non-empty `stop_disposition_ids`, or `stop_on_no_answer` / `stop_on_voicemail` set to `true` |
 | The assigned agent no longer exists | Point `agent_id` at a live agent (`GET /agents`) |
 | An agent on this campaign has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` on every agent the campaign calls with, the A/B test's second agent included — `0` = no cap of the agent's own (only the platform's 65-minute limit), which campaigns refuse because that worst case is far above any budget |
