@@ -5572,16 +5572,20 @@ real gap worth knowing before you reach for them:
 - `GET /agents/:id/flow/versions` is read-only — harmless against a converted agent, just
   meaningless, since nothing it shows is what the agent will actually do on a call.
 - `POST /agents/:id/flow/test` **refuses** a workflow agent outright:
-  `409 WORKFLOW_FLOW_TEST_UNSUPPORTED`, "This agent runs a workflow, which the flow
-  simulator cannot walk." Since every agent `POST /agents` can create today is a workflow
-  agent, that means every agent you can create — a legacy flow agent frozen before this
-  release is untouched, still answering its old `400` when it has no `flow_config`.
-  Rehearse a workflow agent for real instead, both without a phone number:
+  `409 WORKFLOW_FLOW_TEST_UNSUPPORTED`, "Rehearsing a workflow agent needs a browser or a
+  Web SDK client." There is no text-only rehearsal of a workflow over the API. Since every
+  agent `POST /agents` can create today is a workflow agent, that means every agent you can
+  create — a legacy flow agent frozen before this release is untouched, still answering its
+  old `400` when it has no `flow_config`. Rehearse a workflow agent for real instead, with
+  no phone number but with someone talking in a browser:
   `POST /calls {"type":"web","agent_id":"…"}` returns a single-use `token`, a `protocol`
   (`offer`, or `call_request` when the agent runs steps before it answers) and a
-  `connection` block with every URL the browser needs; or `POST /shared-links` returns a
-  page a person can open and talk to the agent from. Both produce a real, transcribed
-  call that shows up in `GET /calls`.
+  `connection` block, which a page running `@goyappr/client` connects with; or
+  `POST /shared-links` returns a page a person can open and talk to the agent from (the
+  dashboard's Test tab is the third way). Each produces a real, transcribed call: read it
+  with `GET /calls/{id}` for its analysis, follow-ups and execution. What a server can check
+  with no browser at all: `POST /agents/:id/extraction/dry-run` (what the agent collects
+  from a transcript you supply) and `POST /tools/{id}/test` (one tool, mock or real).
 - `POST /agents/:id/flow/restore` **writes**. It checks the row's `type` column, not
   execution state, and a converted agent's `type` is untouched by the conversion — so a
   restore against a converted agent that was `type:"flow"` before release still succeeds,

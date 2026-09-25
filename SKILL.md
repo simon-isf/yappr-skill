@@ -1795,7 +1795,10 @@ same way without a browser click, mint a session with `POST /calls {"type":"web"
 **PHASE 3B** below) or hand out a `POST /shared-links` page. **Do not** reach for
 `POST /agents/:id/flow/test` to rehearse a workflow agent — it is the retired flow
 simulator and answers `409 WORKFLOW_FLOW_TEST_UNSUPPORTED` for every agent this skill
-creates (see **Flow agents — retired** in `yappr-api.md`).
+creates: rehearsing a workflow agent needs a browser or a Web SDK client, and there is no
+text-only rehearsal over the API (see **Flow agents — retired** in `yappr-api.md`). A
+server with no browser can still check what the agent collects
+(`POST /agents/:id/extraction/dry-run`) and each tool (`POST /tools/{id}/test`).
 
 **Option B: Phone Call (requires purchased number)**
 
