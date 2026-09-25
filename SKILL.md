@@ -1382,12 +1382,15 @@ listen. A link that leaked (pasted into a ticket or a chat) is taken back with
 **Finding it in the dashboard.** The Call Logs page answers at `/call-logs` (and at
 `/calls`, which redirects there). Its filters live in the address — `from`, `to` (both
 `YYYY-MM-DD`, read as whole days in the workspace timezone), `outcome` (comma-separated
-disposition ids, or `none` for calls with no outcome) and `q` (a phone number) — so a
+disposition ids, or `none` for calls with no outcome) and `q` (what the search box holds: a
+phone number, part of an agent's or a lead's name, or the start of a call ID) — so a
 filtered view can be linked, bookmarked or built by hand. Either end of the window may be
 given on its own: `from` alone runs to today, `to` alone runs back 30 days. "Export CSV"
 writes every call the filters match — including the agent and A/B dropdowns on the page,
 which are not part of the address — not only the page on screen. `GET /calls/export`
-below is the same button, addressable.
+below is the same button, addressable. From the API, `GET /calls?search=` is the same box:
+the 8 characters of a call ID the dashboard shows find that call, and `?lead_id=` finds a
+browser call attached to a lead (it has no number to search by).
 
 ### Journey — export a month of calls as a file
 

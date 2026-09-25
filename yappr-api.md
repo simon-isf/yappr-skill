@@ -156,7 +156,9 @@ it changes nothing — widen its scopes in the dashboard, or issue a key that ho
   uses it) and still publishes — web callers reaching that step simply cannot use it.
 - `400 CALLS_QUERY_INVALID` — `GET /calls` (and `GET /calls/export`) with an unrecognised
   `status`, `direction` or `source` (`scheduled` is not a status), any unknown query
-  parameter, a known filter sent with no value, an `agent_id` that is not a uuid, a
+  parameter, a known filter sent with no value, an `agent_id`, `lead_id` or
+  `carrier_account_id` that is not a uuid, a `search` under 2 or over 100 characters (or
+  a name more than 300 agents carry — and leads, for a key with `leads:read`), a
   `from`/`to`/`updated_since` that is not an ISO 8601 timestamp (`2026`, `Sep 1` and
   `2026-09-31` are all refused), or `cursor` together with `offset`. `GET /calls/export`
   also refuses `limit`, `offset`, `cursor` and `updated_since` outright. Used to answer
@@ -2476,6 +2478,9 @@ List calls with optional filters and pagination.
 | `offset` | int | 0 | counts from the top of a list that grows while you read it. Send this or `cursor`, not both. An offset past the end is `400 CALLS_QUERY_INVALID` naming how many calls match — stop paging at `pagination.total` |
 | `cursor` | string | — | continue exactly where the last page stopped: `pagination.next_cursor`, opaque, on every page. This is the one to build a job on — an offset silently repeats or skips rows when calls arrive mid-walk. Cursors are signed: only a `pagination.next_cursor` from this endpoint works — a hand-built one, or one from `/deliveries`, is `400 CALLS_CURSOR_INVALID`, never a silent first page. **A cursor carries only the position, not the filters:** send the same filters with every page. Sent with other filters, or none, it is answered `200` from that position under whatever filters came with it — not refused |
 | `agent_id` | uuid | — | filter by agent; anything that is not a uuid is `400 CALLS_QUERY_INVALID`, and an agent that is not in this workspace is `404 CALL_AGENT_UNKNOWN` |
+| `search` | string | — | 2–100 characters: the start of a call id (8 hex characters or more, with dashes where an id has them — the 8 the dashboard shows are enough), a phone number at either end of the call (matched exactly, as `callee` / `caller` are), or part of an agent's or a live lead's name, case-insensitive, archived agents included. Digits that could be either an id or a number are searched both ways. A lead's name is searched only for a key with `leads:read`; for any other key a name matches agents alone, so a name only a lead carries finds no calls. More than 300 matching names is `400 CALLS_QUERY_INVALID` — send more of the name, or `agent_id` / `lead_id` |
+| `lead_id` | uuid | — | Calls with that lead — the only way to find a browser call attached to a lead, which has no number at either end. A lead that is not live in this workspace (unknown, or deleted) is `404 NOT_FOUND` |
+| `carrier_account_id` | uuid | — | Calls placed on that carrier account: signed for it, or placed from one of its numbers. Needs `carrier_accounts:read` (without it, `403 INSUFFICIENT_SCOPE`); an account not in this workspace is `404 CARRIER_ACCOUNT_NOT_FOUND` |
 | `status` | string | — | `pending_connection` (a browser session nobody has connected yet), `ringing`, `in_progress`, `completed`, `failed`, `no_answer`, `transferred`, `dnc_blocked` (destination on the company DNC list — no carrier leg, no charge) |
 | `direction` | string | — | `inbound`, `outbound`, `web_call` |
 | `callee` | string | — | filter by callee phone (E.164). Useful for counting prior attempts to the same lead within a retry window. |
@@ -2489,7 +2494,8 @@ List calls with optional filters and pagination.
 | `updated_since` | ISO8601 | — | every call **changed** at or after this time, whatever its `created_at`. The filter an incremental sync wants; `from`/`to` are not. Send a `+03:00` offset URL-encoded as `%2B03:00` — a bare `+` reads as a space |
 
 An unrecognised `status`, `direction` or `source`, any parameter not in this table, an
-`agent_id` that is not a uuid, a `from`/`to`/`updated_since` that is not an ISO 8601
+`agent_id`, `lead_id` or `carrier_account_id` that is not a uuid, a `search` under 2 or over
+100 characters, a `from`/`to`/`updated_since` that is not an ISO 8601
 timestamp (a date, or a date and time with `Z` or an offset — so `2026`, `Sep 1` and
 `2026/09/01` are refused, and so is `2026-09-31`, a day its month does not have), and
 `cursor` together with `offset`, are all `400 CALLS_QUERY_INVALID` naming the parameter —
@@ -2589,7 +2595,8 @@ browser call, which has no phone side. `carrier_account` is `{id, name, provider
 the four fields a number's `carrier_account` has, on an `external` call; it is `null` on any
 other call and `null` for a key without `carrier_accounts:read` — `provider: "external"`
 still says the call ran on the workspace's own account. An account removed since keeps its
-`id`, with the other three fields `null`.
+`id`, with the other three fields `null`. Filter by account with `carrier_account_id`
+(above).
 
 **`cost_status`** is on every row, beside `cost_cents`: `charged` (the recorded charge;
 final), `not_charged` (`cost_cents: 0`, final — the call failed, went unanswered, was
@@ -2612,7 +2619,9 @@ keys so they cannot collide.
 The call log as a CSV file, filtered exactly the way `GET /calls` above is filtered —
 same query params, except that `limit`, `offset`, `cursor` and `updated_since` are
 **refused** here (`400 CALLS_QUERY_INVALID`): an export is one whole window of call starts,
-not a page of it and not what changed since it last ran. A file answered for
+not a page of it and not what changed since it last ran. `search`, `lead_id` and
+`carrier_account_id` narrow the file exactly as they narrow the list, under the same scope
+rules (a lead's name is searched only for a key with `leads:read`). A file answered for
 `updated_since` would carry the whole `from`/`to` window while reading as everything that
 changed. This is the dashboard's own **Export CSV**, addressable.
 
