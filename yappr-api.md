@@ -200,9 +200,10 @@ accounts with `400 CONNECTION_INVALID`, the workflow's save, check, publish and 
 
 A body field an endpoint does not read is refused by name too, on most creates and edits:
 agents, workflow tools, campaigns, API keys, SIP endpoints, recording revokes,
-`PATCH /phone-numbers/{id}` (`400` naming each field it does not update), and every write on
+`PATCH /phone-numbers/{id}` (`400 BAD_REQUEST` naming each field it does not update), and every write on
 `/leads`, `/do-not-call`, `/lead-tags`, `/dispositions`, `/shared-links`, `/call-windows`
-and `/agent-eval`. That refusal is a `400` with the family's code, except on
+and `/agent-eval`. That refusal is a `400` with the family's code (the phone number's is the
+plain `BAD_REQUEST`), except on
 these writes, which answer `422`: `POST /tools`, `PATCH /tools/{id}` and
 `POST /tools/{id}/restore` (`422 WORKFLOW_TOOL_REQUEST_INVALID`), starting a tool test
 (`422 WORKFLOW_TOOL_TEST_INVALID`), `POST /agents/{id}/duplicate`
