@@ -1326,7 +1326,22 @@ read/cancel a test with the appropriate tools scope. Poll with bounded backoff u
 States are accepted, prepared, running, succeeded, failed, blocked, pending, unknown or
 cancelled. Treat unknown plus `resolution:manual_reconciliation_required` as no-retry:
 a late receipt can be shown without changing the settled status. Do not repeat an
-uncertain effect automatically. Public output is a bounded/redacted preview, not raw
+uncertain effect automatically.
+
+**A real test is also a delivery, and gives one verdict.** A real HTTP tool test
+(`policy: "allowlist"`) that reached the endpoint is also a `GET /deliveries/{id}` row, and
+`GET /tools/{id}/tests/{test_id}` names it as `delivery_id`. An endpoint that answered with
+an error — a 4xx or a 5xx — refused the request: the test reads `status: "failed"`,
+`outcome.status` and `outcome.effect_status` `"failed"`, `outcome.error_code:
+"downstream_http_error"`, `outcome.http_status` equal to the delivery's `response_status`,
+and no `resolution`; the delivery reads `failed` too. `outcome.retryable` is always `false`:
+Yappr never sends a tool's request again by itself. To send it again,
+`POST /deliveries/{delivery_id}/retry` (the delivery says `retryable: true`). `unknown` with
+`resolution: "manual_reconciliation_required"` is kept for a request that got no answer at
+all — a timeout, a dropped connection — which may or may not have reached the endpoint, so
+check before running it again. `delivery_id` is `null` for a mock, a connected-app action, a
+request refused before it was sent, and tests settled before 25 September 2026, which still
+read a 5xx as `unknown`. Public output is a bounded/redacted preview, not raw
 vendor evidence or reusable execution input; inspect `redaction`, `receipt_settled_test`
 and `resolution` alongside IDs/status. Fixed account, URL, action and destination remain
 immutable through testing. Tool tests and call tests are separate authorization subjects.
