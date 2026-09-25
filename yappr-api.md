@@ -6204,11 +6204,11 @@ Aggregated debits from your credit account, bucketed by date and product.
 |---|---|---|---|
 | `from` | ISO8601 | now - 30d | Start of window |
 | `to` | ISO8601 | now | End of window, inclusive. A date-only `from` or `to` is a whole day **on the report's clock** (`timezone`, below). `from` after `to` is a `400`. |
-| `group_by` | "day" \| "month" \| "total" \| "agent" \| "product" \| "disposition" \| "agent,disposition" \| "source" \| "agent,source" | "day" | Bucket granularity. Anything else is `400` |
+| `group_by` | "day" \| "month" \| "total" \| "agent" \| "product" \| "disposition" \| "agent,disposition" \| "source" \| "agent,source" \| "phone_number" | "day" | Bucket granularity. Anything else is `400` |
 | `product` | enum | (all) | `voice_call` \| `eval_run` \| `phone_number` \| `topup` \| `refund` \| `adjustment`. Anything else (`voice`, `minutes`) is `400 CONSUMPTION_QUERY_INVALID`. |
 | `include_topups` | bool | false | Include positive credit purchases. `true` or `false` only |
 | `timezone` | IANA name | the workspace's | The clock days, months and date-only windows are read on — by default the workspace's own (the `timezone` set on `PUT /call-windows`, the one the dashboard shows this money on). `timezone=UTC` gives UTC days. An offset such as `+03:00` or an unknown name is `400 CONSUMPTION_QUERY_INVALID` |
-| `sort` | `amount` \| `period` \| `name` | `amount` | Largest first; `period` oldest first (only on `day` / `month`); `name` agent, then outcome, then origin, then product, A to Z (not on `day` / `month`) |
+| `sort` | `amount` \| `period` \| `name` | `amount` | Largest first; `period` oldest first (only on `day` / `month`); `name` agent, then outcome, then origin, then number, then product, A to Z (not on `day` / `month`) |
 
 Each parameter at most once; any other is `400 CONSUMPTION_QUERY_INVALID`, by name. A
 charge at 22:30 UTC on 30 September is **1 October** in an `Asia/Jerusalem` workspace,
@@ -6253,6 +6253,15 @@ rehearsals from the calls it was paid for without exporting the call log once pe
 An origin is a fact about the call a charge belongs to, so a charge with no call behind it
 — a number's monthly rent, a top-up, an eval run — comes back as `source: null`, and a call
 recorded before origins were written down comes back as `source: "unknown"`.
+
+**`group_by=phone_number`** — one row per number per product, each with `phone_number_id`,
+`phone_number` (E.164) and that number's `provider` as `GET /phone-numbers` gives it:
+`external` — the workspace's own Telnyx account, which billed the phone minutes itself —
+or `telnyx` — a number bought from Yappr. A call's charge goes to the number it used (the
+number it called from, or the number that answered it), a number's monthly rent to that
+number. A charge with no number behind it — a browser call, a SIP endpoint call, an eval
+run, a top-up — lands in one row with `phone_number_id: null`; a number removed since keeps
+its id, with `phone_number` and `provider` `null`.
 
 **The window.** `to` is inclusive here too (a date-only `to` is that whole day on the
 report's clock — the workspace's unless `timezone` says otherwise — where `GET /calls` and

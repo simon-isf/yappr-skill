@@ -1458,7 +1458,9 @@ GET /billing/consumption?from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z&group
    `phone_outbound` — so rehearsal spend is separated from the calls that were paid for
    without exporting once per source. `group_by=agent,disposition` gives cost and outcomes
    on the same row instead. Charges with no call behind them (a number's monthly rent, an
-   eval run) come back with `source: null`. `product` narrows it to one of `voice_call`,
+   eval run) come back with `source: null`. `group_by=phone_number` gives the spend per
+   number instead, each row with the number's `provider` — `external` for a number on the
+   customer's own Telnyx account. `product` narrows it to one of `voice_call`,
    `eval_run`, `phone_number`, `topup`, `refund`, `adjustment` — anything else (`voice`) is
    `400 CONSUMPTION_QUERY_INVALID`, and so is `?agent_id=` (there is no agent filter; group
    by agent instead).
