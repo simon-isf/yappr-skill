@@ -748,11 +748,28 @@ For a `date` parameter the answer also carries `extracted_data_precision`, as on
 
 **Extracted dates.** A `date` parameter is read from the day the call started, in the
 workspace time zone — on a real call and here (`reference_time`, echoed as
-`reference_date` and `timezone`). A day and month with no year → the next time it comes
-round (never the past); "today" / "tomorrow" / "in a week" → counted from the call day;
-"next Sunday" / "on Tuesday" → the first such day after the call day; a year the caller
-said is kept; a month with no day ("sometime in November", "next month") → `null` with
-precision `month` and that month; "after the holidays" → `null` with precision `unknown`.
+`reference_date` and `timezone`). What is still to come counts forward: a day and month
+with no year → the next time it comes round; "today" / "tomorrow" / "in a week" → counted
+from the call day; "next Sunday" / "on Tuesday" → the first such day after the call day.
+What already happened counts back, never forward: "three months ago" / "לפני שלושה חודשים"
+→ that month (`null` with precision `month` and `"month": "2026-06"` for a call on 24
+September 2026); "it ended in June" / "נגמרה ביוני" → the last June; "yesterday", "last
+Sunday", "last month" → those days and that month. A year the caller said is kept; a month
+with no day ("sometime in November", "next month") → `null` with precision `month` and that
+month; "after the holidays", or a past answer that cannot be read → `null` with precision
+`unknown`. A month named with no tense word ("June" alone) still counts forward.
+
+**Extracted numbers.** An approximate answer is its number ("about 12" → 12), and a half is
+kept: "about two and a half" / "בערך שנתיים וחצי" → 2.5, "a year and a half" / "שנה וחצי" →
+1.5, "half a year" / "חצי שנה" → 0.5. A number said in more than one word ("twenty five",
+"a hundred and fifty", "two years and three months") or with a scale word ("2 million") is
+`null` rather than its first word — ask for digits in the parameter's `description` when it
+matters.
+
+**The dry run reads a transcript the same way a finished call is read** — the same
+instructions, model, settings, coercion and date clock (`reference_time` stands in for the
+call's start) — so its answer is what the agent will collect from that conversation. Pass
+`reference_time` to test relative dates against a fixed day.
 
 `extracted_data` is keyed by your parameters and nothing else: a key the model invented
 is dropped, a parameter it left out is still a key with `null` — meaning the conversation
