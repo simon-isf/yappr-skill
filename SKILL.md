@@ -1945,7 +1945,7 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "stop_disposition_ids": ["DO_NOT_CALL_ID", "NOT_INTERESTED_ID", "WRONG_NUMBER_ID", "APPOINTMENT_SET_ID"],
+    "stop_disposition_ids": ["DO_NOT_CALL_ID", "NOT_INTERESTED_ID", "WRONG_NUMBER_ID", "APPOINTMENT_SET_ID", "INTERESTED_ID"],
     "stop_on_no_answer": false,
     "stop_on_voicemail": true,
     "stop_on_unclassified": false,
@@ -1955,14 +1955,16 @@ curl -s -X PATCH "https://api.goyappr.com/campaigns/CAMPAIGN_ID" \
 
 **Why ids and not labels.** Labels are per-workspace text and are renameable; ids are stable. A stop set stored by label would silently disarm the moment somebody renamed "Not Interested". The API only accepts ids, and every id must belong to this workspace (otherwise `400`).
 
-**Why `No Answer`, `Failed`, and `Voicemail` must NOT go in `stop_disposition_ids`.** Those three labels are *also* auto-assigned by the platform, and the outcome classifier legitimately assigns them to calls where a human really did talk — a receptionist answering a 90-second call can land "No Answer". Put them in the stop set and you permanently retire real conversations as never-reached. Do not rely on the API to catch it — a stop set holding them has been accepted with `200` — so check the ids against `GET /dispositions` yourself before sending. Use the booleans instead, which are evaluated on the call's **outcome class** rather than its label:
+**Put `Interested` in the stop set.** Left out, a lead who said yes is dialled again up to `max_attempts` — the worst call to repeat. Stop on it and hand the lead over with a follow-up on the outcome (After triggers, Phase 4). `GET /campaigns/defaults` includes it.
+
+**`No Answer`, `Failed`, `Voicemail` and `Unclassified` cannot go in `stop_disposition_ids`.** The platform assigns them by itself — `No Answer` on every unanswered ring, `Failed` on every dial that did not go through, `Voicemail` and `Unclassified` even on a call someone answered — so in a stop set one would retire the contact the first time it lands, before any retry. The API refuses them: `400 CAMPAIGN_REQUEST_INVALID`, naming each outcome and the switch to use, and nothing is written. Use the booleans instead, which are evaluated on the call's **outcome class** rather than its label:
 
 | Instead of putting this in the stop set | Use |
 |---|---|
 | `No Answer` | `stop_on_no_answer: true` (usually `false` — normally you *want* to retry an unanswered call) |
 | `Voicemail` | `stop_on_voicemail: true` |
 | `Unclassified` | `stop_on_unclassified` — `false` retries the contact, `true` retires it |
-| `Failed` | nothing — platform failures use the separate `max_infra_retries` budget and never consume a dial attempt |
+| `Failed` | nothing — a failed dial is retried until `max_attempts`; a call that never went out at all is retried on the separate `max_infra_retries` budget and never uses an attempt |
 | "we reached a human, we're done" | a disposition of your own for that outcome (`POST /dispositions`), its id in `stop_disposition_ids` — there is no built-in human-connect rule |
 
 A launch needs at least one stop rule — a non-empty `stop_disposition_ids`, or `stop_on_no_answer` or `stop_on_voicemail` set to `true`. Nothing is armed by default, and all three booleans must be sent (none has a default). A campaign whose whole point is "keep calling until they book" should arm the real outcome set, or people who already said no will be redialled until the attempt cap.

@@ -88,7 +88,7 @@ curl -s -X POST "https://api.goyappr.com/resource" \
 | 401 | `MISSING_KEY` (nothing sent), `INVALID_KEY` (a key was sent and is not ours, or is revoked), `EXPIRED_KEY` — the key itself was not accepted | Fix the key. Even a `401` carries `X-RateLimit-*` (`Remaining` = `Limit`: nothing was counted). |
 | 402 | Billing — insufficient balance or no payment method (`BILLING_ERROR`), or the workspace's own monthly spending limit is reached (`SPEND_BUDGET_REACHED`, see **PATCH /billing**) | Guide to billing setup, or raise the limit |
 | 403 | `INSUFFICIENT_SCOPE` — the key is fine but lacks a scope; the message names it. Also a resource in another workspace or a protected one | Widen the key in Settings → API keys, or use one that holds the scope. Never rotate on a `403`. |
-| 404 | `AGENT_NOT_FOUND` — the agent in the path, or the `agent_id` a request names, is not in this workspace | The public API answers a missing agent this way. Another `404` code under `/agents/{id}` means the agent is there and something else is missing. (Campaign and phone-number bodies keep `422 INVALID_AGENT`, and call requests keep `404 WORKFLOW_AGENT_UNAVAILABLE` for an agent that is archived or switched off — both below.) |
+| 404 | `AGENT_NOT_FOUND` — the agent in the path, or the `agent_id` a request names, is not in this workspace | The public API answers a missing agent this way. Another `404` code under `/agents/{id}` means the agent is there and something else is missing. Campaign, phone-number and carrier-number bodies answer it too, naming the field (`agent_id`, `split.agent_id`, `inbound_agent_id`, `outbound_agent_id`); call requests keep `404 WORKFLOW_AGENT_UNAVAILABLE` for an agent that is archived or switched off (below). |
 | 429 | Rate limit or concurrent call limit | Wait and retry |
 | 500 | Server error | Retry once; if persistent, report |
 
@@ -127,10 +127,13 @@ it changes nothing — widen its scopes in the dashboard, or issue a key that ho
   `PATCH /agents/{id} {"is_active": true}` and retry.
 - `404 WORKFLOW_AGENT_UNAVAILABLE` — no agent with that id is available in this workspace
   (archived, switched off, or the pinned workflow version is not this agent's own).
-- `422 INVALID_AGENT` vs `422 INVALID_SPLIT` — `INVALID_SPLIT` is only ever about the
-  second agent of an A/B test (`split.agent_id`, `inbound_split`, `outbound_split`). A
-  primary agent from another workspace, or one that no longer exists, is `INVALID_AGENT`
-  and the message names the field (`agent_id`, `inbound_agent_id`, `outbound_agent_id`).
+- `404 AGENT_NOT_FOUND` vs `422 INVALID_SPLIT` — an agent field on a campaign or a phone
+  number that names no agent in this workspace (it does not exist, belongs to another
+  workspace, or is archived) is `404 AGENT_NOT_FOUND`, and the message names the field
+  (`agent_id`, `split.agent_id`, `inbound_agent_id`, `outbound_agent_id`). It used to be
+  `422 INVALID_AGENT`. `422 INVALID_SPLIT` is only about the shape of an A/B split: a
+  `percent` outside 1–99, the second agent the same as the first, or a split that is
+  neither an object nor `null`.
 - `422 WORKFLOW_VALIDATION_FAILED` with `binding_phase_unsupported` — a tool bound into a
   phase its contract excludes (a transfer in a Before or After step). Publish refuses; the
   issue carries `node_id` and `label`. A transfer on an agent that also answers on `web` is
@@ -1262,13 +1265,20 @@ List all tools. Optionally filter to a specific agent. `GET /tools` and
   `400 TOOLS_QUERY_INVALID`. `name` is not a filter on `GET /tools?workflow=true` (the
   revision catalog): sending it there is `400 TOOLS_QUERY_INVALID` — use the default
   `GET /tools?name=`, whose workflow rows carry the same `workflow` object.
-- `status` (optional) — a create that is accepted but cannot be built stays in the
-  workspace at `workflow.status: "failed"` (reason in `workflow.error_code`,
-  `workflow.current: null`); those rows, and only those, are left out of the default
-  list. `status=failed` finds one, `status=all` keeps the page whole. Any other value is
+- `limit`, `offset` — paging. The default list takes only `workflow`, `agent_id`,
+  `limit`, `offset` and `name`; anything else — `status` and `cursor` included — is
+  `400 TOOLS_QUERY_INVALID`, naming it.
+
+**With `workflow=true`** (the workflow tool catalog, 1–50 rows a page, paged by
+`cursor`/`next_cursor`) the parameters are `limit`, `cursor` and:
+- `status` (optional, **only here**) — a create that is accepted but cannot be built stays
+  in the workspace at `workflow.status: "failed"` (reason in `workflow.error_code`,
+  `workflow.current: null`); those rows, and only those, are left out of this list.
+  `status=failed` finds one, `status=all` keeps the page whole. Any other value is
   `422 WORKFLOW_TOOL_REQUEST_INVALID`. A tool whose later *edit* failed also reads
   `status: "failed"` but keeps its promoted head (`workflow.current` set), is still
-  bindable, and stays on the default list.
+  bindable, and stays on the list. A failed creation is never on the default list: find
+  it with `GET /tools?workflow=true&status=failed`.
 
 **Response (legacy row shape):**
 ```json
@@ -1855,8 +1865,8 @@ SIP endpoints carry no split at all.
 | Status | Code | When |
 |---|---|---|
 | 404 | — | No such number in this workspace |
-| 422 | `INVALID_SPLIT` | `percent` outside 1–99, the split's second agent is the one already bound, belongs to another workspace, or the split is neither an object nor `null` |
-| 422 | `INVALID_AGENT` | `inbound_agent_id` / `outbound_agent_id` names an agent from another workspace or one that no longer exists — `message` names the field |
+| 422 | `INVALID_SPLIT` | `percent` outside 1–99, the split's second agent is the one already bound, or the split is neither an object nor `null` |
+| 404 | `AGENT_NOT_FOUND` | `inbound_agent_id`, `outbound_agent_id` or a split's `agent_id` is not an agent in this workspace (made up, another workspace's, or archived) — `message` names the field. It used to be `422 INVALID_AGENT` |
 | 400 | — | A field this endpoint does not update, or the number is still `pending_requirements` |
 
 ---
@@ -2275,7 +2285,8 @@ by, the customer's Telnyx account).
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `INVALID_NUMBER`, `INVALID_AGENT`, `INVALID_NAME`, `INVALID_JSON` | Fix the field `error` names |
+| 400 | `INVALID_NUMBER`, `INVALID_AGENT`, `INVALID_NAME`, `INVALID_JSON` | Fix the field `error` names (`INVALID_AGENT`: `outbound_agent_id` is not an id) |
+| 404 | `AGENT_NOT_FOUND` | `outbound_agent_id` is not an agent in this workspace, naming the field |
 | 409 | `CONNECTION_REQUIRED` | No Call Control App chosen yet |
 | 409 | `NUMBER_ALREADY_REGISTERED` | Held elsewhere in Yappr (see above) |
 | 422 | `NUMBER_NOT_IN_YOUR_TELNYX_ACCOUNT` | Telnyx does not list it as active in this account. Nothing was added |
@@ -3972,7 +3983,6 @@ an internal enum, and the retired prompt-agent fields (`system_prompt`, `flow_co
   "from_number": "+972... | null",      // audit snapshot, taken at launch
 
   "split": { "agent_id": "uuid", "percent": 30 } | null,
-  "retry_rules": {},
   "calling_window": {},
 
   "stop_disposition_ids": ["uuid"],
@@ -4042,9 +4052,10 @@ to stop are decisions the platform will not make on your behalf.
 
 To start from what the dashboard offers, `GET /campaigns/defaults` (`campaigns:read`) →
 `settings`, merge `name`, `agent_id`, `from_phone_number_id` and `regulatory_basis`, and
-`POST` it. Its `stop_disposition_ids` are this workspace's Appointment Set, Not Interested,
-Issue Resolved, Transferred to a Person, Wrong Number and Do Not Call; `calling_window` is
-in the workspace timezone (Sun–Thu in Israel).
+`POST` it. Its `stop_disposition_ids` are this workspace's Interested, Appointment Set, Not
+Interested, Issue Resolved, Transferred to a Person, Wrong Number and Do Not Call — a lead
+who says they are interested is handed to you by the outcome and its follow-ups, not
+dialled again; `calling_window` is in the workspace timezone (Sun–Thu in Israel).
 
 #### Client-writable fields
 
@@ -4057,9 +4068,8 @@ This exact allowlist applies to both `POST` and `PATCH`. **Any other key — inc
 | `agent_id` | uuid | — | Required before launch |
 | `from_phone_number_id` | uuid | — | Required before launch; must be an active number the workspace owns |
 | `split` | object \| null | null | Optional two-agent A/B test — `{ "agent_id": "...", "percent": 1-99 }`. `percent` is the **second** agent's share of contacts; `agent_id` on the campaign above takes the rest. See [Testing two agents on a campaign](#testing-two-agents-on-a-campaign) below |
-| `retry_rules` | object | — | Leave it out. The dialer never evaluates it — see [retry_rules and calling_window](#retry_rules-and-calling_window) |
-| `calling_window` | object | `{}` | Optional narrowing of the workspace calling hours for this campaign — it can never widen them. `{}` follows the workspace hours; see the same note |
-| `stop_disposition_ids` | uuid[] | `[]` | Array of **disposition ids**, never labels. Every id must belong to this workspace, or `400` |
+| `calling_window` | object | `{}` | Optional narrowing of the workspace calling hours for this campaign — it can never widen them. `{}` follows the workspace hours; see [retry_rules and calling_window](#retry_rules-and-calling_window) |
+| `stop_disposition_ids` | uuid[] | `[]` | Array of **disposition ids**, never labels. Every id must belong to this workspace, or `400`. `No Answer`, `Failed`, `Voicemail` and `Unclassified` are refused (`400`, naming the outcome and the switch to use instead) — see [Stop outcomes the platform assigns](#stop-outcomes-the-platform-assigns) |
 | `stop_on_no_answer` | boolean | `false` | Retire a contact the first time nobody picks up |
 | `stop_on_voicemail` | boolean | `false` | Retire a contact on a voicemail-class outcome |
 | `stop_on_unclassified` | boolean | `false` | What to do when the outcome that arrives is `Unclassified` — the call happened but matched none of your outcomes. `false` retries, `true` retires. Not a timeout: a contact is never advanced without an outcome |
@@ -4111,9 +4121,23 @@ Never writable; sending any of them returns `400`. Read them from `GET /campaign
 
 `status`, `daily_admitted_count`, `daily_window_date`, `last_admitted_at`, `spent_cents`, `reserved_cents`, `estimate_cents`, `last_tick_at`, `last_tick_result`, `last_error`, `started_at`, `completed_at`, `total_leads`, `stats`, `from_number`, `company_id`, `created_by`, `created_at`, `updated_at`.
 
+#### Stop outcomes the platform assigns
+
+The platform sets four outcomes by itself — `No Answer` on every unanswered ring, `Failed`
+on every dial that did not go through, `Voicemail` and `Unclassified` even on a call
+someone answered — so a stop set holding one would retire the contact the first time it
+lands, before any retry. `POST` and `PATCH` refuse them in `stop_disposition_ids` with
+`400 CAMPAIGN_REQUEST_INVALID`, naming each and the switch to use instead:
+`stop_on_no_answer`, `stop_on_voicemail`, `stop_on_unclassified` (for `Failed`, nothing: a
+failed dial is retried until `max_attempts`). The switches are read from the call's
+outcome, not its label.
+
 #### retry_rules and calling_window
 
-`retry_rules` is an earlier structured retry matrix that the dialer never evaluates — leave it out. The scalar controls are the whole retry configuration, and they are what the pacer reads:
+`retry_rules` is not a field: sending it is `400 CAMPAIGN_REQUEST_INVALID` like any other
+unknown key, and a campaign read does not return it. It was an earlier structured retry
+matrix the dialer never evaluated. The scalar controls are the whole retry configuration,
+and they are what the pacer reads:
 
 - retry timing → `retry_no_answer_seconds`, `retry_completed_seconds`, `randomize_retry_time`, `max_attempts`, `max_infra_retries`
 - when the campaign may dial → the **workspace** call windows (`GET`/`PUT /call-windows`) are the outer gate; a campaign with no reachable workspace window refuses to launch and pauses itself as `paused_config`. `calling_window` (`{tz, days:[0..6], start:"HH:MM", end:"HH:MM"}`) can only narrow those hours for this one campaign, never widen them.
@@ -4163,7 +4187,8 @@ itself survives, so re-activating the agent returns its contacts to it. Send
 
 | Status | Code | When |
 |---|---|---|
-| 422 | `INVALID_SPLIT` | `percent` outside 1–99, the second agent is the same as `agent_id`, the agent belongs to another workspace, or `split` is neither an object nor `null` |
+| 422 | `INVALID_SPLIT` | `percent` outside 1–99, the second agent is the same as `agent_id`, or `split` is neither an object nor `null` |
+| 404 | `AGENT_NOT_FOUND` | `split.agent_id` (or `agent_id`) is not an agent in this workspace — the message names the field |
 | 422 | `CAMPAIGN_NOT_READY` (at launch) | The second agent can't take these calls — see the launch preflight above |
 
 ---
@@ -4493,15 +4518,16 @@ Rules that matter:
 
 | Status | Code / shape | Cause |
 |---|---|---|
-| 400 | `CAMPAIGN_REQUEST_INVALID` on a create/edit body (message names the field); `CAMPAIGN_QUERY_INVALID` on a list | Unknown or read-only key, out-of-range value, non-object `retry_rules`/`calling_window`, stop-disposition id from another workspace or a label instead of an id, empty PATCH, editing a terminal campaign, enrolling into a terminal campaign, over 1,000 contacts in one enroll |
+| 400 | `CAMPAIGN_REQUEST_INVALID` on a create/edit body (message names the field); `CAMPAIGN_QUERY_INVALID` on a list | Unknown or read-only key (`retry_rules` included), out-of-range value, a `calling_window` that is not an object or sets hours without a `tz`, stop-disposition id from another workspace or a label instead of an id, `No Answer` / `Failed` / `Voicemail` / `Unclassified` in `stop_disposition_ids`, a `budget_cents` below one call's hold, empty PATCH, editing a terminal campaign, enrolling into a terminal campaign, over 1,000 contacts in one enroll |
+| 400 | `INVALID_FROM_NUMBER` | `from_phone_number_id` is not an id, or not a phone number in this workspace (made up, another workspace's, or released). Nothing was written; send an `id` from `GET /phone-numbers` |
 | 404 | — | Campaign not in this workspace (or archived); contact not enrolled |
 | 409 | `CAMPAIGN_NOT_STOPPABLE` | Stopping a half-built draft — archive it with `DELETE` |
 | 409 | `CONFLICT` | Launch raced another campaign for one of the draft's contacts — send it again |
 | 422 | `CAMPAIGN_NOT_READY` | Launch preflight failed; `message` names the single blocking cause |
 | 422 | `INVALID_SPLIT` | A malformed or out-of-range `split` on create/update — see [Testing two agents on a campaign](#testing-two-agents-on-a-campaign) |
-| 422 | `INVALID_AGENT` | `agent_id` names an agent from another workspace or one that no longer exists — `message` names the field |
+| 404 | `AGENT_NOT_FOUND` | `agent_id` or `split.agent_id` is not an agent in this workspace (made up, another workspace's, or archived) — `message` names the field. It used to be `422 INVALID_AGENT` |
 
-> **Envelope note — `422 CAMPAIGN_NOT_READY` carries the code twice.** It returns `{ "error": "<CODE>", "code": "<CODE>", "message": "<human text>" }` — branch on `code` and show `message`; `error` repeats the code rather than carrying prose. `INVALID_SPLIT` and `INVALID_AGENT` use the ordinary `{ "error": "<human text>", "code": "<CODE>" }`. Plain `400`/`404`/`500` responses use `{ "error": "<human text>" }`.
+> **Envelope note — `422 CAMPAIGN_NOT_READY` carries the code twice.** It returns `{ "error": "<CODE>", "code": "<CODE>", "message": "<human text>" }` — branch on `code` and show `message`; `error` repeats the code rather than carrying prose. Every other refusal here uses the ordinary `{ "error": "<human text>", "code": "<CODE>" }`.
 
 ---
 
