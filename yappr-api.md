@@ -2798,6 +2798,7 @@ Get full details of a single call, including resolved lead and disposition objec
   "status": "pending_connection" | "ringing" | "in_progress" | "completed" | "failed" | "no_answer" | "transferred" | "dnc_blocked",
   "failure": { "code": "string", "reason": "string", "stage": "dialing|connecting|conversation|null", "at": "ISO8601 | null" },
   "started_at": "ISO8601 | null",
+  "answered_at": "ISO8601 | null",
   "ended_at": "ISO8601 | null",
   "duration_seconds": 0,
   "source": "test" | "shared_link" | "api" | "phone_inbound" | "phone_outbound" | "unknown",
@@ -2924,6 +2925,15 @@ Get full details of a single call, including resolved lead and disposition objec
   "created_at": "ISO8601"
 }
 ```
+
+**`started_at` / `answered_at` / `ended_at`** — The call's three moments. `started_at` is
+when it was placed — dialled, arrived at your number, or its browser session opened.
+`answered_at` — on this read only — is when its audio came up: the person dialled picked up,
+your number answered the caller, or the browser connected; `null` on a call that never got
+that far. `ended_at` is when the caller or the agent left, or Yappr closed the call.
+`duration_seconds` counts from about `answered_at` to the end and is what the call is billed
+for; the time before `answered_at` is ringing (or, in a browser, connecting) and is never
+billed. Every `message` row in `timeline` is dated `answered_at` + `offset_ms`.
 
 **`updated_at`** — When this call last changed: the same field the list rows carry, so a
 sync that pages `GET /calls?updated_since=` and then reads a call by id for its transcript
