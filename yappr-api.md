@@ -363,11 +363,16 @@ its response, not `null`.
 ```
 
 A `legacy` row carries the same twenty-five fields plus `type: "prompt" | "flow"`,
-`system_prompt`, `flow_config`, `webhook_url`, `webhook_events`, `webhook_headers`,
-`tools` and `idempotency_key`, real values, not empties — except `webhook_headers`, whose
-**values are write-only**: a read returns the header names and never what they are set
-to, so a secret sent there does not come back to any key. Send the value again with
-`PATCH /agents/:id` to change it. `system_prompt` is the prompt driving the call, `flow_config` the graph on a `flow` agent, and `idempotency_key` is
+`system_prompt`, `flow_config`, `webhook_url`, `webhook_events`,
+`configured_webhook_header_names`, `tools` and `idempotency_key`, real values, not
+empties. Its webhook header **values are write-only, for every key**: where
+`webhook_headers` was, a read carries `configured_webhook_header_names` — the names,
+sorted — and never what they are set to, so a secret sent there does not come back to any
+key. `PATCH /agents/:id` without `webhook_headers` keeps them, a map replaces them all, and
+`null` clears them. The same holds wherever a legacy agent is embedded: a Do Not Call
+entry's `agents[]`, an eval case's or run's `agent`, a campaign's `agent` and
+`split_agent`, the `PATCH /agents/:id` answer and `POST /agents/:id/flow/restore`. Each
+entry of `tools` is `{id, name}` without `tools:read` — which tools, not how they call. `system_prompt` is the prompt driving the call, `flow_config` the graph on a `flow` agent, and `idempotency_key` is
 whatever the retired create path wrote (often `null`). Branch on `execution_version`,
 never on field count or on `type` alone — `"prompt"` and `"flow"` are a closing set (no
 agent is created into them any more), not a growing one, and existing agents in them
@@ -430,8 +435,10 @@ never on a read.
 An agent created before the workflow engine keeps `type: "prompt"` or `"flow"` and every
 field it has always returned — `system_prompt`, `flow_config`, `webhook_url`,
 `webhook_events`, `webhook_headers`, `tools`, and `idempotency_key` (whatever the retired
-create path wrote for it, often `null`) — real values, unchanged, except that
-`webhook_headers` names its headers without their values (write-only). `voice` is the voice
+create path wrote for it, often `null`) — real values, unchanged, except the webhook header
+values, which are write-only for every key: `configured_webhook_header_names` (the names,
+sorted) stands where `webhook_headers` was, and each `tools` entry is `{id, name}` for a key
+without `tools:read`. `voice` is the voice
 name a caller hears; the engine behind it is never set directly.
 
 **Turn-taking and interruption.** An agent stops the instant the caller starts
@@ -683,7 +690,8 @@ with `system_prompt`, `flow_config`, `webhook_url`, `webhook_events`,
 `webhook_headers` and `tools` **absent** — not null, not empty — same as
 `GET /agents/:id`. Read the canonical workflow document, not those legacy fields.
 A legacy agent's PATCH response still carries them as real values, unchanged — header
-values excepted: `webhook_headers` comes back with names only.
+values excepted: `configured_webhook_header_names` comes back where `webhook_headers` was,
+names only.
 
 **A refused field is named.** Sending `webhook_url`, `webhook_events`,
 `webhook_headers`, `system_prompt`, `flow_config` or `tools` to a workflow agent is
