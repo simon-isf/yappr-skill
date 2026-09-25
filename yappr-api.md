@@ -5536,9 +5536,15 @@ not a delivery here, never the list) — plus:
 **Scopes:** `calls:read` or `tools:read`; the two bodies need `calls:read`, and the
 destinations' paths need `tools:read` or `tools:update`.
 
-Every configured header value is replaced by `[REDACTED]` wherever it appears in either
-body (as a value, inside a string, or as a key), and an address is never returned with its
-query string, fragment or credentials. `response.body` is `null` when nothing answered, for
+What is withheld, in both bodies and in a tool test's outcome: a configured header value
+(and a Bearer or Basic credential without its scheme) of 6 characters or more reads
+`[REDACTED]` wherever it appears — as a value, inside a string, or as a key — and a shorter
+one only where it is the whole value (the whole body, or a whole JSON string); the
+address's query string, whole, and each query value of 6 characters or more, wherever they
+appear. A query value under 6 characters (`v=1`) is never withheld and never hides the same
+characters elsewhere, and `Content-Type`, `X-Webhook-Event`, `X-Webhook-Test` and
+`X-Webhook-Delivery-Attempt` are not withheld. An address is never returned with its query
+string, fragment or credentials. `response.body` is `null` when nothing answered, for
 deliveries made before 2026-09-23, and for a workflow step's refusal (the status is kept,
 not the text) — a retry always keeps the answer.
 
