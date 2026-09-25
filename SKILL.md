@@ -1468,7 +1468,8 @@ GET /billing/consumption?from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z&group
    instants. Calls that straddle midnight on the 1st, and charges with no call, make the
    difference. Say so in the report rather than forcing the two to agree.
    For the balance itself — opening, every top-up and refund, closing — read
-   `GET /billing/transactions?from=2026-09-01&to=2026-09-30` (its days are UTC).
+   `GET /billing/transactions?from=2026-09-01&to=2026-09-30` (its days are on the workspace's
+   clock, like consumption; add `timezone=UTC` for UTC days).
 4. **Month to date** is `monthly_spend_cents` on `GET /billing` — reported whether or not a
    spending limit is set, measured from `monthly_period_start` (the 1st, 00:00 UTC).
 5. Over 10000 calls in the month, the export refuses (`400 CALLS_EXPORT_TOO_LARGE`) —
