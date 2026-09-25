@@ -2202,9 +2202,17 @@ curl -s "https://api.goyappr.com/agents/AGENT_ID/workflow" \
 # document, PUT it back, validate, publish. POST /tools/detach answers
 # 409 WORKFLOW_TOOL_OWNER_REQUIRED on a workflow agent.
 
-# Archive (idempotent — an already-archived tool answers 200 again)
+# Archive (idempotent — an already-archived tool answers 200 again). The answer names the
+# agents that still use it (warnings[].code tool_in_use): they cannot publish until you
+# restore it or remove their step
 curl -s -X DELETE "https://api.goyappr.com/tools/TOOL_ID" \
   -H "Authorization: Bearer $YAPPR_API_KEY"
+
+# Find an archived tool again, and put it back as it was
+curl -s "https://api.goyappr.com/tools?workflow=true&status=archived" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '[.data[] | {id, name, archived_at}]'
+curl -s -X POST "https://api.goyappr.com/tools/TOOL_ID/restore" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq '{id, restored}'
 ```
 
 ### Leads

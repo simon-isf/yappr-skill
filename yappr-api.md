@@ -1107,7 +1107,8 @@ keys remain company-scoped. IDs, revision numbers and head generations are serve
 | `GET /tools/{id}/schema` | `tools:read` | Current typed input/output schemas; not a raw execution contract. |
 | `POST /tools` | `tools:create` | `{name, description?, workflow}` and mandatory `Idempotency-Key`; `201` materialized, `202` durably pending, `200` replay of a ready identity. |
 | `PATCH /tools/{id}` | `tools:update` | `name`, `workflow.kind`, what that kind is built from and the fields you are changing, plus `expected_head_revision_id` and numeric `expected_head_generation`, with an Idempotency-Key. Every field left out keeps its value (see **A `PATCH` changes what it sends** below). Creates a candidate, never overwrites a frozen revision. |
-| `DELETE /tools/{id}` | `tools:update` | Archives a workflow tool while retaining revisions/history; legacy deletion remains separate. Idempotent: an already-archived tool answers `200` again and keeps its first archive time, so only a tool outside the workspace is `404`. There is no `tools:delete` scope — a key cannot be issued with one. |
+| `DELETE /tools/{id}` | `tools:update` | Archives a workflow tool while retaining revisions/history; legacy deletion remains separate. Idempotent: an already-archived tool answers `200` again and keeps its first archive time, so only a tool outside the workspace is `404`. The answer carries `archived_at`, and a `tool_in_use` warning naming each agent that still binds the tool — those agents cannot be published or duplicated until it is restored or their step removed. There is no `tools:delete` scope — a key cannot be issued with one. |
+| `POST /tools/{id}/restore` | `tools:update` | Puts an archived workflow tool back exactly as it was, switched on; no body. Answers the whole tool with `restored` (`false` when it was not archived, so a repeat is safe). See **An archived tool** below. |
 | `GET /tools/{id}/workflow-revisions` | `tools:read` | The 100 newest contract revisions of one saved tool, newest first. Stored endpoint configuration is stripped from every row. |
 | `POST /tools/{id}/workflow-revisions` | `tools:update` | `{expected_revision, contract}` only; `201` with the new revision. Compare-and-swap on `expected_revision` (`null` when the tool has none). |
 | `GET /tool-apps` | `tools:read` | Curated discovery page, not account readiness. Toolkit-list versions may be absent. |
@@ -1204,6 +1205,19 @@ the cause (connect the account), then `PATCH /tools/{id}` with the **whole** too
 `tools:create` as well as `tools:update`. An expected-head field on that retry is `422`;
 a creation still being built is `409 WORKFLOW_TOOL_CONFLICT`. Or `DELETE /tools/{id}` to
 remove it (a repeat answers `200`). Testing it first answers `409 WORKFLOW_TOOL_NOT_READY`.
+
+**An archived tool** is off both tool lists and still this workspace's.
+`GET /tools?workflow=true&status=archived` (cursor-paged) or `GET /tools?status=archived`
+lists them, and `GET /tools/{id}` reads one, both in a short form: `id`, `name`,
+`description`, `workflow_version`, `is_active: false`, `created_at`, `updated_at`,
+`archived: true`, `archived_at` and `workflow.kind`. Put one back with
+`POST /tools/{id}/restore` (`tools:update`; no body — a field is
+`422 WORKFLOW_TOOL_REQUEST_INVALID`): it answers the whole tool as `GET /tools/{id}` does,
+switched on, with `restored` (`false` when it was not archived, so a repeat is safe). A
+change, a test, its schema or its bindings on an archived tool is `404 WORKFLOW_NOT_FOUND`,
+whose message names `GET /tools?status=archived` and the restore — restore it first.
+Restoring a creation that never built is `409 WORKFLOW_TOOL_NOT_READY`: it was never
+archived, so fix it with the `PATCH` above or remove it with `DELETE /tools/{id}`.
 
 **Ids that name nothing.** An app tool whose `metadata_id` is not an action from
 `GET /tool-apps/{app}/actions/{action}`, or whose `connection_id` is not one of this
@@ -1336,8 +1350,12 @@ List all tools. Optionally filter to a specific agent. `GET /tools` and
   `400 TOOLS_QUERY_INVALID`. `name` is not a filter on `GET /tools?workflow=true` (the
   revision catalog): sending it there is `400 TOOLS_QUERY_INVALID` — use the default
   `GET /tools?name=`, whose workflow rows carry the same `workflow` object.
+- `status` (optional) — on this list it takes one value, `archived`: the tools archived with
+  `DELETE /tools/{id}`, and only those (workflow tools in the short form under **An archived
+  tool** above). Not together with `agent_id`. Any other value is `400 TOOLS_QUERY_INVALID`
+  — `failed` and `all` belong to `GET /tools?workflow=true`.
 - `limit`, `offset` — paging. The default list takes only `workflow`, `agent_id`,
-  `limit`, `offset` and `name`; anything else — `status` and `cursor` included — is
+  `limit`, `offset`, `name` and `status`; anything else — `cursor` included — is
   `400 TOOLS_QUERY_INVALID`, naming it.
 
 **With `workflow=true`** (the workflow tool catalog, 1–50 rows a page, paged by
@@ -1345,8 +1363,9 @@ List all tools. Optionally filter to a specific agent. `GET /tools` and
 - `status` (optional, **only here**) — a create that is accepted but cannot be built stays
   in the workspace at `workflow.status: "failed"` (reason in `workflow.error_code`,
   `workflow.current: null`); those rows, and only those, are left out of this list.
-  `status=failed` finds one, `status=all` keeps the page whole. Any other value is
-  `422 WORKFLOW_TOOL_REQUEST_INVALID`. A tool whose later *edit* failed also reads
+  `status=failed` finds one, `status=all` keeps the page whole (every tool that is not
+  archived), and `status=archived` pages the archived ones, oldest id first. Any other value
+  is `422 WORKFLOW_TOOL_REQUEST_INVALID`. A tool whose later *edit* failed also reads
   `status: "failed"` but keeps its promoted head (`workflow.current` set), is still
   bindable, and stays on the list. A failed creation is never on the default list: find
   it with `GET /tools?workflow=true&status=failed`.
@@ -5558,6 +5577,7 @@ member can reach in the dashboard has a public endpoint behind it.
 | POST /tools (create) | `tools:create` |
 | PATCH /tools/:id | `tools:update` |
 | DELETE /tools/:id | `tools:update` |
+| POST /tools/:id/restore | `tools:update` |
 | GET /tools/:id/workflow-revisions | `tools:read` |
 | POST /tools/:id/workflow-revisions | `tools:update` |
 | GET /tools/:id/bindings | `tools:read` |
