@@ -4798,8 +4798,11 @@ Nothing else is read: an unknown body field is `400 API_KEY_REQUEST_INVALID` nam
 A name belongs to **one active key**, compared without regard to case (`Client-A` is taken
 while `client-a` is live): a second is `409 API_KEY_NAME_TAKEN`, and two creates sent at
 once under one name get one key and one `409`. There is no update — `PATCH`/`PUT
-/api-keys/{id}` is `405`: change scopes or agents in the dashboard (Settings → API keys →
-Edit scopes), or issue a replacement and revoke the old key.
+/api-keys/{id}` is `405`: change scopes, agents or the end date in the dashboard
+(Settings → API keys → **Edit scopes**, whose *When this key stops working* keeps the end
+date as it is, removes it, or sets a new one 7, 30, 90 or 365 days out), or issue a
+replacement and revoke the old key. Saving Edit scopes with a new end date changes the
+key's `expires_at` — read it again rather than trusting the value you issued it with.
 
 **Rotating from code** therefore needs a **new name** for the replacement (the old key
 still holds its name until revoked, and there is no rename): issue the replacement under

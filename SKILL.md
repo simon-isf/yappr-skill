@@ -2332,7 +2332,10 @@ only a **subset** of what the calling key already holds — asking for more is
 `403 API_KEY_SCOPE_ESCALATION`, naming each scope that went beyond. Add
 `"expires_at": "2026-12-31T23:59:59Z"` (a date-time **with** a time zone) for a key that
 should stop on its own — a contractor's, a trial client's; after it every request is
-`401 EXPIRED_KEY`, and the key stays listed with its `expires_at` until revoked.
+`401 EXPIRED_KEY`, and the key stays listed with its `expires_at` until revoked. A person
+can change that end date later in the dashboard (**Edit scopes** → *When this key stops
+working*: as it is, never, or 7/30/90/365 days out), so read `expires_at` from
+`GET /api-keys` instead of remembering the one you sent.
 
 **Rotating from code.** A name belongs to one active key (case ignored, so `Client-A` and
 `client-a` clash: `409 API_KEY_NAME_TAKEN`), and there is no rename, so the replacement
@@ -2357,8 +2360,8 @@ answer; everything the workspace shares (tools, numbers, dispositions, the do-no
 list, calling hours, other keys) is `403 API_KEY_AGENT_SCOPED`, and naming another agent is
 `403 AGENT_OUTSIDE_KEY_SCOPE`. It cannot create or duplicate agents, and `POST /calls` must
 name one of its agents and call from a number one of them uses. There is no key update
-(`PATCH` is `405`): change a key's agents in the dashboard, or issue a replacement and
-revoke the old one.
+(`PATCH` is `405`): change a key's scopes, agents or end date in the dashboard's
+**Edit scopes**, or issue a replacement and revoke the old one.
 
 Field-by-field reference: `yappr-api.md` → **API Keys**.
 
