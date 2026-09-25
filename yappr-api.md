@@ -193,10 +193,16 @@ accounts with `400 CONNECTION_INVALID`, the workflow's save, check, publish and 
 `400 WORKFLOW_REQUEST_INVALID`, and starting a tool test with
 `422 WORKFLOW_TOOL_TEST_INVALID`. Send a write's settings in its body.
 
-A body field is refused the same way on most creates and edits: agents, workflow tools,
-campaigns, API keys, SIP endpoints, recording revokes, and every write on `/leads`,
-`/do-not-call`, `/lead-tags`, `/dispositions`, `/shared-links`, `/call-windows` and
-`/agent-eval`. Some writes may drop a body field they do not read instead, so never rely on
+A body field an endpoint does not read is refused by name too, on most creates and edits:
+agents, workflow tools, campaigns, API keys, SIP endpoints, recording revokes, and every
+write on `/leads`, `/do-not-call`, `/lead-tags`, `/dispositions`, `/shared-links`,
+`/call-windows` and `/agent-eval`. That refusal is a `400` with the family's code, except on
+these writes, which answer `422`: `POST /tools`, `PATCH /tools/{id}` and
+`POST /tools/{id}/restore` (`422 WORKFLOW_TOOL_REQUEST_INVALID`), starting a tool test
+(`422 WORKFLOW_TOOL_TEST_INVALID`), `POST /agents/{id}/duplicate`
+(`422 WORKFLOW_DUPLICATE_REQUEST_INVALID`), and a phone call through `POST /calls` to an
+agent that runs a workflow (`422 WORKFLOW_REQUEST_INVALID`). A `400` and a `422` ask the
+same of you: change the request before retrying. Some writes may drop a body field they do not read instead, so never rely on
 them to refuse one: `/phone-numbers`, `/carrier-accounts`, `/billing`, `/call-requests`,
 enrolling contacts (`POST /campaigns/{id}/leads`) and a campaign's `launch`, `pause`,
 `resume` and `stop`, `/agents/{id}/flow/…`, `POST /deliveries/{id}/retry`, a tool created
