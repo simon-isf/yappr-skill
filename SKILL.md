@@ -126,8 +126,9 @@ Start standalone tests with mock policy by default, representative typed input a
 fresh Idempotency-Key. Poll the exact tool/test; retain the key/body after a lost
 response. An allowlisted test requires authorization for that saved binding's real
 effect. Unknown outcomes require reconciliation, not automatic repetition — `unknown` means
-no answer came back; an endpoint that answered 4xx or 5xx makes the test `failed`, and the
-test's `delivery_id` is the delivery to send again with `POST /deliveries/{id}/retry`. Transfer
+no answer came back; an HTTP endpoint that answered 4xx or 5xx makes the test `failed`, and the
+test's `delivery_id` is the delivery to send again with `POST /deliveries/{id}/retry` (a connected-app
+action that fails on the app's side still reads `unknown` until it is reconciled). Transfer
 tests are mock-only and confer no live-call authority. Unavailable services do not
 authorize a legacy fallback or a real call; observe the deployment's readiness gates.
 
