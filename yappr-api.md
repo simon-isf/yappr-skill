@@ -209,6 +209,8 @@ Deactivate (soft-delete) an agent. Sets `is_active: false`.
 
 ## Tools
 
+**Transfer destination.** The destination of an agent's transfer tool is a phone number or, on calls that arrive on a username-and-password trunk or an extension endpoint, a SIP address. Set it on the transfer tool in the dashboard ("Phone number or SIP address"); this API creates webhook tools only. See [A transfer to a SIP address](#a-transfer-to-a-sip-address) under SIP Endpoints.
+
 **Tool & agent schema propagation timing**
 
 Tool and agent config (system prompt, tools list, extraction parameters, voice/language/model
@@ -612,40 +614,126 @@ Assign inbound and/or outbound agents to a phone number.
 
 ## SIP Endpoints
 
-BYOC (Bring Your Own Carrier) SIP endpoints let a customer route inbound
-calls from their own telephony system to a Yappr agent **without**
-purchasing a Yappr-managed phone number. Each endpoint is a SIP URI of
-the form `sip:{slug}@yappr-byoc.sip.telnyx.com`.
+A SIP endpoint lets a customer's own phone system (PBX, contact-center platform,
+SIP provider) send calls to a Yappr agent **without** a Yappr phone number. Each
+endpoint answers with one agent (`inbound_agent_id`). There are three kinds, chosen
+with `auth_mode` at create time; the kind cannot change later. The table compares
+`credentials` and `uri`; `register` is for hosted phone systems that only give the
+customer an extension account (see **Register as an extension** below).
 
-There is **no SIP digest auth** at the protocol layer. The slug embedded
-in the URI is the bearer credential — server-generated with ~120 bits of
-random entropy in its 24-char suffix, so unguessable. Treat the full URI
-like an API key: anyone who has it can dial the agent.
+| | `credentials`: username and password | `uri`: SIP address only (the API default) |
+|---|---|---|
+| Which agent | The agent chosen for the endpoint | The agent chosen for the endpoint |
+| The customer's system gets | `sip_username`, `sip_password` and the server settings in `sip_connection` | one `sip_uri`: `sip:{slug}@yappr-byoc.sip.telnyx.com` |
+| Who can call the agent | Only a system with the password. A wrong password is refused with SIP `403` before the call reaches Yappr | Anyone who has the address, billed to the workspace. The slug (~120 random bits) is the only secret |
+| What it dials | Any number or extension at the server in `sip_connection`; every call reaches the endpoint's agent | The address only, over UDP/TCP 5060 or TLS 5061 |
+| Changing the secret | `POST /sip-endpoints/{id}/rotate-password` (the username stays) | Create a new endpoint, repoint the system, delete the old one |
+| Calls at once | `max_concurrent_calls`, 1–8, default 2; one more gets SIP `486 Busy Here` | No per-endpoint limit (Yappr's own limit applies) |
 
-Use SIP Endpoints when the customer already has a business line and
-wants Yappr to answer specific calls (overflow, after-hours, escalations)
-while keeping their existing telephony in place. Use phone numbers when
-they want Yappr to own a new DID outright. The two coexist — a single
-agent can answer calls from both.
+Use SIP endpoints when the customer already has a business line and wants Yappr to
+answer specific calls (overflow, after-hours, escalations) while keeping their
+existing telephony in place. Use phone numbers when they want Yappr to own a new DID
+outright. The two coexist — a single agent can answer calls from both.
 
-**Caller-ID trust:** for calls arriving via SIP endpoints, the
-calling-party number is whatever the customer's upstream sends —
-attacker-controlled if the upstream is compromised. By default Yappr
-does **not** use that number for lead-context lookups or returning-caller
-recognition. Agents must opt in via the dashboard if their upstream is
-trustworthy.
+**The password is returned once**, in the create and rotate-password responses.
+List, get and update never return it, and Yappr keeps no copy. Hand it straight to
+whoever configures the customer's system; if it is lost, rotate it.
+
+**Facts for every kind (`credentials`, `uri` and `register`):**
+- Caller ID comes from the customer's system, so it is untrusted: the agent gets
+  no lead memory (returning-caller context) on these calls. There is no setting to
+  change this, in the API or the dashboard.
+- **Every kind is answered by the agent chosen for the endpoint** (`inbound_agent_id`).
+  Calls to an agent that is switched off are refused, on a trunk with SIP `603 Decline`.
+  Create and PATCH don't check it. Choose `credentials` unless the customer's
+  platform can't answer a password challenge (then `uri`, or `register` if it only
+  offers an extension account).
+- A `credentials` trunk only brings calls in: it can't place calls, so a transfer to a
+  phone number isn't available on its calls. The attempt dials nothing, the caller stays
+  on the call, and the call's events get `transfer_failed` with `error_code`
+  `UNAVAILABLE_ON_SIP_TRUNK`. A transfer to a SIP address of the customer's own phone
+  system (`sip:extension@pbx.example.com`) hands the caller back to it instead; see
+  **A transfer to a SIP address** below. A call that arrived on a `uri` endpoint is
+  not a trunk call for this: a SIP-address transfer there gets `REFER_ONLY_ON_SIP_TRUNK`
+  and the agent keeps helping.
+- `is_active: false` refuses new calls before they are answered (a `credentials` or
+  `uri` endpoint answers SIP `603 Decline`; on a `register` endpoint
+  `register.status` reads `disabled` and the customer's system isn't told).
+  Calls in progress continue. Re-route the calls in the customer's system before
+  switching an endpoint off or deleting it: not every system tries its next route
+  after a `603`.
+- The workspace's inbound calling hours (`GET /call-windows`), when switched on,
+  apply to these calls too: outside them every call is refused (a `credentials` or
+  `uri` endpoint answers `603`).
+- In the dashboard, only workspace owners and admins can create, change, delete or
+  rotate a `credentials` endpoint; another member gets `403 FORBIDDEN_ROLE`. That code
+  is for dashboard sessions only: an API key never gets it, and needs
+  `sip_endpoints:manage` instead.
+- A `uri` endpoint's `slug` and `sip_uri` are its credential, and a `credentials`
+  trunk's `sip_username` is half of its: list and get return them only to a key
+  that also holds `sip_endpoints:manage`. A key with `sip_endpoints:read` alone
+  (the Read-only preset) gets them as `null`.
+- Send only the documented fields and query parameters. Anything else is refused
+  by name rather than ignored: `400 SIP_ENDPOINT_REQUEST_INVALID` for a body field
+  (or a body that isn't a JSON object), `400 SIP_ENDPOINT_QUERY_INVALID` for a query
+  parameter (the list takes `limit` and `offset`; status and every write take none).
+- A missing scope is `403 INSUFFICIENT_SCOPE`, naming the scope.
+
+**What a `uri` endpoint does not enforce — say so before handing a URI out:**
+
+- **Clear text unless TLS.** Over UDP or TCP (port 5060) the URI travels in clear
+  text between the customer's phone system and Yappr; TLS (port 5061) keeps it off
+  the wire. Either way it sits in the system's configuration, logs and SIP traces.
+- **No source filtering.** `allowed_source_ips` is stored with the endpoint for the
+  customer's records, but no call is checked against it: a call to the URI is
+  answered wherever it comes from.
+- **The URI is not hidden everywhere.** A call that arrives on an endpoint reads
+  `to: null` and carries `sip_endpoint_id` on `GET /calls` and `GET /calls/:id`, and
+  its `To` is empty in the export. The dashboard's call logs still show the URI as
+  the number called, and the call details tools and webhooks receive carry it as
+  `callee_number`.
+- **What does limit exposure:** who can read the phone system's configuration,
+  `is_active: false` while the endpoint is not in use, and rotating the URI
+  (create a new endpoint, repoint the phone system, then delete the old one)
+  whenever it may have been seen. A deleted URI gets SIP `603 Decline` and is never
+  handed out again.
+
+### GET /sip-endpoints/status
+
+Whether this workspace can create `credentials` endpoints right now: `true` when
+trunks are switched on for the workspace and Yappr can take trunk calls right now.
+`register_available` is the same for `register` endpoints.
+
+**Scopes:** `sip_endpoints:read`. Takes no query parameters.
+
+**Response:** `200` `{ "credentials_available": true, "register_available": true }`
+
+While it is `false`, creating a `credentials` endpoint is refused, and nothing is
+created: `403 SIP_TRUNKS_NOT_ENABLED` (trunks aren't switched on for this
+workspace: the customer asks Yappr support) or `409 VOICE_NOT_READY` (for example
+during a Yappr update: wait a few minutes). `uri` endpoints and every other route
+are unaffected: existing trunks can still be listed, changed, deleted and given a new
+password. The voice part of the answer can be up to 60 s old.
+
+---
 
 ### GET /sip-endpoints
 
-List the company's SIP endpoints.
+List the workspace's SIP endpoints, newest first, all kinds. A `register` endpoint carries
+a `register` object (see **Register as an extension**).
 
-**Scopes:** `sip_endpoints:read`
+**Scopes:** `sip_endpoints:read`. Without `sip_endpoints:manage` too, every `uri`
+endpoint comes back with `slug` and `sip_uri` set to `null`, and every
+`credentials` endpoint with `sip_username` set to `null`.
 
 **Query params:**
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `limit` | int | 50 | max 200 |
+| `limit` | int | 50 | 1–200; a larger value is capped at 200 |
 | `offset` | int | 0 | for pagination |
+
+Any other parameter (a filter such as `status` or `name`) is
+`400 SIP_ENDPOINT_QUERY_INVALID`, not answered with every endpoint.
 
 **Response:**
 ```json
@@ -653,18 +741,43 @@ List the company's SIP endpoints.
   "data": [
     {
       "id": "uuid",
-      "name": "After-hours",
-      "slug": "after-hours-bz3r3mtypuwuw8tpdw3x392s",
-      "sip_uri": "sip:after-hours-bz3r3mtypuwuw8tpdw3x392s@yappr-byoc.sip.telnyx.com",
+      "name": "Main office PBX",
+      "auth_mode": "credentials",
+      "slug": null,
+      "sip_uri": null,
+      "sip_username": "yp4k7d2m9x1q8w3z",
+      "max_concurrent_calls": 5,
+      "sip_connection": {
+        "server": "sip-a.example.com",
+        "alternate_servers": ["sip-b.example.com", "sip-c.example.com"],
+        "transports": [
+          { "protocol": "tls", "port": 5061, "recommended": true },
+          { "protocol": "tcp", "port": 5060 },
+          { "protocol": "udp", "port": 5060 }
+        ],
+        "registration": "optional"
+      },
       "inbound_agent_id": "uuid",
       "is_active": true,
-      "allowed_source_ips": null,
       "last_call_at": "ISO8601 | null",
       "created_at": "ISO8601",
       "updated_at": "ISO8601"
+    },
+    {
+      "id": "uuid",
+      "name": "After-hours",
+      "auth_mode": "uri",
+      "slug": "after-hours-a1b2c3d4e5f6g7h8i9j0k1l2",
+      "inbound_agent_id": "uuid",
+      "is_active": true,
+      "last_call_at": "ISO8601 | null",
+      "allowed_source_ips": null,
+      "created_at": "ISO8601",
+      "updated_at": "ISO8601",
+      "sip_uri": "sip:after-hours-a1b2c3d4e5f6g7h8i9j0k1l2@yappr-byoc.sip.telnyx.com"
     }
   ],
-  "total": 1,
+  "total": 2,
   "limit": 50,
   "offset": 0
 }
@@ -674,81 +787,381 @@ List the company's SIP endpoints.
 
 ### POST /sip-endpoints
 
-Create a new SIP endpoint. Returns the URI the customer pastes into their
-PBX/CPaaS. No authentication setup required at the SIP layer.
+Create a SIP endpoint.
 
 **Scopes:** `sip_endpoints:manage`
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `name` | string | yes | Human-readable label, shown in the dashboard |
-| `inbound_agent_id` | uuid | yes | Agent that answers calls routed to this endpoint |
-| `slug` | string | no | Optional human-readable prefix (max 12 chars). Server appends a hyphen and a 24-char random suffix |
-| `allowed_source_ips` | string[] | no | Optional CIDRs/IPs that may dial this endpoint. `null` (default) accepts any source |
+| `name` | string | yes | 1–200 characters, shown in the dashboard |
+| `inbound_agent_id` | uuid | yes | An agent in this workspace; it answers every call on the endpoint |
+| `auth_mode` | `"credentials"` \| `"uri"` \| `"register"` | no | Default `"uri"`. `"credentials"` is a username-and-password trunk; `"register"` registers as an extension (needs `register`) |
+| `register` | object | with `register` | `register` only: see **Register as an extension** |
+| `max_concurrent_calls` | int | no | `credentials` and `register` only: 1–8 calls ringing or in progress at once (default 2); the next is refused (`credentials`: SIP `486 Busy Here`; `register`: refused). `null` is refused (400) |
+| `slug` | string | no | `uri` only: readable prefix, 2–12 letters, digits and single hyphens, starting and ending with a letter or digit (lowercased); not a reserved word or one followed by a hyphen (`yappr`, `admin`, `internal`, `system`, `api`, `sip`, `trunk`, `root`, `test`, `sudo`, `support`, and a few similar words). Yappr appends a hyphen and 24 random chars. Refused if it does not fit, never rewritten; left out, the prefix is derived from `name` (at most 12 characters) |
+| `allowed_source_ips` | string[] \| null | no | `uri` only: up to 50 IPv4/IPv6 addresses, each optionally with a `/prefix`. **Recorded only, never checked.** `[]` and `null` both mean no list |
 
-Slug constraints (enforced server-side): 4–64 chars total, lowercase
-letters / digits / single hyphens, no consecutive hyphens, must not start
-with a reserved prefix.
+Any other field — `sip_username`, `sip_password`, `transport`, `require_tls`, a
+typo — and a value for the other kind's field are refused with
+`400 SIP_ENDPOINT_REQUEST_INVALID`, by name, rather than dropped, and nothing is
+created. On `credentials`, Yappr issues the username and password; a `uri`
+endpoint has neither.
 
-**Rate limit:** 20 creates per company per day.
+**Rate limit:** 20 create attempts per workspace in 24 hours that run from the first
+attempt, all three kinds together. It counts attempts, not endpoints created, so a failed
+attempt can count too.
 
-**Response:** `201`
-```json
-{
-  "data": {
-    "id": "uuid",
-    "name": "After-hours",
-    "slug": "after-hours-bz3r3mtypuwuw8tpdw3x392s",
-    "sip_uri": "sip:after-hours-bz3r3mtypuwuw8tpdw3x392s@yappr-byoc.sip.telnyx.com",
-    "inbound_agent_id": "uuid",
-    "is_active": true,
-    "allowed_source_ips": null,
-    "created_at": "ISO8601"
-  }
-}
+**Username and password (credentials):** check `GET /sip-endpoints/status` first.
+
+```bash
+curl -s -X POST "https://api.goyappr.com/sip-endpoints" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Main office PBX", "inbound_agent_id": "AGENT_UUID", "auth_mode": "credentials", "max_concurrent_calls": 5}'
 ```
 
-The customer pastes the value of `sip_uri` into their telephony platform's
-outbound SIP route. UDP, TCP, and TLS are all supported. No username,
-no password.
+**Response:** `201`: the endpoint (as in the list) plus `"sip_password": "<32 letters and digits>"`, **only this once**.
+
+**SIP address (uri):**
+
+```bash
+curl -s -X POST "https://api.goyappr.com/sip-endpoints" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "After-hours", "inbound_agent_id": "AGENT_UUID"}'
+```
+
+**Response:** `201`: the endpoint with its `sip_uri`. The customer pastes
+`data.sip_uri` into their telephony platform's SIP route with authentication set to
+none, over UDP or TCP (5060) or TLS (5061; over UDP or TCP the address crosses the
+network in clear text), G.711 (µ-law or A-law) or G.722.
+
+**Errors:**
+| Status | `code` | Meaning |
+|---|---|---|
+| 400 | `SIP_ENDPOINT_REQUEST_INVALID` | Missing or invalid field (e.g. `max_concurrent_calls` outside 1–8, or `null`; a `slug` outside its rules), agent not in this workspace, a field of the other kind or one create doesn't take, or a body that isn't a JSON object |
+| 400 | `SIP_ENDPOINT_QUERY_INVALID` | The request has a query parameter; create takes none |
+| 403 | `INSUFFICIENT_SCOPE` | Key lacks `sip_endpoints:manage` |
+| 403 | `SIP_TRUNKS_NOT_ENABLED` | `credentials` trunks aren't switched on for this workspace; the customer asks Yappr support. Nothing created; `uri` unaffected |
+| 400 | `SIP_REGISTER_HOST_INVALID` | `register.server` isn't a public host name or address |
+| 403 | `SIP_REGISTER_NOT_ENABLED` | `register` endpoints aren't switched on for this workspace; the customer asks Yappr support. Nothing created |
+| 409 | `VOICE_NOT_READY` | `credentials` or `register` not available right now (see `/status`); retry in a few minutes. Nothing created |
+| 409 | `SIP_REGISTER_LIMIT_REACHED` | `register`: 5 per workspace reached, or Yappr has no room for another registration right now |
+| 409 | `SIP_REGISTER_SETUP_IN_PROGRESS` | `register`: a create repeated with the same `Idempotency-Key` header hasn't finished setting up; wait a minute, list the endpoints, and if it is still switched off delete it and create it again (if the new one fails as "already in use", use a different extension name) |
+| 409 | `SIP_REGISTER_EXTENSION_IN_USE` | `register`: another Yappr endpoint registers this extension username. (A name still held at the carrier by a deleted endpoint is not refused here: the create is accepted, and the endpoint then reads `failed`, "already in use") |
+| 409 | `CONFLICT` | `uri` address collision (rare): send again |
+| 429 | `RATE_LIMITED` | 20 create attempts in the current 24-hour window (a `uri` create answers 429 with no `code`); retry when it ends |
+| 500 | `INTERNAL_ERROR` | The endpoint could not be saved. Nothing created; retry |
+| 502 | `SIP_TRUNK_PROVISIONING_FAILED` | The username and password could not be set up with the carrier. Nothing created; retry in a minute |
+| 502 | `SIP_REGISTER_PROVIDER_ERROR` | `register`: the registration could not be set up with the carrier. Yappr undoes the attempt (nothing created; retry in a minute); if it could not confirm the undo the message says the endpoint was left in the list switched off: delete it, then create it again (if the new one fails as "already in use", use a different extension name) |
 
 ---
 
 ### GET /sip-endpoints/{id}
 
-Get one endpoint. Same fields as the list response.
+Get one endpoint. Same shape as the list. Never returns the password. On a `register`
+endpoint it re-reads `register.status` when the stored one is older than 15 s.
 
-**Scopes:** `sip_endpoints:read`
+**Scopes:** `sip_endpoints:read` (`slug` and `sip_uri` on a `uri` endpoint, and
+`sip_username` on a `credentials` one, are `null` unless the key also holds
+`sip_endpoints:manage`)
+
+`404 SIP_ENDPOINT_NOT_FOUND` when the id is not an endpoint of this workspace.
 
 ---
 
 ### PATCH /sip-endpoints/{id}
 
-Update name, inbound agent, active state, or allowlist. The slug is
-immutable — delete and recreate if a different URI is needed.
-
 **Scopes:** `sip_endpoints:manage`
 
-| Field | Type | Notes |
-|-------|------|-------|
-| `name` | string | new label |
-| `inbound_agent_id` | uuid | agent must belong to this company |
-| `is_active` | bool | toggle to disable temporarily without deleting |
-| `allowed_source_ips` | string[] \| null | replace the source-IP allowlist; `null` removes it |
+| Field | Type | Kinds | Notes |
+|-------|------|-------|-------|
+| `name` | string | all | new label, 1–200 characters |
+| `inbound_agent_id` | uuid | all | agent must belong to this workspace; answers from the next call on |
+| `is_active` | bool | all | `false` = new calls are refused until switched back on (`credentials` and `uri`: SIP `603 Decline`; `register`: `register.status` reads `disabled` and Yappr refuses new calls, but the customer's system isn't told). Re-route the calls in the customer's system first |
+| `max_concurrent_calls` | int | `credentials`, `register` | 1–8; `null` is refused (400) |
+| `register` | object | `register` | `server`, `username`, `auth_username`, `transport`, `region`, `password`; a changed `username`/`auth_username` needs `password` too (see **Register as an extension**) |
+| `allowed_source_ips` | string[] \| null | `uri` | replace the recorded list (not enforced); `[]` or `null` clears it |
 
-**Response:** `200` — updated endpoint object.
+Send at least one. Not changeable: `auth_mode`, the username, the password (use
+rotate-password), the SIP address (a body with `slug` is refused: create a new
+endpoint, repoint, delete the old one). A value for the other kind's field, or any
+other field the endpoint does not read, returns `400 SIP_ENDPOINT_REQUEST_INVALID`
+by name, and nothing is saved. `409 SIP_TRUNK_NOT_PROVISIONED`: the trunk's setup
+never finished; delete it and create a new one.
+
+**Response:** `200`: `{ "data": { ...endpoint } }`.
 
 ---
 
 ### DELETE /sip-endpoints/{id}
 
-Hard-deletes the endpoint. New calls dialing the slug get rejected
-pre-answer; in-flight calls finish. To rotate access, delete + create a
-new endpoint with a fresh slug.
+**Scopes:** `sip_endpoints:manage`
+
+- `credentials`: Yappr removes the username and password at the carrier first, so
+  they stop working within seconds (the customer's system gets SIP `403`), then
+  deletes the endpoint. If the carrier can't be reached: `502
+  SIP_TRUNK_PROVISIONING_FAILED`, nothing deleted; retry.
+- `uri`: from then on its address gets SIP `603 Decline`; calls in progress finish.
+  A deleted URI is never handed out again. To rotate a URI, **create first**: create
+  a new endpoint, point the phone system at its `sip_uri`, then delete the old one —
+  deleting first drops every call until the new URI is in place.
+- `register`: Yappr deletes the extension's connection at the carrier, then the endpoint. The
+  customer's system isn't told, and the carrier can keep registering the extension on it for
+  hours.
+  The system keeps routing that extension's calls to the carrier, which rejects them
+  meanwhile: remove or disable the extension on it, and re-route its calls, before deleting.
+  A deleted endpoint can keep the extension name busy: a new endpoint with the same name is
+  accepted, then fails as `failed` ("already in use"). To change anything, PATCH instead of
+  deleting and re-creating.
+
+Re-route the calls in the customer's system before deleting. To replace a lost or
+leaked password, use rotate-password instead of deleting (on `register`, PATCH
+`register.password`).
+
+**Response:** `200` `{ "ok": true }`
+
+`500 INTERNAL_ERROR`: the endpoint could not be loaded or deleted. On a trunk, its
+username and password may already have stopped working: send the DELETE again to
+finish. `404 SIP_ENDPOINT_NOT_FOUND`, `400 SIP_ENDPOINT_QUERY_INVALID` (any query
+parameter) and `403 INSUFFICIENT_SCOPE` as on the other routes.
+
+---
+
+### POST /sip-endpoints/{id}/rotate-password
+
+`credentials` only (`409 NOT_SUPPORTED_FOR_MODE` on a `register` endpoint: PATCH
+`register.password`). Issues a new SIP password and returns the endpoint plus
+`sip_password`, **once**. Send no body (or `{}`): the password is issued, never
+chosen; a body field, or JSON that is not an object, is refused with
+`400 SIP_ENDPOINT_REQUEST_INVALID` (a body that is not JSON at all is ignored). The
+username stays.
 
 **Scopes:** `sip_endpoints:manage`
 
-**Response:** `200` `{ "ok": true }`
+- The old password stops working within seconds (calls get SIP `403`); calls in
+  progress are not dropped. Enter the new password in the customer's system right away.
+- A system that registers learns of it only at its next registration refresh, which
+  fails until the new password is in.
+- No-gap switch: create a second trunk on the same agent, move the system, delete the old one.
+
+**Rate limit:** 10 attempts per trunk in an hour that runs from the first attempt
+(`429 RATE_LIMITED`); a failed attempt can count too.
+
+**Errors:** `409 SIP_ENDPOINT_NOT_CREDENTIALS` (a `uri` endpoint has no password),
+`409 SIP_TRUNK_NOT_PROVISIONED` (setup never finished, or no longer set up at the
+carrier: delete and recreate), `502 SIP_TRUNK_PROVISIONING_FAILED` (could not be
+set or confirmed; `error` says whether the current password still works; retry,
+and the password from the next success is the one that works), `404 SIP_ENDPOINT_NOT_FOUND`,
+`500 INTERNAL_ERROR` (the trunk could not be loaded; the password did not change).
+
+**Response:** `200`: `{ "data": { ...endpoint, "sip_password": "<new password>" } }`
+
+---
+
+### Register as an extension (`auth_mode: "register"`)
+
+For a hosted phone system that gives the customer only an **extension account**
+(server, username, password) and no trunk. Yappr registers to it like a softphone and
+the agent answers every call the system routes to that extension. Use a `credentials`
+trunk instead whenever the system can add a trunk.
+
+`POST /sip-endpoints` with `"auth_mode": "register"` and a `register` object
+(`sip_endpoints:manage`; the workspace must have extension endpoints switched on):
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `register.server` | string | yes | The registrar: host name or IP with an optional `:port`; no `sip:` prefix, path or credentials. Resolved when saved: a private, loopback or link-local address, or a Yappr or carrier host, is `400 SIP_REGISTER_HOST_INVALID` |
+| `register.username` | string | yes | The extension: 2 to 128 characters; letters, digits, `+`, `-` and `_`, starting with a letter, digit or `+`. A dot, `@` or space cannot be registered; a 3-digit extension such as `101` works. **Unique across Yappr**, first come first served (`409 SIP_REGISTER_EXTENSION_IN_USE` otherwise: with a short extension a clash is likely, so tell the customer to create a dedicated extension with a distinctive name and register that) |
+| `register.password` | string | yes | 1–128 characters. Yappr **doesn't store, return or log it**; its carrier holds it to keep registering (about every hour) and to place transfers, so send the new one with PATCH whenever it changes on the customer's system |
+| `register.auth_username` | string \| null | no | Only if the system logs in with a user other than the extension (1–128 of `A-Za-z0-9._@+-`) |
+| `register.transport` | `"udp"` \| `"tcp"` \| `"tls"` | no | Default `udp` (recommended; TCP and TLS are also accepted) |
+| `register.region` | `"middle_east"` \| `"europe"` | no | Default `middle_east`; picks the carrier address in `allow_list`: `192.76.120.75` for the Middle East, `192.76.120.72` for Europe (read the address to allow from `allow_list`) |
+
+`max_concurrent_calls` (1–8, default 2) applies as on a trunk. `sip_username`,
+`sip_password`, `slug` and `sip_uri` are refused (`400 SIP_ENDPOINT_REQUEST_INVALID`).
+A workspace holds at most 5 extension endpoints.
+
+```bash
+curl -s -X POST "https://api.goyappr.com/sip-endpoints" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Hosted PBX extension", "inbound_agent_id": "AGENT_UUID", "auth_mode": "register",
+       "register": {"server": "sip1.example.net", "username": "101", "password": "EXTENSION_PASSWORD"}}'
+```
+
+**Response:** `201`, the endpoint with `slug` and `sip_uri` `null` and a `register` object:
+`server`, `username`, `auth_username`, `transport`, `region`, `status`, `status_detail`,
+`status_checked_at` and `allow_list` (`sip_ip`, `sip_ports` `[5060, 5061]`, `rtp_ports`
+`"16384-32768"`, `note`). The password is not in the response.
+
+**`register.status`:** `pending` (just created or changed; the carrier is still applying
+it: a few minutes. An endpoint that is switched off and still `pending` after a failed
+create never finished its setup: delete it and create it again; if the new one fails as "already in use", use a different extension name) · `registering` ·
+`registered` · `failed` (`status_detail` says why:
+"authentication failed (check the extension and password)", "your phone system is not
+reachable", "no answer from your phone system", "extension username already in use", "unknown error") ·
+`disabled` · `unknown`. List and get re-read it when older than 15 s (a list of more than
+20 extension endpoints serves stored values: check `status_checked_at`). **`registered`
+does not prove calls and transfers work**: a wrong password saved later can leave it
+`registered` while transfers fail. Always send a test call and a test transfer.
+
+`PATCH /sip-endpoints/{id}` takes `register` with any of `server`, `username`,
+`auth_username`, `transport`, `region`, `password`. Changing `username` or
+`auth_username` **needs `register.password` in the same request**
+(`400 SIP_REGISTER_PASSWORD_REQUIRED`); a password alone is a password change; the
+others don't need it. **Send the new password whenever it changes on the customer's
+system**: Yappr doesn't keep it, but its carrier holds the last one it was given and
+uses it to register and to place transfers, so until you send it transfers fail while
+`register.status` can still read `registered`. The status goes back to `pending` for
+a few minutes. A change the carrier can't apply keeps the old settings
+(`502 SIP_REGISTER_PROVIDER_ERROR`; `409` of the same code while the last change is
+still applying).
+
+`rotate-password` on an extension is `409 NOT_SUPPORTED_FOR_MODE`: send `register.password`
+with PATCH. `409 SIP_REGISTER_NOT_PROVISIONED`: the registration was never finished or
+is gone at the carrier: delete and recreate (if the new one fails as "already in use", use a different extension name).
+
+**Delete or switch off: re-route first.** DELETE removes the extension's connection at the carrier, then the
+endpoint, but **the customer's phone system isn't told**: the carrier can keep registering the
+extension there for hours, so the system keeps routing the extension's calls to the carrier, which
+rejects them meanwhile. While that lasts, a new endpoint with the same extension name is accepted, then reads
+`failed` ("already in use"). This also happens with endpoints that never registered, so a wrong password
+followed by a delete and re-create can leave the extension name unusable for hours. So **change an extension endpoint with
+PATCH; never delete and re-create it.** If a re-create fails as "already in use" right after
+a delete, use a different extension name. `is_active: false` tells the
+customer's system nothing either (the status reads `disabled`, Yappr refuses new calls). Remove
+or disable the extension on their system, and re-route its calls, before either. `502 SIP_REGISTER_PROVIDER_ERROR`
+keeps the endpoint: retry.
+
+**Errors specific to this kind:** `403 SIP_REGISTER_NOT_ENABLED` (not switched on: the
+customer asks Yappr support), `409 VOICE_NOT_READY` (not available right now),
+`409 SIP_REGISTER_LIMIT_REACHED` (create only: 5 per workspace, or Yappr has no room for another registration right now),
+`409 SIP_REGISTER_EXTENSION_IN_USE`, `400 SIP_REGISTER_HOST_INVALID`, `409 SIP_REGISTER_SETUP_IN_PROGRESS` (create, same
+`Idempotency-Key` header), `502 SIP_REGISTER_PROVIDER_ERROR`. PATCH can also answer
+`400 SIP_REGISTER_PASSWORD_REQUIRED`, `409 SIP_REGISTER_NOT_PROVISIONED` and `429 RATE_LIMITED` (30 changes to extension endpoints per hour per workspace).
+`GET /sip-endpoints/status` also answers `register_available`.
+
+**What the customer must do on their phone system:**
+
+- Use a **dedicated extension that receives calls and can dial only the internal transfer
+  destinations**: no outbound, phone-network or international calling. The extension can place calls, so
+  limit what it may dial.
+- Make the system reachable from the internet and allow `register.allow_list.sip_ip` for
+  SIP (5060/5061) and RTP (UDP 16384–32768) in both directions.
+- Use an extension username of 2 to 128 characters (letters, digits, `+`, `-`, `_`; a dot, `@` or space cannot be registered; `101` works) that no other Yappr endpoint registers. Usernames are first come first served, so for a short extension advise a dedicated extension with a distinctive name.
+- Expect a few minutes before `registered`. Yappr re-registers on a one-hour interval;
+  there is no setting for it.
+- Change an extension endpoint with PATCH; do not delete and re-create it (a deleted endpoint can keep the extension name busy for hours).
+
+**Transfers on extension calls are not a REFER.** Yappr never sends a SIP REFER on these
+calls. A transfer tool's `destination` as
+`sip:reception@pbx.example.com` (always write the `sip:` form; a bare extension number is not a supported destination) makes Yappr place a **new call
+through the extension** to the extension or queue named by the part before the `@` (the
+host is ignored and never dialled), and join the two. The extension needs permission to
+dial it; the transfer uses **two channels** on the customer's system; Yappr stays on the
+call until one side hangs up. The call is marked `transferred` and billed like a transfer to a
+phone number (the connected time at the transfer rate). `transfer_started` carries `method`
+`"extension_dialback"` and is recorded when the request is accepted, not when the
+phone system answers. **A new call that fails or isn't answered ends the call**: the agent
+has stepped out, so `NOT_CONNECTED` (the disconnect reason says why: rejected, busy, unreachable or not answered, or the default "Transfer failed" when the carrier gives no reason) is followed by a hang-up, the
+new call has about 25 seconds to be answered, and Yappr ends the call if nothing connected
+about 85 seconds after the request ("Transfer never connected"). Only a request the carrier
+refuses outright leaves the caller with the agent. Build no fallback that needs the agent
+after the hand-off. A phone-number destination is `UNAVAILABLE_ON_SIP_TRUNK` as on a trunk.
+
+---
+
+### A transfer to a SIP address
+
+A transfer destination on a prompt or flow agent (the agent's transfer tool, or a flow
+`transfer` node) holds either an international number or a SIP address (`sip:` or `sips:`,
+form `sip:user@host[:port]`, for example `sip:reception@pbx.example.com`; at most 256
+characters, user part required, no password and no `?headers`). On a call that arrived over
+a username-and-password trunk (`auth_mode: "credentials"`), a SIP address asks the caller's
+own phone system to place the new call (SIP REFER) instead of Yappr dialling. On an
+extension call no REFER is sent: Yappr places a new call through the extension (see
+**Register as an extension**). A call that arrived on a SIP-address-only endpoint
+(`auth_mode: "uri"`) is not a trunk call, so a SIP-address destination there gets
+`REFER_ONLY_ON_SIP_TRUNK` and the agent keeps helping. A phone number on a trunk call gets
+`UNAVAILABLE_ON_SIP_TRUNK` (a trunk or extension call cannot dial out), and the agent keeps
+helping then too.
+
+The customer's phone system must accept REFER, be able to reach the address, and have the
+new call answered within about nine seconds. **If the transfer fails the call ends**: the caller is no longer with
+the agent, so the agent cannot take them back. Test the address first, with a call through
+the trunk.
+
+A hand-off to a SIP address records `transfer_started` (`method` `"sip_refer"`,
+`destination` the address with any password and any `?` headers removed; the extension
+before the `@` stays) together with `transfer_answered`, and only once the customer's phone
+system confirms that it took the call over. Yappr is then out of the call: billing ends at
+the hand-off, and the seconds the phone system then takes to place the call are not billed;
+there is no second, human segment. The call itself ends `completed` (never `transferred`),
+with `transferred_at` and `transfer_target` (the same address) set. The events are in the `events` timeline of `GET /calls/:id`; `transferred_at` and `transfer_target` are fields of the call.
+
+A transfer that never started is a `transfer_failed` call event whose `data.error_code`
+is, among other codes, `NO_DESTINATION` (no phone number or SIP address configured), `INVALID_DESTINATION` (not
+a valid phone number or SIP address), `UNAVAILABLE_ON_SIP_TRUNK` or
+`REFER_ONLY_ON_SIP_TRUNK` (as above); with these the caller stays with the agent. `NOT_CONNECTED`
+comes later: the hand-off was accepted but nobody answered (busy, rejected or rang out),
+so a call can carry `transfer_started` and then `transfer_failed`; on an extension call
+(a dial-back) that failure ends the call. A hand-off to a SIP address can also fail once
+the request has gone out, with `error_code` `REFER_FAILED` or `REFER_NO_RESULT`, and then
+the call ends. `REFER_FAILED`: the phone system reported a failure; the call ends a fraction
+of a second later, with `disconnect_reason` "Transfer refused by the phone system".
+`REFER_NO_RESULT`: nothing came back in time (the phone system refused or ignored the
+request, or the new call was not answered within about nine seconds); the call ends about
+nine seconds after the request, with `disconnect_reason` "Transfer failed".
+
+---
+
+### Customer phone-system settings (credentials)
+
+| Setting | Value |
+|---|---|
+| SIP server | `sip_connection.server`, or the entry of `alternate_servers` closest to the customer's system. All of them take the same credentials, so another one is the backup route |
+| Realm (if asked) | The server name used |
+| Transport | TLS 5061 (recommended; TLS 1.2/1.3), TCP 5060, UDP 5060 |
+| Username / password | `sip_username` / `sip_password` |
+| Registration and keep-alives | **Recommended.** Over TLS/TCP: register the trunk, or send keep-alives (SIP `OPTIONS` every ≤ 30 s, e.g. Asterisk `qualify_frequency`, FreeSWITCH gateway `ping`, Grandstream heartbeat); either keeps the connection open. Over UDP behind NAT or a firewall: `OPTIONS` every ≤ 30 s even if the system registers (a registration refreshes only every few minutes, too seldom to hold a UDP path). Otherwise the agent's hang-up (BYE) may not reach the system, and the caller sits on a silent line until they hang up. Check with a test call of ≥ 2 min that the agent ends (a shorter one passes even with no keep-alives) |
+| Codecs | G.711 µ-law or A-law first (the agent's audio is G.711, so no conversion). G.722, G.729 and Opus also work; G.729 costs some sound quality |
+| SRTP | Off, or mandatory (RTP/SAVP). Never optional/best effort: the call fails with `488` |
+| Number dialled | Any number or extension. Every call reaches the endpoint's agent (a Yappr number dialled too, not that number's agent); nothing is passed on to the phone network. What was dialled is recorded as the number called (letters, digits and `+ * # . _ -` only, up to 64), shown in the dashboard's call log; the API's `to` is `null` for every call on a SIP endpoint. If nothing is left, or it contains the trunk username, it is recorded as `sip-trunk` |
+| Transfers | A transfer to a phone number isn't available on trunk calls: nothing is dialled, the caller stays on the call, and the call's events get `transfer_failed` with `error_code` `UNAVAILABLE_ON_SIP_TRUNK`. A transfer to a SIP address of your phone system (`sip:extension@pbx.example.com`) works: your system must accept SIP REFER and have the new call answered within about nine seconds, and if it fails the call ends. Calls that may need a person outside your system go to a Yappr number instead |
+| Caller ID | The caller's number in `From` or `P-Asserted-Identity` (PAI wins). If the system sends only the trunk username as the `From` user (a common default), Yappr records the call with no caller number: the API's `from` is `null`, and the dashboard's call log shows "Unknown caller" |
+| Simultaneous calls | Set the trunk's channel limit in the customer's system to `max_concurrent_calls` (2 by default, at most 8) |
+| No-answer timeout | ~20 s with failover to the next route |
+| Same system/IP also uses another trunk at the same carrier, or a shared-IP cloud sender (Twilio, SignalWire, Genesys Cloud) | Send `sip_username` in a header (the header name is on the SIP trunks page of the Yappr docs, docs.goyappr.com/concepts/sip-trunks), or put the username in the `Contact` user part. Plivo, Sinch and Infobip share addresses but document no way to do either: a call could be matched to the wrong trunk, so test the route with Yappr support before real calls |
+| TLS trust store (systems that need uploaded roots, e.g. 3CX) | DigiCert Global Root G2 **and** the self-signed ISRG Root X1 (letsencrypt.org/certificates; not a cross-signed copy) |
+| Firewall | Allow SIP to and from the server's addresses (the agent's hang-up comes from them), and RTP to and from the carrier's media networks (UDP 16384–32768 on the carrier's side). Ask Yappr support for the current address lists |
+| Emergency numbers | Keep them on the customer's regular lines, off every route to the trunk: the carrier never hands those calls to Yappr, so no agent answers them, and Yappr can't say whether they reach emergency services |
+
+**What the customer's system hears:** `200 OK` answered · `403` wrong
+username/password or deleted trunk (never reaches Yappr) · `480` the call rang
+~20 s and the agent couldn't be connected, or Yappr's usual refusal couldn't be
+sent (retry or next route) · `486` trunk
+`max_concurrent_calls` (2 by default) or Yappr capacity reached · `488` SRTP offered
+as optional · `603` trunk or agent switched off, outside inbound calling hours (when switched on), out of credit, or
+Yappr could not take the call.
+
+**Platforms that can use a trunk** (documented digest auth): 3CX v20 self-hosted
+(Generic VoIP Provider template; not 3CX SMB or 3CX-hosted), FreePBX / Asterisk,
+FreeSWITCH / FusionPBX, VICIdial, Issabel, Yeastar, Grandstream UCM, Avaya IP
+Office, Xorcom CompletePBX, Cisco CUBE, AudioCodes Mediant, Ribbon SBC, Oracle SBC,
+Twilio Programmable Voice (`<Dial><Sip username="..." password="...">`),
+SignalWire, Genesys Cloud BYOC Cloud; Plivo, Sinch Elastic SIP Trunking and Infobip
+(TLS only) too, but test those with Yappr support first (shared sending addresses,
+and no documented way to send that header).
+
+**Cannot** (they can't answer a password challenge on calls they send): Twilio
+Elastic SIP Trunking origination (use Twilio Programmable Voice instead), Vonage,
+Bandwidth, Five9, Amazon Connect, RingCentral, Zendesk Talk. Calls routed by the
+carrier-side call routing (call control, forwarding) can't sign in to a
+trunk either: use a `uri` endpoint for those. Microsoft Teams Direct
+Routing and Zoom Phone only through the customer's own SBC. Anything else: add the
+trunk on the customer's PBX, forward calls to a Yappr phone number, or (if it can
+dial a plain SIP address) use a `uri` endpoint.
 
 ---
 
@@ -2244,6 +2657,11 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 | POST /phone-numbers/search | `phone_numbers:search` |
 | POST /phone-numbers/purchase | `phone_numbers:purchase` |
 | POST /phone-numbers/configure | `phone_numbers:configure` |
+| GET /sip-endpoints (list/get), GET /sip-endpoints/status | `sip_endpoints:read` (a `uri` endpoint's `slug`/`sip_uri` and a trunk's `sip_username` also need `sip_endpoints:manage`, else `null`) |
+| POST /sip-endpoints (create) | `sip_endpoints:manage` |
+| PATCH /sip-endpoints/:id | `sip_endpoints:manage` |
+| DELETE /sip-endpoints/:id | `sip_endpoints:manage` |
+| POST /sip-endpoints/:id/rotate-password | `sip_endpoints:manage` |
 | GET /billing | `billing:read` |
 | POST /billing/setup | `billing:manage` |
 | POST /billing/topup | `billing:manage` |
@@ -2396,7 +2814,7 @@ Same validation as POST. Plus:
     {
       "id": "transfer_to_human",
       "type": "transfer",
-      "transfer_to": "+972501234567",
+      "transfer_to": "+972501234567",   // or a SIP address, e.g. "sip:reception@pbx.example.com" (see "A transfer to a SIP address")
       "transfer_message": "Connecting you to our team now."
     },
     {
@@ -2690,6 +3108,7 @@ Fix every entry in `issues` and re-save — the API returns all problems at once
 | `action_invalid` | integration_call | `action` is missing, empty, or not in the catalog for the chosen `provider`. |
 | `success_not_wired` | tool_call, integration_call | No `success_next_step_id`. |
 | `transfer_to_missing` | transfer | No `transfer_to` configured. |
+| `transfer_to_invalid_sip` | transfer | `transfer_to` starts with `sip:` or `sips:` but is not a valid SIP address (`sip:user@host[:port]`, at most 256 characters, user part required, no password or `?` headers). See **A transfer to a SIP address** under SIP Endpoints. |
 | `terminal_not_allowed` | conversation, tool_call, integration_call | Node has no outgoing edge. **Only `end` and `transfer` nodes may be terminal.** |
 | `no_terminal` | flow | No `end` or `transfer` node reachable from `start`. |
 | `unreachable_node` | any | Node exists but no path from `start` reaches it. |

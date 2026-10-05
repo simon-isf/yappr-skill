@@ -39,7 +39,7 @@ Every node has `id`, `type`, `name?`. Type determines the rest.
 | `conversation` | yes | Bot talks; on each user turn the model decides whether to call `pick_transition` (advance) or stay | N user-defined transitions, each with `id`, `label`, `next_step_id`, optional `description` |
 | `tool_call` | no | Deterministic tool execution against a row in the `tools` table; routes on result | fixed `success`/`error` + optional `custom[]` (JSONPath-equality matching) |
 | `integration_call` | no | Deterministic call to an OAuth-backed integration (Google Calendar, Gmail) — config lives on the node, not in `tools`; routes on result | fixed `success`/`error` + optional `custom[]` (same shape as `tool_call`) |
-| `transfer` | no | SIP transfer to another phone | terminal |
+| `transfer` | no | Transfer to a phone number (not available on trunk or extension calls), or, on username-and-password trunk (`auth_mode: "credentials"`) and extension calls, to a SIP address (`sip:user@host`) | terminal |
 | `end` | no | Speak farewell, hang up | terminal |
 
 **Terminal rule.** Only `end` and `transfer` nodes are allowed to be terminal. `conversation`, `tool_call`, and `integration_call` nodes must each have at least one outgoing edge — for `conversation`, any transition; for the deterministic dispatch nodes, the `success` branch must be wired (and you should design an `error` branch too). The save validator rejects flows that violate this — see "Save validation" near the end of this guide.
@@ -920,7 +920,7 @@ Quick checklist (the validator codes that back each rule are in parentheses):
 - Every `conversation` node has non-empty `instructions` (`instructions_missing`) and at least one outgoing transition (`terminal_not_allowed`).
 - Every `tool_call` node has a `tool_id` (`tool_id_missing`) and a wired `success_next_step_id` (`success_not_wired`). `tool_call` nodes have no `args_template` field — args come from the tool's `payload_config`.
 - Every `integration_call` node has a valid `provider` (invalid → `schema_invalid` at zod parse), a valid `action` for that provider (`action_invalid`), an `integration_id` (`integration_id_missing`), and that integration is `active` in your company with a matching provider (`integration_not_in_company`). It also needs `success_next_step_id` wired (`success_not_wired`). Required action args must be present in `args_template` (`args_template_missing_required`); `ai_extract` args need a `description` (`args_template_missing_description`); every `{{node.arg}}` token must resolve to an existing `integration_call` node and an `ai_extract` arg on that node (`args_template_dangling_reference`). `{{metadata.key}}` tokens are NOT validated at save time — missing values resolve to empty string at runtime.
-- Every `transfer` node has a `transfer_to` (`transfer_to_missing`).
+- Every `transfer` node has a `transfer_to` (`transfer_to_missing`); a value starting `sip:`/`sips:` must be a valid SIP address (`transfer_to_invalid_sip`): `sip:user@host[:port]`, at most 256 characters, with a user part and no password or `?` headers. A SIP address works only on calls that arrived over a username-and-password trunk (`auth_mode: "credentials"`) or an extension endpoint; on any other call, including a SIP-address-only (`uri`) endpoint, the transfer is refused (`REFER_ONLY_ON_SIP_TRUNK`) and the agent keeps helping the caller. A phone number on a trunk or extension call is refused the same way (`UNAVAILABLE_ON_SIP_TRUNK`). A hand-off that was accepted and then fails ends the call, and the agent cannot take the caller back. On an extension call the new call is placed through the extension to the part before the `@`; always write the `sip:` form, because a bare extension number is not a supported destination (a flow save only returns the `transfer_to_invalid` warning).
 - **Only `end` and `transfer` nodes may be terminal.** Anything else with no outgoing edge → `terminal_not_allowed`. The flow must contain at least one reachable `end` or `transfer` (`no_terminal`).
 - All `next_step_id` references resolve (`unknown_target_node`); every node is reachable from `start` (`unreachable_node`).
 
@@ -944,4 +944,4 @@ Every PATCH to `flow_config` auto-creates a row in `flow_versions` (deduped by S
 - Per-node tool gating for prompt agents
 - MCP server attachment (deferred to v1.1)
 - Multi-agent / agent handoff
-- The `transfer` node currently uses the same SIP transfer mechanism prompt agents use; for cross-flow handoff use a webhook tool that triggers the next flow externally.
+- The `transfer` node ends the call flow with a hand-off (see the transfer rules in "Save validation"); for cross-flow handoff use a webhook tool that triggers the next flow externally.
