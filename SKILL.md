@@ -1646,9 +1646,10 @@ curl -s -X POST "https://api.goyappr.com/phone-numbers/purchase" \
 ```
 
 Retried within 24 hours with the same key **and the same number**, it answers the same success
-body once the purchase went through, or `409 PURCHASE_IN_PROGRESS` while it is still going
-through (check `GET /phone-numbers` in a minute — do not send a new key). After any other error,
-send a new key. A key belongs to one number: the same key with a **different** number is a
+body once the purchase went through, `409 PURCHASE_IN_PROGRESS` while it is still going
+through (check `GET /phone-numbers` in a minute — do not send a new key), or `409 PURCHASE_FAILED`
+when that purchase did not go through (declined or rolled back). After `PURCHASE_FAILED` or any
+other error, send a new key. A key belongs to one number: the same key with a **different** number is a
 separate purchase, and that number is bought and charged too. Never build the key from the
 number or the date — buying the same number again later would replay the old purchase and buy
 nothing.
@@ -2476,7 +2477,7 @@ print their business details, and (2) the invoices themselves for their accounta
    ```bash
    curl -s -X PATCH "https://api.goyappr.com/billing/details" \
      -H "Authorization: Bearer $YAPPR_API_KEY" -H "Content-Type: application/json" \
-     -d '{"name":"Acme Ltd","email":"books@acme.example","address":{"line1":"1 Example St","city":"Tel Aviv","postal_code":"6100000","country":"IL"},"tax_id":{"type":"il_vat","value":"515123456"}}' | jq .
+     -d '{"name":"Acme Ltd","email":"books@acme.example","address":{"line1":"1 Example St","city":"Tel Aviv","postal_code":"6100000","country":"IL"},"tax_id":{"type":"il_vat","value":"000012345"}}' | jq .
    ```
    Read the saved values back in one sentence. `400 TAX_ID_INVALID` means the number is not
    valid for its type — ask the user to check it; the old one stays on. Changes print on the

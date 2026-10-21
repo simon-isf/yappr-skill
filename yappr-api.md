@@ -1916,9 +1916,10 @@ Purchase a phone number. Starts a $10/month Stripe subscription on the user's sa
 - **Retry safely with `Idempotency-Key`** (optional header, 16–128 letters, digits, `_` or `-`).
   Make a new random UUID for each number you decide to buy and reuse it only to retry that
   purchase. A retry within 24 hours with the same key and the same number charges once: it
-  answers the same success body once the purchase went through, or `409 PURCHASE_IN_PROGRESS`
-  while it is still going through (check `GET /phone-numbers` in a minute). After any other
-  error, send a new key. A key belongs to one number: the same key with a different number is a
+  answers the same success body once the purchase went through, `409 PURCHASE_IN_PROGRESS`
+  while it is still going through (check `GET /phone-numbers` in a minute), or
+  `409 PURCHASE_FAILED` when it did not go through (declined or rolled back). After
+  `PURCHASE_FAILED` or any other error, send a new key. A key belongs to one number: the same key with a different number is a
   separate purchase, and that number is bought and charged too. Do not build the key from the
   number or the date — a later re-buy of the same number would replay the old purchase and buy
   nothing. Without the header every request is a new purchase — so always send one from an
