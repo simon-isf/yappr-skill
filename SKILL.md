@@ -981,13 +981,27 @@ Present the list with numbers and pricing. Ask which they want.
 
 **Confirm before purchasing:** *"Purchasing [number] will start a $10/month recurring charge on your saved card. Shall I go ahead?"*
 
-**Purchase:**
+**Purchase** — send an `Idempotency-Key` (16–128 letters, digits, `_` or `-`) so a retry after
+a timeout charges once and orders one number. Make a new random UUID for each number the user
+decides to buy, and reuse it only to retry that same purchase:
 ```bash
+IDEMPOTENCY_KEY=$(python3 -c 'import uuid; print(uuid.uuid4())')   # once per number bought
+
 curl -s -X POST "https://api.goyappr.com/phone-numbers/purchase" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
   -H "Content-Type: application/json" \
   -d '{"phone_number": "+972XXXXXXXXX"}' | jq .
 ```
+
+Retried within 24 hours with the same key **and the same number**, it answers the same success
+body once the purchase went through, `409 PURCHASE_IN_PROGRESS` while it is still going
+through (check `GET /phone-numbers` in a minute — do not send a new key), or `409 PURCHASE_FAILED`
+when that purchase did not go through (declined or rolled back). After `PURCHASE_FAILED` or any
+other error, send a new key. A key belongs to one number: the same key with a **different** number is a
+separate purchase, and that number is bought and charged too. Never build the key from the
+number or the date — buying the same number again later would replay the old purchase and buy
+nothing.
 
 The purchased number may differ from what was selected (race condition fallback). Always show the `phoneNumber` from the response.
 
@@ -1680,6 +1694,41 @@ curl -s -X POST "https://api.goyappr.com/billing/topup" \
   -H "Content-Type: application/json" \
   -d '{"amount_cents": 2000}'
 ```
+
+### Journey — invoices and billing details
+
+Every payment — a credit top-up, an automatic top-up, a phone number's first and every
+monthly charge — comes with **one invoice, emailed to the workspace's billing email when it
+is paid**. Nothing to switch on per call. What the user may want is (1) the invoice to
+print their business details, and (2) the invoices themselves for their accountant.
+
+1. **Read what invoices print now** (`billing:manage`):
+   ```bash
+   curl -s "https://api.goyappr.com/billing/details" -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+   ```
+   Before anything is set it answers the defaults: the workspace name, the owner's email,
+   no address, no tax ID.
+2. **Set them once, from the user's own words** (`billing:manage`). Send only the fields
+   they gave; never invent a name, address or number. An Israeli VAT or company number
+   (עוסק מורשה, ח.פ.) is `tax_id.type: "il_vat"`:
+   ```bash
+   curl -s -X PATCH "https://api.goyappr.com/billing/details" \
+     -H "Authorization: Bearer $YAPPR_API_KEY" -H "Content-Type: application/json" \
+     -d '{"name":"Acme Ltd","email":"books@acme.example","address":{"line1":"1 Example St","city":"Tel Aviv","postal_code":"6100000","country":"IL"},"tax_id":{"type":"il_vat","value":"000012345"}}' | jq .
+   ```
+   Read the saved values back in one sentence. `400 TAX_ID_INVALID` means the number is not
+   valid for its type — ask the user to check it; the old one stays on. Changes print on the
+   **next** invoice; issued invoices are never rewritten.
+3. **List and hand over invoices** (`billing:read` is enough — a bookkeeping key never needs
+   `billing:manage`):
+   ```bash
+   curl -s "https://api.goyappr.com/billing/invoices?limit=20" -H "Authorization: Bearer $YAPPR_API_KEY" \
+     | jq '.invoices[] | {number, issued_at, kind, total_cents, status, pdf_url}'
+   ```
+   Follow `next_cursor` until it is `null`. Offer `view_url` / `pdf_url` as links.
+
+Say plainly: **invoices are issued in English**, even for a Hebrew workspace (dates print day
+first). The dashboard has the same two cards under Settings → Billing (owners and admins).
 
 ---
 

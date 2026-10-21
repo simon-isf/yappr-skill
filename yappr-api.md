@@ -583,6 +583,24 @@ Purchase a phone number. Starts a $10/month Stripe subscription on the user's sa
 **Notes:**
 - If the selected number is taken between search and purchase, the system automatically substitutes an alternative with the same prefix. Always read `phoneNumber` from the response — it may differ from what was requested.
 - Status `"pending_requirements"`: regulatory approval needed (Israeli numbers, typically 1–3 business days). Number is reserved and subscription is active.
+- **Retry safely with `Idempotency-Key`** (optional header, 16–128 letters, digits, `_` or `-`).
+  Make a new random UUID for each number you decide to buy and reuse it only to retry that
+  purchase. A retry within 24 hours with the same key and the same number charges once: it
+  answers the same success body once the purchase went through, `409 PURCHASE_IN_PROGRESS`
+  while it is still going through (check `GET /phone-numbers` in a minute), or
+  `409 PURCHASE_FAILED` when it did not go through (declined or rolled back). After
+  `PURCHASE_FAILED` or any other error, send a new key. A key belongs to one number: the same key with a different number is a
+  separate purchase, and that number is bought and charged too. Do not build the key from the
+  number or the date — a later re-buy of the same number would replay the old purchase and buy
+  nothing. Without the header every request is a new purchase — so always send one from an
+  agent that may retry.
+- `400 IDEMPOTENCY_KEY_INVALID` — the header is not 16–128 letters, digits, `_` or `-`, or was
+  sent more than once; nothing was bought. `409 IDEMPOTENCY_KEY_REUSED` ("This Idempotency-Key
+  was already used for a different purchase. Use a new key.") — the same key and number came
+  back but the purchase no longer matches the first one (for example the workspace's payment
+  account changed); nothing was charged a second time, use a new key.
+- The first charge and every monthly renewal come with an invoice emailed to the billing
+  email (`GET /billing/invoices`).
 
 **Response:**
 ```json
@@ -2522,6 +2540,109 @@ Get billing status and balance.
   "subscription_status": "active" | "inactive" | null
 }
 ```
+
+---
+
+### GET /billing/details — what invoices print
+
+Every payment the workspace makes — a credit top-up, an automatic top-up, a phone
+number's first and every monthly charge — comes with **one invoice, emailed to the
+billing email when it is paid**. These are the details every invoice prints.
+
+**Scopes:** `billing:manage` (the full email, address and tax ID are personal data;
+`GET /billing` shows a `billing:read` key only a masked `billing_email`).
+
+**Response:**
+```json
+{
+  "name": "Acme Ltd",
+  "email": "billing@acme.example",
+  "address": { "line1": "1 Example St", "line2": null, "city": "Tel Aviv", "state": null, "postal_code": "6100000", "country": "IL" },
+  "tax_id": { "type": "il_vat", "value": "000012345" },
+  "language": "he"
+}
+```
+
+A workspace that never set them reads the defaults its invoices would use — the
+workspace name, the owner's email, `address: null`, `tax_id: null`, `language: "en"` —
+and the read changes nothing. **Invoices are issued in English** whatever `language`
+says (`he` only prints dates day first).
+
+### PATCH /billing/details — set what invoices print
+
+**Scopes:** `billing:manage`
+
+Send only what changes; a field left out stays. `null` resets `name` (to the workspace
+name) and `email` (to the owner's email), and removes `address` or `tax_id`. Response:
+the whole set, as `GET /billing/details` returns it. Only invoices issued after the
+change print it — an issued invoice is never rewritten.
+
+| Field | Send |
+|-------|------|
+| `name` | 1–256 chars |
+| `email` | a full email address, ≤ 254 chars |
+| `address` | `{ line1, country }` required (`country` = two letters, e.g. `IL`); `line2`, `city`, `state`, `postal_code` optional, ≤ 200 each |
+| `tax_id` | `{ type, value }` — one per workspace, a new one replaces the old; spaces are removed from `value` (≤ 64) |
+| `language` | `en` \| `he` |
+
+`tax_id.type`: `il_vat` (Israeli VAT / company number — עוסק מורשה, ח.פ.), `eu_vat`,
+`gb_vat`, `us_ein`, `ca_bn`, `au_abn`, `ch_vat`, `no_vat`, `ae_trn`, `za_vat`.
+
+```bash
+curl -X PATCH "$YAPPR_API_URL/billing/details" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"Acme Ltd","address":{"line1":"1 Example St","city":"Tel Aviv","postal_code":"6100000","country":"IL"},"tax_id":{"type":"il_vat","value":"000012345"}}'
+```
+
+**Errors** (all `400`, nothing changed): `BILLING_DETAILS_EMPTY`,
+`BILLING_DETAILS_UNKNOWN_FIELD`, `BILLING_NAME_INVALID`, `BILLING_EMAIL_INVALID`,
+`BILLING_ADDRESS_INVALID` (no `line1` or no two-letter `country`), `TAX_ID_TYPE_UNSUPPORTED`,
+`TAX_ID_INVALID` (not valid for its type — the old tax ID stays on),
+`BILLING_LANGUAGE_INVALID`. `502 BILLING_UNAVAILABLE`: some details may have been saved —
+read `GET /billing/details`, then try again.
+
+Pass only what the user said. Never invent a business name, address or tax number.
+
+### GET /billing/invoices — every invoice, to view or download
+
+**Scopes:** `billing:read` (a bookkeeping key needs nothing that can top up).
+
+| Query | Default | Notes |
+|-------|---------|-------|
+| `limit` | `20` | 1–100, else `400 INVOICE_LIMIT_INVALID` |
+| `cursor` | — | the previous page's `next_cursor`; one not issued here is `400 INVOICE_CURSOR_INVALID` |
+
+**Response:**
+```json
+{
+  "invoices": [
+    {
+      "number": "4F2A9C1B-0007",
+      "kind": "credits_top_up",
+      "description": "Credits top-up",
+      "phone_number": null,
+      "status": "paid",
+      "issued_at": "2026-10-21T08:03:44.000Z",
+      "paid_at": "2026-10-21T08:03:44.000Z",
+      "currency": "usd",
+      "net_cents": 5000, "vat_cents": 900, "total_cents": 5900,
+      "refunded_cents": 0,
+      "lines": [
+        { "description": "Credits top-up", "quantity": 1, "unit_amount_cents": 5000, "amount_cents": 5000 },
+        { "description": "VAT (18%)", "quantity": 1, "unit_amount_cents": 900, "amount_cents": 900 }
+      ],
+      "view_url": "https://…", "pdf_url": "https://…"
+    }
+  ],
+  "next_cursor": "…" | null
+}
+```
+
+- `kind`: `credits_top_up` | `auto_top_up` | `phone_number` (with `phone_number` in E.164) | `other`.
+- `status`: `paid` | `open` (issued, not paid yet) | `uncollectible`. Drafts and voided
+  invoices are never listed. `refunded_cents > 0` = (partly) refunded.
+- Follow `next_cursor` until `null`; a page may hold fewer than `limit` and still have more.
+- Hand `view_url` / `pdf_url` to whoever keeps the books.
 
 ---
 
