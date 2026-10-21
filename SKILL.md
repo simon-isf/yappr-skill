@@ -1376,12 +1376,39 @@ A failure is already a sentence in `error` / `error_message`. Read it to the cus
 it stands; do not translate it into internal vocabulary, and do not branch on its wording
 — branch on `status`, which is `succeeded`, `failed` or `pending` on every row that has
 one, and `delivered` / `failed` / `pending` on a delivery. Payloads, URLs, headers and
-credentials are deliberately not in the timeline; if the answer needs the body that was
-sent and what their endpoint answered, open the delivery by its `id` —
-`GET /deliveries/{id}`. (The same response's older `tool_calls` and `events`
-members do still carry them, and are superseded — do not build new work on them.)
+credentials are deliberately not in the timeline; for what a tool sent and got back,
+read the same response's `tool_calls[]` (each entry's full record, below), and for a
+delivery open it by its `id` — `GET /deliveries/{id}` → `exchange`.
 
 Field-by-field reference: `yappr-api.md` → **GET /calls/:id** → `timeline`.
+
+### Recipe — why did my tool fail?
+
+Every tool call on a call carries its full record, on every kind of agent (calls from
+21 October 2026): `GET /calls/:id` → `tool_calls[]`. A timeline `tool` row's
+`exchange_id` is the matching `tool_calls[].id`.
+
+1. Find the entry: by `tool_name`, or by the timeline row's `exchange_id`.
+2. Read `status`: `failed` (it answered and refused, or answered something unusable),
+   `timeout` (no answer in time — it may still have acted; check the other system
+   before retrying), `unreachable` (nothing answered at the address), `refused` (never
+   sent: an address that is not allowed, or arguments the tool turned away),
+   `not_sent` (a test that held the request back).
+3. Compare `request` with `response`: `request.method`, `request.url` (the full URL with
+   its query), `request.headers`, `request.body` — what left — against
+   `response.status`, `response.body` and `response.error_code`
+   (`downstream_http_error`, `http_timeout`, `http_network_error`,
+   `invalid_json_response`). The body is there also when the endpoint refused or did not
+   answer JSON. Tell the customer what their endpoint answered, in its own words.
+4. `agent_asked` is what the agent called the tool with, `agent_was_told` what it got
+   back — read both when the agent said something odd after the tool ran.
+5. `"[REDACTED]"` values are secrets hidden on purpose (auth headers, keys, tokens, a
+   URL's password, the tool's configured header values), and `masked` lists where. Do not
+   ask the customer for them and do not treat them as the bug. Their own data in a
+   payload (names, numbers) is shown as is.
+6. A body past 16 KB is cut: `truncated: true`, and `body_bytes` is the full size.
+   Records are kept 90 days; after that `details_expired` is `true` and the bodies are
+   gone. A webhook delivery's record is `GET /deliveries/{id}` → `exchange`.
 
 **The recording.** `recording_url` opens with no key and plays the audio directly, but it
 is a signed link that **expires after 7–8 days** — never store it as the recording's

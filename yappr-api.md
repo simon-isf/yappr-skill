@@ -3129,9 +3129,32 @@ Roles are structural — the caller's audio and the agent's audio are separate s
 
 For flow-agent calls, prefer reading `flow_trace.steps[].tool_call` — same per-fire data, inlined per visited step in graph order.
 
+**Each `tool_calls[]` entry's full record** (calls from 21 October 2026, every engine: workflow agents, prompt and flow agents, connected apps, transfers, End). Present only when the call has one; an older call's entries read exactly as before.
+
+| Field | What it is |
+|---|---|
+| `id` | The record's id = the timeline `tool` row's `exchange_id` = `exchange_id` on the tool's events |
+| `engine` | `workflow`, `prompt` or `flow` |
+| `tool_type` | `http`, `app`, `transfer` or `end` (`kind` keeps its old meaning: which event stream) |
+| `status` | `succeeded`, `failed`, `timeout` (no answer in time; it may still have acted), `unreachable`, `refused` (never sent), `not_sent` (a test held it back), `unknown` |
+| `started_at` | When the request left |
+| `agent_asked` | The arguments the agent called it with; `null` for a before/after step |
+| `request.method`, `request.url`, `request.headers`, `request.body` | The request exactly as it left: the full URL with its query, every header, the body. `request.target` instead of a URL for an app (`Google Calendar · Find event`) or a transfer |
+| `request.body_format`, `request.body_bytes`, `request.truncated` | `json`/`text`/`empty`/`binary`; the full size; `true` when only the first 16 KB is kept |
+| `response.status`, `response.headers`, `response.body` | The answer: status (`null` when nothing answered), every header, the body — also when it refused or was not JSON |
+| `response.body_format`, `response.body_bytes`, `response.truncated`, `response.timed_out`, `response.error_code` | As for the request; `timed_out` when no answer came in time; `error_code` from the `GET /deliveries` list (`downstream_http_error`, `http_timeout`, `http_network_error`, `invalid_json_response`) |
+| `agent_was_told` | What the agent got back |
+| `masked` | Where a value was replaced by `"[REDACTED]"` (`request.headers.Authorization`, `request.url.query.api_key`, `response.body.access_token`) |
+| `details_expired` | `true` after 90 days: `agent_asked`, `agent_was_told` and the record's details are gone; the summary stays |
+| `destination_path_withheld` | `true` (else absent) when `request.url` is `scheme://host` only: the key has neither `tools:read` nor `tools:update` |
+
+**Hidden as `"[REDACTED]"`:** the `Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key` headers sent and `Set-Cookie` received; any header, query parameter or JSON key whose name contains token, secret, password, signature, credential, api key, access key, private key or session id, ends in `key` or `session` (`signing_key`, `license_key`, `user_session`; not `public_key`, `primary_key`, `foreign_key`, `sort_key`, `partition_key`), or is exactly `key`, `auth`, `sig`, `otp`, `jwt`, `pwd` or `bearer` (not `token_type`, `total_tokens`, `key_name` and the like; numbers and booleans never); a bearer token, API key (`sk_…`, `AKIA…`, `AIza…`, `ghp_…`) or JWT inside any text; a URL's user and password; every value configured on the tool's headers. **Kept:** the customer's own data — names, phones, emails, addresses.
+
+**Where it went needs a tools scope.** For a Make or Zapier hook the URL's path is the credential. A key with `calls:read` but neither `tools:read` nor `tools:update` reads every `tool_calls[].request.url` (and the raw `tool_called` `events[].data.url`) as `scheme://host`, with `destination_path_withheld: true` — the same rule as `GET /deliveries/{id}`. To debug a tool's path, use a key with `tools:read`.
+
 **`events`** — Full chronological timeline of all call events (tool calls, transcriptions, LLM events, errors, termination). For advanced use cases / low-level analysis. For flow agents, prefer `flow_trace` (below) — `events` carries the same data more verbosely. Auth headers are also redacted.
 
-**`tool_calls`, `events` and `flow_trace` are superseded by `timeline`** (below) for anything you are building now. They are kept for integrations already reading them, and they are the raw view: apart from redacted auth headers they return a tool's URL, its arguments, the response body and the engine's own error text as recorded. The summaries-only rule below is a rule about `timeline`, not about the endpoint.
+**`events` and `flow_trace` are superseded by `timeline`** (below) for anything you are building now. `tool_calls` is where each tool call's full record lives (above); `timeline` stays summaries only, and a `tool` row's `exchange_id` names the matching `tool_calls[].id`.
 
 **`timeline`** — **What happened on the call, as one time-ordered list.** This is the
 single read surface for call observability: the same rows the customer sees on the call
@@ -3169,8 +3192,8 @@ A `tool` row adds the fields for its own `tool_type`:
 
 **Summaries only.** A URL's path and query, request headers, credentials, the connected
 account behind an app action, and raw request and response bodies are never returned in
-these rows — `tool_calls` and `events` on the same response still return them, which is
-what they are for and why they are superseded. A failure is one sentence in `error` (or
+these rows — each tool call's full record is `tool_calls[]` on the same response, joined by
+a `tool` row's `exchange_id`. A failure is one sentence in `error` (or
 `error_message` on a delivery), written for a person to act on — never an internal code.
 Do not branch on its wording; branch on `status`.
 
@@ -5767,6 +5790,7 @@ not a delivery here, never the list) — plus:
 | `response.body` | What your endpoint answered, as text, at most 2,000 characters. |
 | `retry_of` / `retried_by` | The delivery this one re-sent / the retry that re-sent this one. |
 | `retryable` | `true` when `POST /deliveries/{id}/retry` would send it. |
+| `exchange` | The delivery's full record (from 21 October 2026): `request` exactly as it left — `method`, the full `url` with its query, every header in `headers`, `body` — and `response` — `status`, every header, `body` (at most 2,000 characters for a webhook delivery), `error`, `timed_out` — with secrets as `"[REDACTED]"` listed in `masked`; `status`, `started_at`, `duration_ms`; `details_expired` after 90 days. `null` for an older delivery. Bodies `null` when `bodies_withheld`; `url` is `scheme://host` when `destination_path_withheld` |
 | `bodies_withheld` | `true` when the key lacks `calls:read`: both bodies are then `null`. |
 | `destination_path_withheld` | `true` when the key holds neither `tools:read` nor `tools:update`: both destinations are then `scheme://host` (for a Make or Zapier hook the path is the credential). `retry_target.changed` still compares the whole addresses |
 
