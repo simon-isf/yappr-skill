@@ -1632,13 +1632,19 @@ Present the list with numbers and pricing. Ask which they want.
 
 **Confirm before purchasing:** *"Purchasing [number] will start a $10/month recurring charge on your saved card. Shall I go ahead?"*
 
-**Purchase:**
+**Purchase** — send an `Idempotency-Key` (16–128 letters, digits, `_` or `-`, one per number)
+so a retry after a timeout can never buy or charge twice:
 ```bash
 curl -s -X POST "https://api.goyappr.com/phone-numbers/purchase" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Idempotency-Key: buy-972XXXXXXXXX-$(date +%Y%m%d)" \
   -H "Content-Type: application/json" \
   -d '{"phone_number": "+972XXXXXXXXX"}' | jq .
 ```
+
+Retried with the same key, it answers the same success body once the purchase went through,
+or `409 PURCHASE_IN_PROGRESS` while it is still going through (check `GET /phone-numbers` in a
+minute — do not send a new key). The same key for another number is `409 IDEMPOTENCY_KEY_REUSED`.
 
 The purchased number may differ from what was selected (race condition fallback). Always show the `phoneNumber` from the response.
 
@@ -2418,8 +2424,9 @@ curl -s "https://api.goyappr.com/billing/transactions?from=2026-09-01&to=2026-09
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq '{summary, has_more, range}'
 
 # A top-up row's `payment` says what the card was charged (total_charged_cents, VAT
-# included), the VAT, and the invoice number when there is one (a checkout top-up has
-# none). The same statement as the dashboard's Export CSV file: add format=csv.
+# included), the VAT, and the invoice number when the statement holds one (a checkout
+# top-up's invoice is listed by GET /billing/invoices). The same statement as the
+# dashboard's Export CSV file: add format=csv.
 curl -s "https://api.goyappr.com/billing/transactions?from=2026-09-01&to=2026-09-30&format=csv" \
   -H "Authorization: Bearer $YAPPR_API_KEY" -o statement.csv
 
@@ -2442,6 +2449,41 @@ curl -s -X POST "https://api.goyappr.com/billing/topup" \
   -H "Content-Type: application/json" \
   -d '{"amount_cents": 2000}'
 ```
+
+### Journey — invoices and billing details
+
+Every payment — a credit top-up, an automatic top-up, a phone number's first and every
+monthly charge — comes with **one invoice, emailed to the workspace's billing email when it
+is paid**. Nothing to switch on per call. What the user may want is (1) the invoice to
+print their business details, and (2) the invoices themselves for their accountant.
+
+1. **Read what invoices print now** (`billing:manage`):
+   ```bash
+   curl -s "https://api.goyappr.com/billing/details" -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+   ```
+   Before anything is set it answers the defaults: the workspace name, the owner's email,
+   no address, no tax ID.
+2. **Set them once, from the user's own words** (`billing:manage`). Send only the fields
+   they gave; never invent a name, address or number. An Israeli VAT or company number
+   (עוסק מורשה, ח.פ.) is `tax_id.type: "il_vat"`:
+   ```bash
+   curl -s -X PATCH "https://api.goyappr.com/billing/details" \
+     -H "Authorization: Bearer $YAPPR_API_KEY" -H "Content-Type: application/json" \
+     -d '{"name":"Acme Ltd","email":"books@acme.example","address":{"line1":"1 Example St","city":"Tel Aviv","postal_code":"6100000","country":"IL"},"tax_id":{"type":"il_vat","value":"515123456"}}' | jq .
+   ```
+   Read the saved values back in one sentence. `400 TAX_ID_INVALID` means the number is not
+   valid for its type — ask the user to check it; the old one stays on. Changes print on the
+   **next** invoice; issued invoices are never rewritten.
+3. **List and hand over invoices** (`billing:read` is enough — a bookkeeping key never needs
+   `billing:manage`):
+   ```bash
+   curl -s "https://api.goyappr.com/billing/invoices?limit=20" -H "Authorization: Bearer $YAPPR_API_KEY" \
+     | jq '.invoices[] | {number, issued_at, kind, total_cents, status, pdf_url}'
+   ```
+   Follow `next_cursor` until it is `null`. Offer `view_url` / `pdf_url` as links.
+
+Say plainly: **invoices are issued in English**, even for a Hebrew workspace (dates print day
+first). The dashboard has the same two cards under Settings → Billing (owners and admins).
 
 ---
 
