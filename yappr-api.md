@@ -1093,7 +1093,7 @@ after the hand-off. A phone-number destination is `UNAVAILABLE_ON_SIP_TRUNK` as 
 ### A transfer to a SIP address
 
 A transfer destination on a prompt or flow agent (the agent's transfer tool, or a flow
-`transfer` node) holds either an international number or a SIP address (`sip:` or `sips:`,
+`transfer` node) holds either an Israeli number (`+972`: transfers, like calls, can only be placed to Israeli numbers) or a SIP address (`sip:` or `sips:`,
 form `sip:user@host[:port]`, for example `sip:reception@pbx.example.com`; at most 256
 characters, user part required, no password and no `?headers`). On a call that arrived over
 a username-and-password trunk (`auth_mode: "credentials"`), a SIP address asks the caller's
@@ -1536,7 +1536,8 @@ Initiate an outbound call.
 **Phone validation (enforced at API and DB layers):**
 - Both numbers must match `^\+[1-9][0-9]{7,14}$` — leading `+`, 8–15 digits, no spaces or dashes.
 - Israeli numbers (`+972…`) must be exactly 12 or 13 characters total (`+972` followed by an 8-digit landline or 9-digit mobile). Anything longer or shorter is rejected.
-- Malformed `to` → `400 INVALID_TO_NUMBER`. Malformed `from` → `400 INVALID_FROM_NUMBER`. Bad numbers never reach the carrier and never create a `call_log` row.
+- Calls can only be placed to Israeli numbers (`+972`). A `to` in any other country is refused with `400 invalid_destination` and the error "Calls can only be placed to Israeli numbers (+972)." The same rule holds for test calls, campaign contacts and transfers.
+- A `to` that cannot be dialled (malformed, a dead prefix, or outside Israel) → `400 invalid_destination`. Malformed `from` → `400 INVALID_FROM_NUMBER`. Bad numbers never reach the carrier and never create a `call_log` row.
 
 **`variables` vs `metadata` distinction:**
 - `variables` → injected into the system prompt before the call starts (use for per-call context the agent should know)
@@ -2238,6 +2239,7 @@ What happens to `phone_numbers`:
 - every number is canonicalized to E.164 first, so `0501234567` and `+972501234567` are the same contact
 - an existing lead with that number (canonical **or** local `0…` form) is matched and reused
 - otherwise a lead is created, with `notes` stored as that lead's long-term memory (capped at 2,000 chars) and `source: "api"`
+- a number outside Israel is not enrolled and no lead is made for it: it is listed in `invalid_phone` with `reason: "country_not_allowed"` and the sentence in `error` (calls can only be placed to Israeli numbers, `+972`)
 
 **Response:** `200` — an itemized report, never a bare success:
 
@@ -2259,7 +2261,7 @@ What happens to `phone_numbers`:
 - `already_enrolled` — re-enrolling the same contact is idempotent, not an error, so a sync script can be written naively
 - `on_do_not_call` — filtered out at enroll time and reported up front; the dispatcher re-checks at dial time regardless
 - `not_found` — ids in `lead_ids` that are not leads of this workspace
-- `invalid_phone` — unparseable numbers, and existing leads whose stored number cannot be canonicalized
+- `invalid_phone` — unparseable numbers, numbers outside Israel (`reason: "country_not_allowed"`), and existing leads whose stored number cannot be canonicalized
 
 **`409 ALREADY_IN_ACTIVE_CAMPAIGN`** — one or more numbers are live in another active campaign. A number can only be dialed by one campaign at a time, workspace-wide. The response still carries the full report so you can see what did land.
 
