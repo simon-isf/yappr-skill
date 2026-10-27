@@ -1225,6 +1225,7 @@ Response's `data.length` gives you the prior-attempt count. Use in retry-throttl
       "status": "completed",
       "started_at": "ISO8601",
       "ended_at": "ISO8601",
+      "recording_started_at": "ISO8601 | null",
       "duration_seconds": 120,
       "created_at": "ISO8601",
       "tool_calls_count": 2,
@@ -1260,9 +1261,11 @@ Get full details of a single call, including resolved lead and disposition objec
   "direction": "inbound" | "outbound" | "web_call",
   "status": "ringing" | "in-progress" | "completed" | "failed",
   "started_at": "ISO8601 | null",
+  "answered_at": "ISO8601 | null",
+  "recording_started_at": "ISO8601 | null",
   "ended_at": "ISO8601 | null",
   "duration_seconds": 0,
-  "transcript": [ { "role": "agent|user", "text": "string", "start": 0, "end": 0 } ],
+  "transcript": [ { "role": "agent|user", "text": "string", "start": 0, "end": 0 } ],  // start/end: ms from recording_started_at
   "summary": "string | null",
   "recording_url": "string | null",
   "ended_by": "caller" | "agent" | "system" | "unknown" | null,
@@ -1367,6 +1370,10 @@ Get full details of a single call, including resolved lead and disposition objec
 ```
 
 **`metadata`** — The metadata object you attached at `POST /calls`. Empty object `{}` if no metadata was provided at call creation.
+
+**`recording_started_at`** — When the call's recording began, as the carrier stamped it (ISO 8601, `+00:00`). Every `transcript[].start` / `end` is milliseconds from here, so `recording_started_at + start` is when a line was said. It is NOT `started_at` (an outbound call is recorded from its answer, so counting from `started_at` puts every line early by the ring time) and it is within about 2 s of `answered_at`, either side. Set once the recording is saved, a few seconds after the call ends; `null` on a browser call (its recording starts once the browser has connected, shortly after `answered_at`), on a call with no recording yet, and on older calls recorded before the field was added. Also on every `GET /calls` row and in every call webhook's `data`.
+
+**No transcript during a call.** `transcript` is written once, after the call ends — polling `GET /calls/:id` while the call runs returns none, and no webhook or event carries the conversation live, on phone (inbound or outbound) or browser calls. To act on what a caller agrees to during the call (a callback time, a booking): give the agent a webhook tool it must call before confirming (e.g. `scheduleCallback` with `payload_config.extraction_parameters` `callbackConsent` = "yes" only on explicit agreement, and `callbackTime` ISO 8601 with offset) — the request carries `call_id` + `call_metadata`, is sent once with no retry (dedupe on `call_id`), and your answer is what the agent says; add a `cancelCallback` tool for a caller who takes it back; then put the same two fields in the agent's `extraction_parameters` so the caller's FINAL answer arrives in `call.analyzed` `data.extracted_data`, and cancel when it is not "yes".
 
 **`ended_by`** — Who ended the call. One of:
 
@@ -1542,7 +1549,7 @@ Initiate an outbound call.
 - `variables` → injected into the system prompt before the call starts (use for per-call context the agent should know)
 - `metadata` → stored on the call record, not injected into the prompt (use for tracking data — CRM IDs, source, etc.)
 
-**Reserved keys (400 on collision).** The five built-in tokens (`id`, `direction`, `agent_number`, `user_number`, `agent_name`) are platform-supplied — the bot emits them itself at call start. Using any of them as a key in `metadata` is rejected with `400 INVALID_METADATA_RESERVED_KEY`. Pick a different name for your custom field (e.g. `customer_id` instead of `id`, `caller_phone` instead of `user_number`).
+**Reserved keys (400 on collision).** The five built-in tokens (`id`, `direction`, `agent_number`, `user_number`, `agent_name`) are platform-supplied — the bot emits them itself at call start. Using any of them as a key in `metadata` is rejected with `400 INVALID_METADATA_RESERVED_KEY`. Pick a different name for your custom field (e.g. `customer_id` instead of `id`, `caller_phone` instead of `user_number`). `recording_started_at` and `recording_ended_at` are written by Yappr from the call's recording; a value sent under either name (any letter case) is dropped, not rejected.
 
 **Calling a flow agent? Check its metadata contract first.** Flow agents can reference `{{metadata.<key>}}` inside `args_template` values, so a missing key silently renders as an empty string at runtime — the carrier never warns you, the carrier never knows. Before dispatching, fetch the agent and read `flow_config.metadata.custom_metadata_keys`:
 
@@ -2705,8 +2712,10 @@ Configure on agent: `webhook_url` (HTTPS URL) + `webhook_events` (array of event
 | `call.no_answer` | Call rings but nobody picks up | `direction`, `from_number`, `to_number` |
 | `call.failed` | Call fails to connect or errors | `direction`, `from_number`, `to_number`, `error` |
 | `call.dnc_blocked` | Outbound call attempt blocked because the destination is on the company DNC list. No carrier leg, no charge. Fires for both fresh API calls and queued calls that hit DNC at dispatch time. | `direction`, `from_number`, `to_number`, `status`, plus `extra_data: { dnc_reason, dnc_entry_id, queued? }` |
-| `transcript.ready` | Transcript saved after call ends (legacy — prefer `call.analyzed`) | `transcript` |
+| `transcript.ready` | Transcript saved after call ends (legacy — prefer `call.analyzed`) | `transcript`, plus the call fields below |
 | `call.analyzed` | Full AI pipeline complete: transcript + disposition + summary + extraction | `direction`, `status`, `from_number`, `to_number`, `duration_seconds`, `disposition` (label string or null), `summary`, `transcript`, `extracted_data` (object with agent's extraction parameter values, or absent if none configured) |
+
+**Every call event's `data`** also carries `started_at` (call placed), `answered_at` (audio came up; absent until it did) and `recording_started_at` (when the recording began — `transcript[].start` / `end` are ms from here; `null` until the recording is saved, so usually `null` on `call.ended`, and on browser calls), all ISO 8601 with `+00:00`, read exactly as `GET /calls/:id` reads them. `transcript.ready` and `call.analyzed` are sent after the recording is saved, so on a phone call they carry `recording_started_at`.
 
 **Default recommended set:** `call.no_answer`, `call.failed`, `call.analyzed`
 
