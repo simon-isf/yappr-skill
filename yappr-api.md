@@ -541,6 +541,15 @@ List all phone numbers owned by the company.
 }
 ```
 
+`provider` is `telnyx` (bought from Yappr), `external` (the customer's own Telnyx account) or
+`phone_system`: the business number of an extension endpoint that **calls out through the
+customer's own phone system** (SIP Endpoints → Calls out through the extension). A
+`phone_system` number carries `phone_system: {sip_endpoint_id, sip_endpoint_name}` (`null` on
+every other number), has no rent (`rent.reason: "phone_system"`), takes no calls in (PATCH
+`inbound_agent_id`/`inbound_split` → `422 FIELD_NOT_ALLOWED`; calls in reach the endpoint's own
+`inbound_agent_id`), and is never released here: it is switched on, off and removed on its
+endpoint. `outbound_agent_id` works as on any number.
+
 ---
 
 ### POST /phone-numbers/search
@@ -1058,7 +1067,34 @@ customer asks Yappr support), `409 VOICE_NOT_READY` (not available right now),
 `409 SIP_REGISTER_EXTENSION_IN_USE`, `400 SIP_REGISTER_HOST_INVALID`, `409 SIP_REGISTER_SETUP_IN_PROGRESS` (create, same
 `Idempotency-Key` header), `502 SIP_REGISTER_PROVIDER_ERROR`. PATCH can also answer
 `400 SIP_REGISTER_PASSWORD_REQUIRED`, `409 SIP_REGISTER_NOT_PROVISIONED` and `429 RATE_LIMITED` (30 changes to extension endpoints per hour per workspace).
-`GET /sip-endpoints/status` also answers `register_available`.
+`GET /sip-endpoints/status` also answers `register_available` and `register_outbound_available`.
+
+#### Calls out through the extension (`register.outbound`)
+
+An extension endpoint can also **place** the agent's calls: Yappr sends the call through the
+extension and the customer's phone system dials it on their own plan, showing the caller ID set
+for that extension. Switch it on with POST (inside `register`) or PATCH:
+
+```bash
+curl -s -X PATCH "https://api.goyappr.com/sip-endpoints/ENDPOINT_ID" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"register": {"outbound": {"enabled": true, "caller_number": "+97235550100", "dial_format": "national", "dial_prefix": null}}}'
+```
+
+| Field | Notes |
+|---|---|
+| `enabled` | Required whenever `outbound` is sent. `false` switches off and keeps the number (switched off). `true` also lifts a pause. |
+| `caller_number` | E.164, the number the phone system shows. Required the first time. Changing it keeps the same `phone_number_id`. |
+| `dial_format` | `national` (default; 05X…, Israeli numbers only) or `e164` (the PBX receives the country code without the plus: 972…; any country it allows). |
+| `dial_prefix` | Outside-line prefix: one digit (`0`-`9`), or `null`. |
+
+- GET answers `register.outbound`: `null`, or `{enabled, caller_number, phone_number_id, dial_format, dial_prefix, paused}`; `paused` is `{reason: "phone_system_refused", since, last_sip_code}` after three refusals in a row (campaigns from the number pause too).
+- The number appears in `GET /phone-numbers` with `provider: "phone_system"`: use it as the agent's `outbound_agent_id` number, a campaign's `from_phone_number_id`, or `from` on `POST /calls`.
+- `max_concurrent_calls` counts incoming and outgoing calls together.
+- Yappr's own setting: no password, nothing sent to the carrier, not one of the 30 changes an hour. Switching the endpoint off (`is_active: false`) stops calls out too; on again resumes them.
+- Errors: `403 SIP_REGISTER_OUTBOUND_NOT_ENABLED` (not switched on for the workspace: ask Yappr support), `409 VOICE_NOT_READY` (not available yet), `409 PHONE_NUMBER_IN_USE` (the number is already in Yappr), `400 SIP_ENDPOINT_REQUEST_INVALID` with the field at `/register/outbound/<field>`. Switching off always works.
+- DELETE of the endpoint removes its number and answers `campaigns_without_number`.
 
 **What the customer must do on their phone system:**
 
@@ -1544,6 +1580,7 @@ Initiate an outbound call.
 - Both numbers must match `^\+[1-9][0-9]{7,14}$` — leading `+`, 8–15 digits, no spaces or dashes.
 - Israeli numbers (`+972…`) must be exactly 12 or 13 characters total (`+972` followed by an 8-digit landline or 9-digit mobile). Anything longer or shorter is rejected.
 - Malformed `to` → `400 INVALID_TO_NUMBER`. Malformed `from` → `400 INVALID_FROM_NUMBER`. Bad numbers never reach the carrier and never create a `call_log` row.
+- `from` may be a `phone_system` number (an extension that calls out through the customer's phone system). Before anything is reserved such a call can be refused with `422`: `PHONE_SYSTEM_OUTBOUND_OFF` (switched off on the endpoint), `PHONE_SYSTEM_OUTBOUND_PAUSED` (the phone system refused the last calls; PATCH the endpoint `{"register": {"outbound": {"enabled": true}}}` once fixed), `PHONE_SYSTEM_NOT_CONNECTED` (endpoint off or not registered), `DESTINATION_OUTSIDE_PHONE_SYSTEM_COUNTRY` (non-Israeli `to` in `national` dial format). All the extension's lines busy → `202 queued`. A call the phone system refuses before it rings fails with `failure.code` `phone_system_refused` (the lead is not blocked).
 
 **`variables` vs `metadata` distinction:**
 - `variables` → injected into the system prompt before the call starts (use for per-call context the agent should know)
