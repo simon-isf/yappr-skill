@@ -1972,7 +1972,7 @@ Foreign keys are expanded to **full objects**, per the API's FK convention — `
 
   "agent_id": "uuid | null",
   "from_phone_number_id": "uuid | null",
-  "from_number": "+972... | null",      // audit snapshot, taken at launch
+  "from_number": "+972... | null",      // the number it calls from: from_phone_number's, or the agent's own when from_phone_number_id is null
 
   "retry_rules": {},
   "calling_window": {},
@@ -2045,7 +2045,7 @@ This exact allowlist applies to both `POST` and `PATCH`. **Any other key — inc
 | `name` | string | — | **Required on create.** Trimmed. Must be unique among the workspace's non-archived campaigns → `409 DUPLICATE_NAME` |
 | `description` | string | null | Free text |
 | `agent_id` | uuid | null | Required before launch |
-| `from_phone_number_id` | uuid | null | Required before launch; must be an active number the workspace owns |
+| `from_phone_number_id` | uuid | null | The number to call from; must be an active number the workspace owns. Leave it out (or `null`) to call from the agent's own number: a number the agent is the outbound agent of (or either half of its outbound split), else one it answers on; a Yappr number before one on the workspace's own Telnyx account. An A/B split calls from the first agent's number. Left out on an agent with no number → `400 CAMPAIGN_REQUEST_INVALID`, `invalid_from_number` at `/from_phone_number_id` |
 | `retry_rules` | object | `{}` | JSON object (not an array). See [retry_rules and calling_window](#retry_rules-and-calling_window) before using it |
 | `calling_window` | object | `{}` | JSON object. **Not the gate that decides when a campaign dials** — see the same note |
 | `stop_disposition_ids` | uuid[] | `[]` | Array of **disposition ids**, never labels. Every id must belong to this workspace, or `400` |
@@ -2326,17 +2326,18 @@ curl -s -X POST "https://api.goyappr.com/campaigns/CAMPAIGN_ID/launch" \
   -H "Authorization: Bearer $YAPPR_API_KEY" | jq '{status, last_tick_result, error, message}'
 ```
 
-#### Launch preflight — the nine causes of `422 CAMPAIGN_NOT_READY`
+#### Launch preflight — the causes of `422 CAMPAIGN_NOT_READY`
 
 | Message | Fix |
 |---|---|
 | Assign an agent before launching | `PATCH` with `agent_id` |
-| Assign a phone number to call from before launching | `PATCH` with `from_phone_number_id` |
+| The agent on this campaign has no phone number to call from… | `PATCH /phone-numbers/:id` with `outbound_agent_id` (give the agent a number), or `PATCH` the campaign with `from_phone_number_id` |
 | `regulatory_basis` is required before launching | `PATCH` with one of the four bases |
 | Configure at least one stop rule before launching | Set `stop_disposition_ids`, or one of `stop_on_no_answer` / `stop_on_voicemail` / `stop_on_human_connect` |
 | The assigned agent no longer exists | Point `agent_id` at a live agent |
 | The assigned agent has no maximum call duration set | `PATCH /agents/:id` with a positive `max_call_duration_secs` — `0` means unlimited, which makes the campaign's worst-case cost unbounded |
-| The phone number assigned to this campaign is no longer active | Pick an `is_active` number with `status: "active"` |
+| The phone number assigned to this campaign is no longer active… | Pick an `is_active` number with `status: "active"`, or `PATCH` `from_phone_number_id: null` to call from the agent's own number |
+| This number is not connected to a working Telnyx account in Yappr… | Fix it under Phone numbers → Your carrier, or pick another number |
 | This workspace has no upcoming calling window | Fix `PUT /call-windows` (and the workspace timezone, which is dashboard-only) |
 | Enroll at least one contact before launching | `POST /campaigns/:id/leads` |
 
@@ -2374,7 +2375,7 @@ Written every tick on both the campaign object and `/stats`. A `running` campaig
 | `insufficient_credit` / `no_billing_account` | Under the credit floor → status `paused_insufficient_credit` |
 | `credit_reserve_would_breach_floor` | Balance minus the worst-case reservation for the next call would drop under the floor |
 | `budget_exhausted` | `budget_cents` reached → status `paused_budget` |
-| `from_number_unavailable` | The from-number is no longer active → status `paused_infra` |
+| `from_number_unavailable` | No number to call from: the named number is no longer active (or its Telnyx account stopped working), or none is named and the agent has no number → status `paused_config`; `last_error` says which |
 | `agent_has_no_duration_cap` | The agent's `max_call_duration_secs` was set to `0` mid-campaign → status `paused_config` |
 | `platform_admission_disabled` | Platform-wide admission pause (operational kill switch). In-flight calls and reconciliation continue |
 | `resumed_credit_ok` | Auto-resumed after funding |

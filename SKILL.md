@@ -1258,8 +1258,10 @@ curl -s -X POST "https://api.goyappr.com/campaigns" \
     "description": "Existing customers, renewal due in April",
     "agent_id": "AGENT_ID",
     "from_phone_number_id": "PHONE_NUMBER_ID"
-  }' | jq '{id, status, name}'
+  }' | jq '{id, status, name, from_number}'
 ```
+
+`from_phone_number_id` is optional: leave it out and the campaign calls from the agent's own number (the number the agent is the outbound agent of, else the one it answers on); `from_number` in the answer is the number it will call from. An agent with no number and no `from_phone_number_id` is refused with `400 CAMPAIGN_REQUEST_INVALID` (`invalid_from_number` at `/from_phone_number_id`): give the agent a number with `PATCH /phone-numbers/:id` (`outbound_agent_id`), or send the number to call from.
 
 Save the returned `id` into the Phase 0 `EXISTING RESOURCES` block. `status` is `draft` — guaranteed, not incidental.
 
@@ -1428,7 +1430,7 @@ curl -s "https://api.goyappr.com/campaigns/CAMPAIGN_ID/stats" \
 | `insufficient_credit` / `no_billing_account` | Balance too low → status `paused_insufficient_credit` | top up; **it resumes by itself** |
 | `credit_reserve_would_breach_floor` | Balance can't cover the next call's worst case | top up |
 | `budget_exhausted` | The campaign's own budget cap is reached → `paused_budget` | raise `budget_cents`, then `resume` |
-| `from_number_unavailable` | The calling number went inactive → `paused_infra` | assign an active number, then `resume` |
+| `from_number_unavailable` | No number to call from (the named number went inactive, or none is named and the agent has no number) → `paused_config`; `last_error` says which | assign an active number (or give the agent one), then `resume` |
 | `agent_has_no_duration_cap` | The agent's max call duration was set to unlimited → `paused_config` | set a positive `max_call_duration_secs`, then `resume` |
 | `platform_admission_disabled` | The platform paused new campaign admissions; in-flight calls continue | wait; report it if it persists |
 | `resumed_credit_ok` | Auto-resumed after a top-up | none |
@@ -1469,7 +1471,7 @@ curl -s -X DELETE "https://api.goyappr.com/campaigns/CAMPAIGN_ID/leads/LEAD_ID" 
 | Message | Fix |
 |---|---|
 | Assign an agent before launching | `PATCH` with `agent_id` |
-| Assign a phone number to call from before launching | `PATCH` with `from_phone_number_id` |
+| The agent on this campaign has no phone number to call from… | `PATCH /phone-numbers/:id` with `outbound_agent_id`, or `PATCH` the campaign with `from_phone_number_id` |
 | `regulatory_basis` is required before launching | `PATCH` with `consent` / `existing_customer` / `non_marketing` / `registry_screened` — ask the user which is true |
 | Configure at least one stop rule before launching | Set `stop_disposition_ids`, or one of `stop_on_no_answer` / `stop_on_voicemail` / `stop_on_human_connect` |
 | The assigned agent no longer exists | Point `agent_id` at a live agent (`GET /agents`) |
