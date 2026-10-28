@@ -535,11 +535,16 @@ List all phone numbers owned by the company.
       "status": "active" | "pending_requirements",
       "inbound_agent_id": "uuid | null",
       "outbound_agent_id": "uuid | null",
+      "scheduled_release_at": "ISO8601 | null",
       "created_at": "ISO8601"
     }
   ]
 }
 ```
+
+`scheduled_release_at` is set on a number that was released and is kept until the end of the
+period already paid for (see `POST /phone-numbers/{id}/release`); `null` otherwise. Such a number
+keeps working until that moment, and its rent does not renew (`next_renewal_at: null`).
 
 `provider` is `telnyx` (bought from Yappr), `external` (the customer's own Telnyx account) or
 `phone_system`: the business number of an extension endpoint that **calls out through the
@@ -636,6 +641,64 @@ Assign inbound and/or outbound agents to a phone number.
 **CRITICAL:** All fields use `snake_case`. Using camelCase returns a 400 error.
 
 **Response:** `200` — updated phone number object
+
+---
+
+### POST /phone-numbers/{id}/release
+
+Stop paying for a number bought from Yappr. Takes no body and no query parameters (anything
+sent: `400 PHONE_NUMBER_REQUEST_INVALID`).
+
+**Scopes:** `phone_numbers:purchase`
+
+- **Paid up:** kept until the end of the period already paid for, then released. It keeps
+  answering and placing calls until then, and its rent does not renew. `GET /phone-numbers`
+  shows the date as `scheduled_release_at`.
+- **Payment overdue, or no subscription:** released now, and no longer listed.
+- **A payment that keeps failing** needs no call: the workspace is emailed, the payment is retried
+  automatically for about three weeks while the number keeps working, and if no retry goes through
+  the subscription ends and the number is released the same way. A payment that recovers keeps it.
+- Releasing a number that is already scheduled answers the same date and changes nothing.
+- A released number is gone for good after `release_at`: it cannot be kept, and buying it again
+  is a new purchase. Confirm with the user before releasing.
+
+**Response:**
+```json
+{ "phone_number_id": "uuid", "released": false, "release_at": "ISO8601" }
+```
+`released: true` and `release_at: null` when it was released now.
+
+**Refusals** (nothing is changed):
+
+| Status | Code | Meaning |
+|---|---|---|
+| 409 | `NUMBER_IN_CAMPAIGN` | A campaign that has not ended still calls from it: give the campaign another caller number, or stop or delete it, first |
+| 409 | `NUMBER_ON_LIVE_CALL` | A call on it is in progress: try again when it ends |
+| 409 | `PHONE_SYSTEM_NUMBER` | A `phone_system` number: switch outbound off on its SIP endpoint (`PATCH /sip-endpoints/{id}`, `register.outbound.enabled: false`) or delete that endpoint |
+| 409 | `NUMBER_FROM_OWN_CARRIER` | An `external` number (the customer's own Telnyx): remove it with `DELETE /carrier-accounts/{id}/numbers/{phone_number_id}` |
+| 404 | `NOT_FOUND` | No such number in this workspace (or already released) |
+| 503 | `BILLING_UNAVAILABLE` | Billing or the checks could not be reached: retry in a minute |
+| 500 | `PHONE_RELEASE_FAILED` | A release that runs now could not run: retry in a minute |
+| 500 | `PHONE_RELEASE_INCOMPLETE` | A release that runs now did not finish at the carrier: Yappr is notified; contact support if the number stays listed |
+
+---
+
+### POST /phone-numbers/{id}/keep
+
+Undo a scheduled release: the number stays and renews as before (`scheduled_release_at` is
+`null` again). Works until `release_at`. Takes no body and no query parameters.
+
+**Scopes:** `phone_numbers:purchase`
+
+**Response:**
+```json
+{ "phone_number_id": "uuid", "released": false, "release_at": null }
+```
+
+Keeping a number that was not scheduled, while its subscription runs, answers the same and
+changes nothing. `409 RELEASE_NOT_SCHEDULED`: the number has no subscription to keep.
+`409 SUBSCRIPTION_ENDED`: it has already ended; buy a new number. `503 BILLING_UNAVAILABLE`:
+retry in a minute.
 
 ---
 
@@ -2825,6 +2888,8 @@ Yonatan, David, Gil, Adam, Amir, Omer, Tom, Benny, Nir, Natan, Yosef, Ariel, Roi
 | POST /phone-numbers/search | `phone_numbers:search` |
 | POST /phone-numbers/purchase | `phone_numbers:purchase` |
 | POST /phone-numbers/configure | `phone_numbers:configure` |
+| POST /phone-numbers/{id}/release | `phone_numbers:purchase` |
+| POST /phone-numbers/{id}/keep | `phone_numbers:purchase` |
 | GET /sip-endpoints (list/get), GET /sip-endpoints/status | `sip_endpoints:read` (a `uri` endpoint's `slug`/`sip_uri` and a trunk's `sip_username` also need `sip_endpoints:manage`, else `null`) |
 | POST /sip-endpoints (create) | `sip_endpoints:manage` |
 | PATCH /sip-endpoints/:id | `sip_endpoints:manage` |

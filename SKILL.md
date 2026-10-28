@@ -1028,6 +1028,13 @@ Status `pending_requirements`: regulatory approval needed (Israeli numbers, 1–
 
 **Note on `inbound_agent_id`:** this one DOES matter — it's the agent that answers when someone calls this number. It is a real 1:1 binding. If two agents need to handle inbound, they need two numbers.
 
+**Releasing a number the user no longer needs:** confirm first (*"Releasing [number] stops its $10/month charge. It keeps working until the end of the period you already paid for, then it is gone for good. Shall I go ahead?"*), then:
+```bash
+curl -s -X POST "https://api.goyappr.com/phone-numbers/UUID/release" \
+  -H "Authorization: Bearer $YAPPR_API_KEY" | jq .
+```
+`released: false` with `release_at` means it is kept until that date (shown as `scheduled_release_at` on `GET /phone-numbers`); `released: true` means it was released now (payment overdue, or no subscription). Undo before that date with `POST /phone-numbers/UUID/keep`. A campaign still calling from the number (`409 NUMBER_IN_CAMPAIGN`) or a call in progress (`409 NUMBER_ON_LIVE_CALL`) blocks the release: move the campaign to another number first. A number from the customer's own Telnyx account or phone system is never released here (`yappr-api.md` → Phone Numbers → `POST /phone-numbers/{id}/release`).
+
 ### Step 5.1b — Option B: inbound from the customer's own phone system (no Yappr number needed)
 
 When the customer already has a business line and a phone system they want to keep, route calls from that system to a Yappr agent through a SIP endpoint instead of buying a Yappr number. Use this when:
