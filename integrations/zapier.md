@@ -69,33 +69,33 @@ https://hooks.zapier.com/hooks/catch/{account_id}/{hook_id}/
 
 **Step 1**: Add "Webhooks by Zapier → Catch Hook" as the trigger → copy the generated webhook URL.
 
-**Step 2**: In Yappr, go to the agent's settings → Webhooks → add the URL for the `call.analyzed` event.
+**Step 2**: In Yappr, add a follow-up: an HTTP tool whose URL is the Catch Hook (`POST /tools`), and in the agent's workflow an After trigger on `analysis.ready` with a step that uses it (dashboard: the agent's workflow → After). Validate and publish.
 
-**Incoming payload Zappr sends to Zapier:**
+**Incoming payload Yappr sends to Zapier** (everything is under `call`; `disposition` is an object):
 ```json
 {
-  "event": "call.analyzed",
-  "timestamp": "2026-04-12T10:30:00Z",
-  "agent_id": "uuid",
-  "company_id": "uuid",
-  "call_id": "uuid",
-  "data": {
-    "direction": "outbound",
+  "call": {
+    "phase": "after",
+    "call_id": "uuid",
+    "agent_id": "uuid",
+    "company_id": "uuid",
+    "call_direction": "outbound",
     "status": "completed",
-    "from_number": "+972501234567",
-    "to_number": "+972521234567",
+    "caller_number": "+972501234567",
+    "callee_number": "+972521234567",
     "duration_seconds": 187,
-    "disposition": "Appointment Set",
-    "summary": "Customer agreed to a demo on April 15...",
-    "transcript": [...]
+    "disposition": { "id": "uuid", "label": "Appointment Set" },
+    "analysis": { "summary": "Customer agreed to a demo on April 15...", "extracted_data": {} }
   }
 }
 ```
 
+A follow-up written on a new agent has no `event` member. An agent converted from the old webhook settings also sends `"event": "call.analyzed"` at the top level.
+
 **Step 3**: Add a **Paths** (Router) step. Create branches:
-- Path A: Filter `data__disposition` exactly matches `Appointment Set` → create HubSpot deal
-- Path B: Filter `data__disposition` exactly matches `Not Interested` → add tag in ActiveCampaign
-- Path C: Filter `data__disposition` exactly matches `Callback Requested` → append row to Google Sheets with callback time
+- Path A: Filter `call__disposition__label` exactly matches `Appointment Set` → create HubSpot deal
+- Path B: Filter `call__disposition__label` exactly matches `Not Interested` → add tag in ActiveCampaign
+- Path C: Filter `call__disposition__label` exactly matches `Callback Requested` → append row to Google Sheets with callback time
 
 ---
 
@@ -151,4 +151,4 @@ Then add a Filter step in Zapier: only continue if `query_string__secret` exactl
 - **Zapier Code step**: If you need custom normalization, Zapier supports JavaScript and Python snippets in the "Code by Zapier" action — no external packages, but standard library works.
 - **Paths vs Filter**: "Paths" (branching router) is a Premium Zapier feature. On free plans, use a single-branch Zap with Filter steps instead.
 - **Israeli alternative**: Make.com (see `make-com.md`) is widely used in Israel as a lower-cost alternative. The webhook URL structure is different but the Yappr API call is identical.
-- **Test payload**: Zapier must receive at least one real payload to map fields. Always send a test webhook from Yappr before building downstream steps.
+- **Test payload**: Zapier must receive at least one real payload to map fields. Always get one real follow-up from Yappr (place a test call) before building downstream steps.

@@ -27,9 +27,9 @@ create table if not exists call_queue (
   last_attempted_at timestamptz,
 
   -- Yappr tracking
-  yappr_call_id text,                  -- UUID from Yappr after dispatching
+  yappr_call_id text,                  -- Yappr call id once placed (POST /calls answers 202 with none yet)
   disposition text,                    -- final disposition label
-  call_summary text,                   -- summary from call.analyzed event
+  call_summary text,                   -- call.analysis.summary from the analysis.ready follow-up
 
   -- Pre-fetch data (injected as {{variables}} in Yappr call)
   pre_fetch_variables jsonb default '{}',

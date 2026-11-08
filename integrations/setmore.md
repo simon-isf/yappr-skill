@@ -281,7 +281,8 @@ const availableSlots = slots.join(", ");
 // Tool definition should expose: date (YYYY-MM-DD), time (HH:MM), callerName, callerPhone
 
 const body = await req.json();
-const { date, time, callerName, callerPhone } = body.tool_call.arguments;
+// The tool's declared inputs arrive top-level; the call itself is under body.call
+const { date, time, callerName, callerPhone } = body;
 
 const accessToken = Deno.env.get("SETMORE_ACCESS_TOKEN");
 const staffKey = Deno.env.get("SETMORE_STAFF_KEY");

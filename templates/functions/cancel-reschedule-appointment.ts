@@ -1,10 +1,12 @@
 // cancel-reschedule-appointment.ts
 // Handles both cancelAppointment and rescheduleAppointment tool calls.
 // Register as TWO separate tools in Yappr pointing to this same endpoint,
-// but with different tool names and extraction parameters.
+// but with different tool names and declared inputs (input_schema).
 //
-// cancelAppointment extraction params: appointmentId? (optional), reason?
-// rescheduleAppointment extraction params: appointmentId? (optional), newDate, newTime
+// cancelAppointment inputs: appointmentId? (optional), reason?
+// rescheduleAppointment inputs: appointmentId? (optional), newDate, newTime
+// The inputs arrive top-level; the call itself arrives under `call`
+// (call.caller_number, call.callee_number, call.call_direction, call.call_id).
 //
 // The function distinguishes by checking which params are present.
 //
@@ -34,7 +36,12 @@ Deno.serve(async (req: Request) => {
 
   // Find appointment — by ID or by caller phone
   const appointmentId = (payload.appointmentId ?? payload.appointment_id) as string | undefined;
-  const callerPhone = payload.callerPhone as string | undefined;
+  // The caller's number: an input you declared, else the call package (the other
+  // party is callee_number on an outbound call, caller_number on an inbound one).
+  const call = (payload.call ?? {}) as Record<string, unknown>;
+  const callerPhone = (payload.callerPhone as string | undefined) ||
+    ((call.call_direction === "outbound" ? call.callee_number : call.caller_number) as string | undefined) ||
+    undefined;
 
   let appointment: Record<string, unknown> | null = null;
 

@@ -26,7 +26,7 @@ const maxConcurrent = parseInt(Deno.env.get("MAX_CONCURRENT") ?? "5");
 // ── PRE-FETCH HOOK ───────────────────────────────────────────────────────────
 // Customize this function to fetch data before dispatching each call.
 // Return an object that will be passed as "variables" to Yappr.
-// These become {{VariableName}} template variables in the agent's system prompt.
+// These become {{VariableName}} template variables in the agent's instructions.
 //
 // Example: fetch calendar availability so the agent doesn't need to call a tool.
 async function preFetchVariables(row: Record<string, unknown>): Promise<Record<string, string>> {
@@ -38,7 +38,7 @@ async function preFetchVariables(row: Record<string, unknown>): Promise<Record<s
   // const slots = await fetchCalendarAvailability(); // implement this
   // return {
   //   ...stored,
-  //   availableSlots: slots,  // becomes {{availableSlots}} in prompt
+  //   availableSlots: slots,  // becomes {{availableSlots}} in the instructions
   // };
 }
 // ────────────────────────────────────────────────────────────────────────────
@@ -102,17 +102,21 @@ Deno.serve(async (_req: Request) => {
       const yapprData = await yapprRes.json();
 
       if (yapprRes.ok) {
+        // A workflow agent answers 202: the call is accepted first and placed after, so
+        // call_id is null here (`id` is a queue entry, `request_id` the call request to
+        // follow with GET /call-requests/{id}). The follow-up ties the call back through
+        // call.call_metadata.call_queue_id.
         await supabase
           .from("call_queue")
           .update({
-            yappr_call_id: yapprData.id,
+            yappr_call_id: yapprData.call_id ?? null,
             attempts: row.attempts + 1,
             status: "dispatched",
           })
           .eq("id", row.id);
 
         dispatched++;
-        results.push({ id: row.id, yappr_call_id: yapprData.id, status: "ok" });
+        results.push({ id: row.id, yappr_request_id: yapprData.request_id ?? null, status: "ok" });
       } else if (yapprRes.status === 429 || yapprRes.status === 503) {
         // Rate limited or server at capacity — reschedule in 5 minutes
         await supabase

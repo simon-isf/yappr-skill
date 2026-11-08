@@ -59,32 +59,34 @@ N/A — n8n is a workflow platform; patterns below describe node configuration
 - Authentication: `Header Auth` (validate `Authorization` header)
 - Response Mode: `Respond Immediately` → Response Code: `200`
 
-**Incoming Yappr webhook payload:**
+**In Yappr:** create an HTTP tool whose URL is this Webhook node (`POST /tools`, with the `Authorization` header the node checks), and in the agent's workflow add an After trigger on `analysis.ready` with a step that uses it (dashboard: the agent's workflow → After). Validate and publish.
+
+**Incoming Yappr follow-up payload** (everything is under `call`; `disposition` is an object):
 ```json
 {
-  "event": "call.analyzed",
-  "timestamp": "2026-04-11T...",
-  "agent_id": "uuid",
-  "company_id": "uuid",
-  "call_id": "uuid",
-  "data": {
-    "direction": "outbound",
+  "call": {
+    "phase": "after",
+    "call_id": "uuid",
+    "agent_id": "uuid",
+    "company_id": "uuid",
+    "call_direction": "outbound",
     "status": "completed",
-    "from_number": "+972501234567",
-    "to_number": "+972521234567",
+    "caller_number": "+972501234567",
+    "callee_number": "+972521234567",
     "duration_seconds": 180,
-    "disposition": "Appointment Set",
-    "summary": "Customer interested in Business plan.",
-    "transcript": [...]
+    "disposition": { "id": "uuid", "label": "Appointment Set" },
+    "analysis": { "summary": "Customer interested in Business plan.", "extracted_data": {} }
   }
 }
 ```
 
+A follow-up written on a new agent has no `event` member. An agent converted from the old webhook settings also sends `"event": "call.analyzed"` at the top level.
+
 **Switch node config:**
 - Mode: `Rules`
-- Rule 1: `{{ $json.data.disposition }}` = `"Appointment Set"` → Output 1
-- Rule 2: `{{ $json.data.disposition }}` = `"Not Interested"` → Output 2
-- Rule 3: `{{ $json.data.disposition }}` = `"Callback Requested"` → Output 3
+- Rule 1: `{{ $json.call.disposition.label }}` = `"Appointment Set"` → Output 1
+- Rule 2: `{{ $json.call.disposition.label }}` = `"Not Interested"` → Output 2
+- Rule 3: `{{ $json.call.disposition.label }}` = `"Callback Requested"` → Output 3
 - Default: Output 4
 
 ---

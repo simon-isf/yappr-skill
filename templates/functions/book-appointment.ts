@@ -6,10 +6,10 @@
 // + CRM update all happen here. The agent makes ONE tool call.
 //
 // Payload received from Yappr agent:
-//   Standard metadata (if include_standard_metadata: true):
-//     call_id, agent_id, duration_seconds
-//   Extraction parameters (defined in tool config):
+//   The tool's declared inputs (its input_schema), top-level:
 //     callerName, preferredDate, preferredTime, notes (optional)
+//   The call package, under `call` (unless the tool sets include_call_context: false):
+//     call.call_id, call.agent_id, call.call_direction, call.caller_number, call.callee_number
 //
 // Required env vars:
 //   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
@@ -133,21 +133,22 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({ success: false, message: "Invalid request" }), { status: 400 });
   }
 
-  // Standard metadata from Yappr
-  const callId = payload.call_id as string | undefined;
-  const agentId = payload.agent_id as string | undefined;
+  // The call package from Yappr
+  const call = (payload.call ?? {}) as Record<string, unknown>;
+  const callId = call.call_id as string | undefined;
+  const agentId = call.agent_id as string | undefined;
 
-  // Extraction parameters (defined in tool config)
+  // The tool's declared inputs
   const callerName = (payload.callerName ?? payload.caller_name ?? "the caller") as string;
   const preferredDate = (payload.preferredDate ?? payload.preferred_date) as string | undefined;
   const preferredTime = (payload.preferredTime ?? payload.preferred_time) as string | undefined;
   const notes = (payload.notes ?? "") as string;
 
-  // Get caller phone from Supabase (via call_id if available)
+  // Caller phone: an input you declared, else the call package (the other party
+  // is callee_number on an outbound call, caller_number on an inbound one)
   let callerPhone = payload.callerPhone as string | undefined;
-  if (!callerPhone && callId) {
-    // Could fetch from Yappr API here but adds latency — better to pass via static param or metadata
-    callerPhone = payload.to_number as string | undefined;
+  if (!callerPhone) {
+    callerPhone = ((call.call_direction === "outbound" ? call.callee_number : call.caller_number) as string | undefined) || undefined;
   }
 
   if (!preferredDate || !preferredTime) {

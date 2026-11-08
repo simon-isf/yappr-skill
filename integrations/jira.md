@@ -238,7 +238,8 @@ const adfText = (text: string) => ({
   content: [{ type: "paragraph", content: [{ type: "text", text }] }],
 });
 
-// Create issue after call.analyzed event
+// Create issue from the analysis.ready follow-up (disposition = body.call.disposition.label,
+// summary = body.call.analysis.summary)
 const issue = await fetch(`${baseUrl}/issue`, {
   method: "POST",
   headers: {

@@ -108,7 +108,7 @@ export function parseMakeWebhookPayload(
  *
  * Example:
  *   const make = new MakeWebhookClient(Deno.env.get("MAKE_WEBHOOK_URL")!);
- *   await make.send({ event: "call.analyzed", data: { disposition: "Appointment Set" } });
+ *   await make.send({ call_id: call.call_id, disposition: call.disposition?.label });
  */
 export class MakeWebhookClient {
   constructor(

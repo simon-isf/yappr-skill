@@ -214,7 +214,9 @@ const channel = supabase
 
 ### Store call outcome from workflow
 ```typescript
-// In a workflow edge function triggered by call.analyzed webhook
+// In an edge function receiving the agent's analysis.ready follow-up:
+// callId = body.call.call_id, companyId = body.call.company_id,
+// disposition = body.call.disposition?.label, callSummary = body.call.analysis?.summary
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
