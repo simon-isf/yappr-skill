@@ -1230,7 +1230,8 @@ Two edge kinds route between nodes. A `conversation` edge (`kind:"conversation"`
 to decide whether to take it; it is guidance, not code. A `result` edge
 (`kind:"result"`) carries `source`, `target` and `outcome:"succeeded"|"failed"`, and only
 ever leaves an `action` or `sequence` node — its target is decided by the tool's own
-result, never by the model. `global_edges[]` are the escape hatches: each carries a
+result, never by the model. A `succeeded` result edge may also carry a `when` on what
+the tool answered (*Routing on what a tool answered*, below). `global_edges[]` are the escape hatches: each carries a
 `target` and its own prose `condition`, reachable from every conversation node without a
 wired edge — the model gets it as an extra candidate on every turn.
 
@@ -1301,7 +1302,8 @@ a combinator are saved and left to Check.
 also end the call, restate, or diverge from a wired edge when the caller's words call for
 it — the graph is instructional weight, not a cage. On, only a wired edge or global edge
 advances the conversation. Either way, `result` edges are always enforced: a tool's
-outcome is never advisory. With Strict off, a tool or sequence the agent calls again with
+outcome is never advisory. The one thing on a `result` edge that needs Strict on is a
+`when` (*Routing on what a tool answered*, below). With Strict off, a tool or sequence the agent calls again with
 the same values before the caller speaks again answers with its first run's result instead
 of running twice (a tool call that failed without doing anything may run once more). With
 Strict on, the same holds for a step's action called again from the step that leads to it,
@@ -1435,6 +1437,57 @@ downstream of nor routed from). All five branching advisories — an unreachable
 that can never be true, a step depending on one that may be skipped, a condition
 reading a step allowed to fail and continue, a condition whose source declares no type
 — arrive as the single code `sequence_branch_advisory` and block nothing.
+
+**Routing on what a tool answered (`when` on a `result` edge, `compiler_version` 1.10.0).**
+A tool step (an `action` node, or a `sequence` node) leaves by `result` edges. When the next
+step depends on what the tool *answered* (an availability check that says `book`,
+`offer_other_time` or `transfer`), put a `when` on the `succeeded` edge for each answer and
+leave one `succeeded` edge without a `when` for every other answer: the **otherwise** edge.
+The platform decides from the answer with no model in between, so the same answer always
+takes the same edge. Do not describe this choice in the next step's instructions and hope the
+model reads it.
+
+```json
+{"id":"check-book","source":"check","target":"confirm-time","kind":"result","outcome":"succeeded",
+ "when":{"kind":"compare","op":"eq","source":{"kind":"step","scope":"during","step_id":"check","path":"/route"},"value":{"kind":"literal","value":"book"}}},
+{"id":"check-otherwise","source":"check","target":"offer-other-time","kind":"result","outcome":"succeeded"},
+{"id":"check-failed","source":"check","target":"apologise","kind":"result","outcome":"failed"}
+```
+
+- `when` is the sequence condition above (`compare` / `all_of` / `any_of` / `not`, same
+  operators, 4 levels, 32 parts, nothing coerced: `"0"` is not `0`, so use `in` with both
+  when an endpoint may send either).
+- It reads only fixed `literal` values and the answer of the step the edge leaves,
+  `{"kind":"step","scope":"during","step_id":"<the edge's source>","path":"/<field>"}` (for a
+  `sequence` node, its output). A request, stored, call or other step's answer is
+  `result_guard_source`.
+- Edges with a `when` are tried in the order they appear in `conversation.edges`; the first
+  that holds is taken, then the otherwise edge. A step with a `when` needs exactly one
+  `succeeded` edge without one (`result_guard_needs_otherwise` if none; two without are
+  `ambiguous_result_edge`, as are two `failed` edges).
+- Only a `succeeded` edge can have a `when` (`result_guard_outcome`), and only with
+  `strict_mode: true` (`result_guard_needs_strict`: turn Strict Mode on, it starts off). A
+  `failed` edge is taken whenever the tool fails, whatever it answered, and also when the
+  tool never answered (a timeout, a connection that reset), with or without a `when` on the
+  step; the request is not sent again. A step with no `failed` edge waits. A call transfer is
+  the exception: if the carrier never said whether it connected, the call waits, because the
+  caller may already be on the other line. A transfer the carrier refuses takes its `failed`
+  edge like any other step.
+- A comparison that cannot be made (the answer has no such field, or the wrong type) is false
+  and the next edge is tried; it never fails the call. `unknown_source_path` only when the
+  tool's output schema is closed (`"additionalProperties": false`) and the path is not in it.
+  The sequence condition codes (`condition_type_mismatch`, `condition_value_type`, …) apply.
+- A document with a `when` is `compiler_version` `1.10.0`; one without keeps the level and the
+  bytes it had. A workspace whose voice engine is older than 1.10.0 refuses it at Check and
+  publish with `result_guard_reader_unavailable` (one issue per edge, nothing published): remove
+  the `when` and keep one `succeeded` edge, or publish again once the engine is updated.
+- The dashboard shows such an edge on the canvas and in the step panel and keeps its `when`
+  through other edits, but cannot author one. Write it with `PUT /agents/{id}/workflow` (or the
+  MCP workflow tools), never tell the customer to "add the condition in the dashboard".
+- Converted flow agents arrive this way: a step that branched on one exact answer from a tool
+  became one `succeeded` edge per branch (in the old order) plus the otherwise edge, and
+  `strict_mode` on. Expect to read a `when` on a result edge in such a document. A branch that
+  cannot be expressed exactly is not converted: that agent stays `legacy`.
 
 **The phase contract.** A follow-up trigger's `event` may be `any_end`, which stands for
 `call.ended`, `call.failed` and `call.no_answer` together, or `request.failed`, the request

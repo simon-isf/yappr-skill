@@ -1033,7 +1033,8 @@ at, saved with `PUT /agents/:id/workflow` and read back with `GET /agents/:id/wo
 Routing between conversation nodes happens automatically: on every user-turn boundary the
 model evaluates what the user just said against the current node's outgoing edges and
 either advances or stays — advisory under Strict Mode off, enforced once you turn it on.
-Deterministic nodes route on their tool's result, never on the model. This pattern
+Deterministic nodes route on their tool's result (and, with Strict Mode on, on what it
+answered), never on the model. This pattern
 matches what Retell.ai and nlpearl.ai ship.
 
 The exact document shape — `conversation.entry_node_id`, `nodes[]`, `edges[]`,
@@ -1072,7 +1073,12 @@ Identify the steps. For each one decide:
   the phone system's transfer code set once on the endpoint (`register.pbx_feature_code`,
   register journey step 8 below) Yappr presses the code and the extension instead and leaves
   the call, with nothing to set on the tool. Route its outcome with `result` edges (`outcome: "succeeded" |
-  "failed"`), never with a labeled transition.
+  "failed"`), never with a labeled transition. When the next step depends on what the tool
+  *answered* (availability says book / offer another time / transfer), turn Strict Mode on
+  and put a `when` on one `succeeded` edge per answer, plus one `succeeded` edge without a
+  `when` for every other answer: the platform picks the edge from the answer, not the model.
+  Shape and refusals: **Routing on what a tool answered** in `yappr-api.md`; the dashboard
+  shows these edges but cannot author them, so write them through the API.
 - **`sequence` node**: `sequence_id` pointing at a private, tool-only `ToolSequence` in
   `document.sequences[]` — use it for "check, then branch on what came back" in one node
   rather than three conversation nodes; see **A sequence that checks before it acts**
