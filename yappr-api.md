@@ -1468,7 +1468,11 @@ model reads it.
 - Only a `succeeded` edge can have a `when` (`result_guard_outcome`), and only with
   `strict_mode: true` (`result_guard_needs_strict`: turn Strict Mode on, it starts off). A
   `failed` edge is taken whenever the tool fails, whatever it answered, and also when the
-  tool never answered (a timeout) on a step that has a `when`; the request is not sent again.
+  tool never answered (a timeout, a connection that reset), with or without a `when` on the
+  step; the request is not sent again. A step with no `failed` edge waits. A call transfer is
+  the exception: if the carrier never said whether it connected, the call waits, because the
+  caller may already be on the other line. A transfer the carrier refuses takes its `failed`
+  edge like any other step.
 - A comparison that cannot be made (the answer has no such field, or the wrong type) is false
   and the next edge is tried; it never fails the call. `unknown_source_path` only when the
   tool's output schema is closed (`"additionalProperties": false`) and the path is not in it.
