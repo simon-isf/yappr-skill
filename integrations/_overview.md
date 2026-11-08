@@ -8,7 +8,7 @@ Use this file to decide which integration docs to open for a given task.
 |---|---|
 | Post-call WhatsApp message to Israeli number | `greenapi-whatsapp.md` |
 | Post-call WhatsApp via Meta Business API | `whatsapp-business.md` |
-| Book appointment, check calendar availability | `google-calendar.md`, `cal-com.md`, `calendly.md` |
+| Book appointment, check calendar availability | `google-calendar.md` (connect Google Calendar as a connected app first — no code), `cal-com.md`, `calendly.md` |
 | Book via service-business platform (salons, coaches) | `acuity-scheduling.md`, `mindbody.md`, `booksy.md`, `setmore.md`, `simplybook-me.md` |
 | Book via Zoho Bookings (integrated with Zoho CRM) | `zoho-bookings.md` |
 | Book via Square ecosystem | `square-appointments.md` |
@@ -143,7 +143,7 @@ Use this file to decide which integration docs to open for a given task.
 - `convertkit.md` — ConvertKit — creator/email-primary sequences
 
 ### Automation Platforms
-- `make-com.md` — Make.com (receive/send Yappr webhooks)
+- `make-com.md` — Make.com (receive Yappr follow-ups, call the Yappr API)
 - `n8n.md` — n8n HTTP Request and webhook patterns
 - `zapier.md` — Zapier Catch Hook and Webhooks by Zapier patterns
 - `pluga.md` — Pluga — Israeli automation platform (native iCount, Green Invoice, Priority integrations)

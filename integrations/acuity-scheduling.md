@@ -251,7 +251,8 @@ const availableSlots = Object.entries(slotsByDay)
 // Tool definition should expose: datetime (ISO string), callerName, callerPhone
 
 const body = await req.json();
-const { datetime, callerName, callerPhone } = body.tool_call.arguments;
+// The tool's declared inputs arrive top-level; the call itself is under body.call
+const { datetime, callerName, callerPhone } = body;
 
 const [firstName, ...rest] = callerName.split(" ");
 const lastName = rest.join(" ") || "—";

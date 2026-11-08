@@ -315,7 +315,8 @@ const availableSlots = slots.join(", ");
 // Tool definition should expose: startDateTime (ISO), callerName, callerPhone, staffId
 
 const body = await req.json();
-const { startDateTime, callerName, callerPhone, staffId } = body.tool_call.arguments;
+// The tool's declared inputs arrive top-level; the call itself is under body.call
+const { startDateTime, callerName, callerPhone, staffId } = body;
 
 const apiKey = Deno.env.get("MINDBODY_API_KEY");
 const siteId = Deno.env.get("MINDBODY_SITE_ID");

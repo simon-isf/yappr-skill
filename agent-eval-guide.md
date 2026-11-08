@@ -6,11 +6,13 @@ This guide is task-oriented. Open it whenever the user wants to:
 
 - Test an agent without making real calls
 - Catch regressions before they ship (CI integration)
-- A/B test two system prompts or two flow_configs
+- A/B test two versions of the agent's instructions
 - Audit agent behaviour against compliance phrases
 - Investigate "the agent used to handle this case correctly, what changed?"
 
-For exact endpoint shapes see [`yappr-api.md`](yappr-api.md). For flow-agent design fundamentals see [`flow-composition-guide.md`](flow-composition-guide.md).
+For exact endpoint shapes see [`yappr-api.md`](yappr-api.md).
+
+**What an eval exercises.** A run is a text conversation against the agent's stored record (its saved instructions and settings), not its published workflow document: Before steps, the conversation graph, After follow-ups and the tools bound in the document are not run, and instructions changed through `PUT /agents/:id/workflow` may not be what the eval sees. Use evals for wording and behaviour checks; rehearse the published workflow itself with a web call (`POST /calls {"type":"web"}`) or a test call.
 
 ---
 
@@ -46,7 +48,7 @@ A persona is a reusable caller archetype. Keep them tight; reuse them across man
 | `description` | Optional one-liner |
 | `identity_prompt` | Second-person prompt — who they are, what brought them to the call |
 | `behavior_traits` | JSON knobs: `patience`, `verbosity`, `cooperation`, `interruption_tendency`, `goal`, `accent`, ... |
-| `language` | `he` or `en` — match the agent under test |
+| `language` | Any call language except `multi` (`he`, `en`, `fr`, …) — match the agent under test; test a multilingual agent with one persona per language |
 
 ### Sample
 
@@ -174,7 +176,7 @@ A useful starter set covers different failure modes. Below is a worked example f
   "suite_id": "SUITE_UUID",
   "scenario": "The persona has no idea who is calling and didn't request any service. They will say 'who is this?' or 'I think you have the wrong number'.",
   "success_criteria": [
-    { "kind": "must_reach_node", "node_id": "polite_end_node", "weight": 2 }
+    { "kind": "custom_llm_judge", "rubric": "The agent apologises for the mix-up, does not pitch, and ends the call politely.", "weight": 2 }
   ],
   "max_turns": 6,
   "pass_threshold": 100,
@@ -182,7 +184,7 @@ A useful starter set covers different failure modes. Below is a worked example f
 }
 ```
 
-(Use `must_reach_node` only for flow agents.)
+(Don't use `must_reach_node`: it matches node ids of the retired flow engine and cannot check a workflow agent's steps.)
 
 #### Case E — language switch (for bilingual deployments)
 
@@ -205,7 +207,7 @@ A useful starter set covers different failure modes. Below is a worked example f
 ### Pass threshold guidance
 
 - **80** (default) — leaves headroom for one weight-1 assertion to flake without failing the case. Right for fuzzy must-say checks.
-- **100** — every assertion must pass. Right for hard rules (must_not_say compliance phrases, must_reach safety nodes).
+- **100** — every assertion must pass. Right for hard rules (must_not_say compliance phrases).
 
 ### Step 3 — sanity-run one case before running the whole suite
 
@@ -377,10 +379,9 @@ curl -s "https://api.goyappr.com/agent-eval/runs/$RUN_ID/evaluation" \
 | Assertion phrase too loose | `must_not_say` flags a substring inside an unrelated word | Tighten with regex, add word boundaries, or use `case_sensitive: true` |
 | Persona too rigid | The persona never reaches the topic the agent needs | Trim `identity_prompt`, broaden `behavior_traits.cooperation` |
 | Persona too cooperative | Refusal-path case never refuses | Add explicit refusal stance to the persona's `goal` for that case (use a per-case override or a separate persona) |
-| Agent missing a tool call | `must_call_tool` fails | Inspect agent.system_prompt / flow_config for missing tool guidance; re-run after fix |
-| Flow agent skips a node | `must_reach_node` fails | Pull `flow_event` rows from `/turns` — find the conversation node where the wrong transition fired, inspect `flow_eval_decision.reasoning` |
-| `termination_reason: max_turns` | Conversation ran out | Either raise the case's `max_turns`, simplify the persona's goal, or shorten the agent's per-step instructions |
-| `status: failed` | Worker hit an unrecoverable error | Check `error` field — usually a malformed `flow_config`, missing tool, or insufficient balance |
+| Agent missing a tool call | `must_call_tool` fails | Inspect the agent's instructions for missing tool guidance; re-run after fix |
+| `termination_reason: max_turns` | Conversation ran out | Either raise the case's `max_turns`, simplify the persona's goal, or shorten the agent's instructions |
+| `status: failed` | Worker hit an unrecoverable error | Check `error` field — usually a missing tool, an inactive agent, or insufficient balance |
 
 ### Step 4 — fix and re-run
 
@@ -414,7 +415,7 @@ The override is recorded on the run row, so you can always trace back which conf
 
 - **`tool_policy: "mock"` is the right default for CI.** All tools return synthetic success — free, deterministic, no third-party calls. Only switch to `real` for occasional pre-prod sanity checks.
 - **Mixed-policy via `allowlist`.** Useful when you've added one new tool that you want to validate end-to-end while everything else stays mocked.
-- **`must_reach_node` only works for flow agents.** Using it on a prompt-mode agent fails the assertion every time.
+- **Don't use `must_reach_node`.** It matches node ids of the retired flow engine, so it cannot check a workflow agent's steps.
 - **Personas drift over time.** When the agent under test grows new capabilities, revisit your personas — an old "frustrated tenant" persona might no longer trigger the new path you care about.
 - **Don't share personas across very different agents.** A persona tuned to a booking agent will give garbage results against an unrelated support agent.
 - **No webhooks for eval runs.** Eval runs do not emit webhooks — poll `GET /agent-eval/runs/:id` (or `GET /agent-eval/suites/:id/runs/:exec_id` for suites) instead. Single `POST /agent-eval/cases/:id/run` already blocks up to 60s and returns the result inline if it finishes in time.
@@ -424,12 +425,7 @@ The override is recorded on the run row, so you can always trace back which conf
 
 ## Pricing summary
 
-User-facing rate card (what gets charged to your credit balance):
-
-| Role | Input | Output |
-|---|---|---|
-| Agent | $2 / 1M tokens | $10 / 1M tokens |
-| Persona | $1 / 1M tokens | $4 / 1M tokens |
+Agent and persona tokens are charged to your credit balance at one per-token rate (published on the Agent Eval page of the API docs); `total_cost_cents` on each run is the exact amount debited.
 
 A typical 10-turn case runs $0.005-$0.05. A 50-case regression suite under $1.
 

@@ -310,7 +310,8 @@ const availableSlots = slots
 // Tool definition should expose: startAt (ISO), callerName, callerPhone
 
 const body = await req.json();
-const { startAt, callerName, callerPhone } = body.tool_call.arguments;
+// The tool's declared inputs arrive top-level; the call itself is under body.call
+const { startAt, callerName, callerPhone } = body;
 
 const accessToken = Deno.env.get("SQUARE_ACCESS_TOKEN");
 const locationId = Deno.env.get("SQUARE_LOCATION_ID");

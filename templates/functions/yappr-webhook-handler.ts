@@ -1,6 +1,13 @@
 // yappr-webhook-handler.ts
-// Receives Yappr webhook events (call.analyzed, call.no_answer, call.failed).
+// Receives Yappr follow-ups (the agent workflow's After triggers: analysis.ready,
+// call.no_answer, call.failed), each posted by one HTTP tool to this URL.
 // Routes by disposition, schedules retries, triggers downstream actions.
+//
+// Body: {"call": {...}} plus the step's own inputs. Everything about the call is
+// under `call` (call.call_id, call.status, call.callee_number, call.disposition
+// {id, label}, call.analysis.summary, ...). A converted agent's follow-up also
+// sends a top-level `event` with its old name ("call.analyzed", ...); a follow-up
+// authored on a new agent sends none, so the event is derived from call.status.
 //
 // Required env vars:
 //   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
@@ -8,7 +15,8 @@
 //   YAPPR_API_BASE       — Yappr API base URL
 //
 // Optional:
-//   WEBHOOK_SECRET       — if set, validates X-Yappr-Signature header
+//   WEBHOOK_SECRET       — a shared secret; put it in a header on the HTTP tool
+//                          (e.g. Authorization) and compare it here
 //   GREENAPI_INSTANCE    — Green API instance ID (for WhatsApp)
 //   GREENAPI_TOKEN       — Green API token
 //
@@ -53,7 +61,8 @@ async function fetchYapprCall(callId: string): Promise<Record<string, unknown> |
 // ── DISPOSITION HANDLERS ─────────────────────────────────────────────────────
 // Customize these based on your use case.
 // callData = full call object from GET /api-v1/calls/:id (has lead, disposition, transcript, summary)
-// webhookData = raw webhook payload (minimal: direction, status, phone numbers, disposition label)
+// webhookData = raw follow-up body: { event?, call: { call_id, status, call_direction,
+//   caller_number, callee_number, disposition?: {id, label}, analysis?: {summary, extracted_data} } }
 
 async function handleAppointmentSet(callData: Record<string, unknown>, supabase: ReturnType<typeof createClient>) {
   // Example: send WhatsApp confirmation + update contacts table
@@ -87,14 +96,17 @@ async function handleAppointmentSet(callData: Record<string, unknown>, supabase:
 }
 
 async function handleNoAnswer(webhookData: Record<string, unknown>, supabase: ReturnType<typeof createClient>) {
-  const toNumber = (webhookData.data as Record<string, unknown>).to_number as string;
-  const callId = webhookData.call_id as string;
+  const call = (webhookData.call ?? {}) as Record<string, unknown>;
+  const toNumber = call.callee_number as string;
+  const callId = call.call_id as string;
+  // dispatch-calls puts call_queue_id in the call's metadata; POST /calls answers a
+  // workflow agent with 202 and no call id yet, so match on it first.
+  const queueId = (call.call_metadata as Record<string, unknown> | undefined)?.call_queue_id as string | undefined;
 
-  // Find call_queue row by yappr_call_id
   const { data: queueRow } = await supabase
     .from("call_queue")
     .select("id, attempts, max_attempts, phone_number")
-    .eq("yappr_call_id", callId)
+    .eq(queueId ? "id" : "yappr_call_id", queueId ?? callId)
     .maybeSingle();
 
   if (!queueRow) {
@@ -204,23 +216,30 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
   }
 
-  const event = payload.event as string;
-  const callId = payload.call_id as string;
+  const call = (payload.call ?? {}) as Record<string, unknown>;
+  const callId = call.call_id as string;
+  // A converted agent sends `event`; a natively authored follow-up does not, so
+  // derive it: an analysis means analysis.ready, otherwise read call.status.
+  const event = (payload.event as string | undefined) ??
+    (call.analysis ? "call.analyzed"
+      : call.status === "no_answer" ? "call.no_answer"
+      : call.status === "failed" ? "call.failed"
+      : `status:${call.status}`);
 
   console.log(`Received event: ${event}, call_id: ${callId}`);
 
   switch (event) {
     case "call.analyzed": {
-      // Webhook payload includes: direction, status, from/to numbers, duration,
-      // disposition, summary, transcript, and extracted_data (if extraction
-      // parameters are configured on the agent).
+      // The body's `call` carries call_direction, status, caller/callee numbers,
+      // duration_seconds, disposition {id, label}, transcript once ready, and analysis
+      // {summary, extracted_data} (extracted_data if the agent collects fields).
       // For the full call record (lead object, metadata, cost): GET /calls/:id.
       const callData = await fetchYapprCall(callId);
       if (!callData) {
         console.error(`Could not fetch call ${callId} from Yappr`);
         return new Response(JSON.stringify({ ok: false, error: "call fetch failed" }), { status: 200 });
       }
-      // Access extracted values: payload.data?.extracted_data?.customerName, etc.
+      // Access extracted values: call.analysis?.extracted_data?.customerName, etc.
       await handleCallCompleted(callData, supabase);
       break;
     }
@@ -229,14 +248,16 @@ Deno.serve(async (req: Request) => {
       await handleNoAnswer(payload, supabase);
       break;
 
-    case "call.failed":
+    case "call.failed": {
       console.error(`Call failed: ${callId}`);
-      // Update queue
+      // Update queue (by the call_queue_id dispatch-calls put in the call's metadata)
+      const queueId = (call.call_metadata as Record<string, unknown> | undefined)?.call_queue_id as string | undefined;
       await supabase
         .from("call_queue")
-        .update({ status: "failed", disposition: "Failed" })
-        .eq("yappr_call_id", callId);
+        .update({ status: "failed", disposition: "Failed", yappr_call_id: callId ?? null })
+        .eq(queueId ? "id" : "yappr_call_id", queueId ?? callId);
       break;
+    }
 
     default:
       console.log(`Unhandled event: ${event}`);

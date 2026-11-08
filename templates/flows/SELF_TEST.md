@@ -1,8 +1,12 @@
-# Self-test prompts for the flow-agents path
+# Self-test prompts for the graph-conversation path
 
 Run these in a fresh Claude Code session in any directory (the skill is loaded from this repo automatically when present in the user's `.claude/` skills).
 
-## Test 1 — flow path (positive)
+There is one kind of agent — see SKILL.md's **There is one kind of agent**. These tests
+exercise its two conversation shapes (Phase 1A single-block, Phase 1B graph), not two
+agent types.
+
+## Test 1 — graph path (positive)
 
 **Prompt to give Claude:**
 
@@ -10,26 +14,27 @@ Run these in a fresh Claude Code session in any directory (the skill is loaded f
 
 **Expected behavior trace:**
 
-1. Claude reads SKILL.md, sees the decision tree, picks **flow agent** (RSVP + booking is procedural with required steps).
+1. Claude reads SKILL.md, sees RSVP + booking is procedural with required steps, and picks the **graph shape** (Phase 1B) rather than a single block.
 2. Phase 0 discovery — runs the live API queries against `goyappr.com/agents`, `/dispositions`, `/billing`, `/phone-numbers`. Asks the discovery questions.
-3. Sets `agent_type: flow` in DISCOVERY CONFIG.
-4. **Phase 1B (Flow Agent Creation)** — opens `flow-composition-guide.md` for guidance.
-5. Notices the GCal requirement → opens `integrations-guide.md`.
-6. Tells the human "before I can build this, you need to connect Google Calendar from the Yappr dashboard's Integrations page (the OAuth handshake is dashboard-only)." Pauses until the human confirms it's connected.
-7. Calls `GET /integrations?provider=google_calendar` and captures the `id` of the active row.
-8. Loads the `templates/flows/booking-google-calendar.json` template OR builds from scratch using `templates/flows/rsvp.json` as a starting point.
-9. Substitutes the `<INTEGRATION_ID>` placeholders in the chosen template with the captured id (integration_call nodes hold `integration_id` directly — no separate tool rows needed for OAuth-backed providers).
-10. Creates the agent via `POST /agents` with `type: "flow"`, `flow_config: {...}`, the global `system_prompt`, `language: "he"`.
-11. Validates the response (200, agent.id present, agent.type="flow").
+3. Creates the draft with `POST /agents` (`name` + `workflow.global_instructions`) and an `Idempotency-Key`.
+4. **Phase 1B (The graph conversation)** — opens `yappr-api.md`'s *The conversation graph* for the exact node/edge shapes, and `flow-composition-guide.md` for transition-design patterns only (its JSON predates this document).
+5. Notices the calendar requirement → opens the **Connected accounts** section of `yappr-api.md`.
+6. Tells the human "before I can build this, you need to connect the calendar", creates the account with `POST /tool-connections`, and gives them the handoff URL. Pauses until the attempt reports `completed` AND the connection reports `ready`.
+7. Creates a workflow tool bound to that connection (`POST /tools` with a `workflow: {kind:"app", ...}` body) and captures its id.
+8. Builds the graph from `templates/flows/rsvp.json` as a starting point: reads the agent's draft (`GET /agents/:id/workflow`), copies the template's `conversation`, `global_instructions`, `strict_mode` and `channels` into it (keeping the draft's own server-owned `id` and `name`, dropping `_template_meta`), and adds a `bindings[]` entry for the calendar tool.
+9. Wires each dispatch step as an `action` node (or a `sequence` node, for check-then-branch) referencing that binding.
+10. Saves with `PUT /agents/:id/workflow` (`expected_version` + `document`), validates with `POST /agents/:id/workflow/validate`, then publishes with `POST /agents/:id/workflow/publish`.
+11. Validates the response at each step (agent id present, no `issues[]` on validate, `published_workflow_revision_id` set after publish).
 12. Reports back to the user with a summary + how to place a test call.
 
 **Pass criteria:**
-- Claude does NOT try to use the Tools tab pattern (Phase 2)
-- Claude DOES NOT attempt to OAuth-connect via the API (the public API has no connect endpoint)
-- Claude DOES instruct the human to connect via the dashboard, then pauses until confirmed
-- The final agent has type="flow" and a non-null flow_config
+- Claude does NOT send `system_prompt`, `type` or `flow_config` on `POST /agents` — any of those is `410 AGENT_LEGACY_CREATION_GONE`
+- Claude does NOT attempt to attach a tool via `POST /tools/attach` or reference a legacy tool attachment — it binds the tool in the workflow document instead
+- Claude does NOT use the retired native Google path (`GET`/`DELETE /integrations` answer `410 ENDPOINT_RETIRED`) or put a credential on a step — it connects Google Calendar as a connected app with `POST /tool-connections`
+- Claude DOES hand the human the link to finish the Google consent, then pauses until the connection reports `ready`
+- The agent is explicitly published before any test call is placed
 
-## Test 2 — prompt path regression (negative for flow)
+## Test 2 — single-block path regression
 
 **Prompt to give Claude:**
 
@@ -37,38 +42,43 @@ Run these in a fresh Claude Code session in any directory (the skill is loaded f
 
 **Expected behavior:**
 
-1. Claude reads the decision tree, picks **prompt agent** (free-form sales conversation).
+1. Claude picks the **single-block shape** (Phase 1A) — free-form sales conversation, no required step order.
 2. Phase 0 discovery (same as Test 1).
-3. Phase 1A — builds the system prompt per HUMANIZE_PLAYBOOK, runs Hebrew Pronunciation Protocol if language is Hebrew.
-4. Phase 2 (Tooling) — creates webhook tools, attaches them to the agent via `POST /tools/attach`.
+3. Phase 1A — builds `workflow.global_instructions` per HUMANIZE_PLAYBOOK, runs Hebrew Pronunciation Protocol if language is Hebrew.
+4. Phase 2 (Tooling) — creates workflow tools (`POST /tools` with a `workflow` body) and binds them in the workflow document; does not attach anything.
 5. Phase 3+ as today.
 
 **Pass criteria:**
-- Claude does NOT try to build a `flow_config`
-- The agent is created with `type: "prompt"` (default — no `type` field in payload, or explicit `type: "prompt"`)
-- Existing prompt-agent journey is byte-identical to before this change
+- Claude does NOT send `type: "prompt"` or expect a default `type` on the create body — the create body has no `type` field at all
+- Claude does NOT try to build `flow_config`
+- Claude explicitly saves, validates and publishes the workflow document before treating the agent as ready
 
-## Test 3 — flow_config validation
+## Test 3 — workflow document validation
 
 **Prompt to give Claude:**
 
-> Create a flow agent with this config:
+> Save this conversation graph:
 > ```json
 > {
->   "type": "flow",
->   "name": "Broken",
->   "system_prompt": "test",
->   "flow_config": {
->     "flow_config_version": "1",
->     "nodes": [
->       { "id": "start", "type": "start", "next_step_id": "missing" },
->       { "id": "real_node", "type": "conversation", "instructions": "hi", "transitions": [] }
->     ]
+>   "expected_version": 1,
+>   "document": {
+>     "id": "wf1", "name": "Broken", "conversation": {
+>       "entry_node_id": "start",
+>       "nodes": [
+>         { "id": "start", "type": "conversation", "label": "Start", "instructions": "hi" }
+>       ],
+>       "edges": [
+>         { "id": "e1", "source": "start", "target": "missing", "kind": "conversation", "condition": "always" }
+>       ]
+>     }
 >   }
 > }
 > ```
 
-**Expected:** API returns 400 with `flow_config_invalid` because `start.next_step_id="missing"` doesn't resolve. Claude reports the error clearly and asks the user how to fix.
+**Expected:** `POST /agents/:id/workflow/validate` (or `PUT .../workflow`) returns a
+non-empty `issues[]` because the edge's `target` (`missing`) does not resolve to any
+node, and the graph has no `end` node reachable from `start`. Claude reports the exact
+`issues[]` entries and asks the user how to fix them, rather than guessing at a fix.
 
 ## Test 4 — schema discovery
 
@@ -76,7 +86,10 @@ Run these in a fresh Claude Code session in any directory (the skill is loaded f
 
 > I want to build a procedural voice agent that asks a date and a name in order. What do I need to know first?
 
-**Expected:** Claude surfaces the flow-agents path. References `flow-composition-guide.md`. Mentions the per-node transition pattern. Doesn't dive into prompt-agent territory.
+**Expected:** Claude surfaces the graph-conversation path (Phase 1B). References **The
+conversation graph** in `yappr-api.md` for the exact shapes, and
+`flow-composition-guide.md` for the transition-design patterns only. Doesn't propose
+`flow_config` or a `type` field.
 
 ## Test 5 — template integrity
 
@@ -87,15 +100,9 @@ for f in *.json; do
 done
 ```
 
-All three (booking-google-calendar.json, lead-qualification.json, rsvp.json) must parse as valid JSON.
-
-For server-side schema validation, use the api-v1 endpoint:
-
-```bash
-curl -X POST "https://api.goyappr.com/agents/<existing-flow-agent>/flow/test" \
-  -H "Authorization: Bearer $YAPPR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "$(jq '{ flow_config: . , transcript: [], mock_tool_results: {} }' booking-google-calendar.json)"
-```
-
-Returns `200` with a step trace if the schema is valid, `400` otherwise.
+Both (lead-qualification.json, rsvp.json) must parse as valid JSON. They are workflow
+documents (`schema_version` `"1"`) wrapped with a `_template_meta` block, which a save
+refuses. Never `PUT` a file as it is: copy its `conversation`, `global_instructions`,
+`strict_mode` and `channels` into the agent's own draft (keeping the draft's `id` and
+`name`), set `agent_fields_to_set` with `PATCH /agents/:id`, and add the
+`after_triggers_to_add` to `after` only with real steps (an HTTP tool binding).

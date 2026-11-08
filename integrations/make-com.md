@@ -61,33 +61,33 @@ N/A — Make.com is a visual platform; patterns below describe module configurat
 
 **Step 1**: Add "Webhooks → Custom Webhook" module → Copy the generated URL.
 
-**Step 2**: In Yappr, configure the webhook URL for the `call.analyzed` event.
+**Step 2**: In Yappr, add a follow-up: an HTTP tool whose URL is this webhook (`POST /tools`), and in the agent's workflow an After trigger on `analysis.ready` with a step that uses it (dashboard: the agent's workflow → After). Validate and publish.
 
-**Incoming data structure from Yappr:**
+**Incoming data structure from Yappr** (everything is under `call`; `disposition` is an object):
 ```json
 {
-  "event": "call.analyzed",
-  "timestamp": "2026-04-11T...",
-  "agent_id": "uuid",
-  "company_id": "uuid",
-  "call_id": "uuid",
-  "data": {
-    "direction": "outbound",
+  "call": {
+    "phase": "after",
+    "call_id": "uuid",
+    "agent_id": "uuid",
+    "company_id": "uuid",
+    "call_direction": "outbound",
     "status": "completed",
-    "from_number": "+972501234567",
-    "to_number": "+972521234567",
+    "caller_number": "+972501234567",
+    "callee_number": "+972521234567",
     "duration_seconds": 180,
-    "disposition": "Appointment Set",
-    "summary": "Customer interested in Business plan...",
-    "transcript": [...]
+    "disposition": { "id": "uuid", "label": "Appointment Set" },
+    "analysis": { "summary": "Customer interested in Business plan...", "extracted_data": {} }
   }
 }
 ```
 
+A follow-up written on a new agent has no `event` member. An agent converted from the old webhook settings also sends `"event": "call.analyzed"` at the top level.
+
 **Step 3**: Add a **Router** module. Create branches:
-- Branch 1: Filter `data.disposition = "Appointment Set"` → HTTP POST to HubSpot create deal
-- Branch 2: Filter `data.disposition = "Not Interested"` → HTTP POST to mark contact in CRM
-- Branch 3: Filter `data.disposition = "Callback Requested"` → Add row to Google Sheets
+- Branch 1: Filter `call.disposition.label = "Appointment Set"` → HTTP POST to HubSpot create deal
+- Branch 2: Filter `call.disposition.label = "Not Interested"` → HTTP POST to mark contact in CRM
+- Branch 3: Filter `call.disposition.label = "Callback Requested"` → Add row to Google Sheets
 
 ---
 

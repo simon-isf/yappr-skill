@@ -160,7 +160,8 @@ function verifyPlugaSignature(body: string, signature: string, secret: string): 
 ### Post-call workflow
 ```typescript
 // supabase/functions/call-analyzed/index.ts
-// Triggered by Yappr call.analyzed webhook — forwards disposition to Pluga
+// Triggered by the agent's analysis.ready follow-up — forwards disposition to Pluga
+// (body.call.disposition.label, body.call.analysis.summary)
 
 import { serve } from "npm:@hono/node-server";
 

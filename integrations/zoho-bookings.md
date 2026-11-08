@@ -378,7 +378,8 @@ const availableSlots = slots.join(", ");
 // Tool definition should expose: zohoStartTime ("ddMMYYYY HH:mm"), callerName, callerPhone, callerEmail
 
 const body = await req.json();
-const { zohoStartTime, callerName, callerPhone, callerEmail } = body.tool_call.arguments;
+// The tool's declared inputs arrive top-level; the call itself is under body.call
+const { zohoStartTime, callerName, callerPhone, callerEmail } = body;
 
 const accessToken = Deno.env.get("ZOHO_ACCESS_TOKEN");
 const workspaceId = Deno.env.get("ZOHO_WORKSPACE_ID");
