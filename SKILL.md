@@ -1147,9 +1147,12 @@ The connection stays the same record (`id`, `label` and bindings kept; `binding_
 `authorization_epoch` each go up by one). **Say plainly that it takes effect at once and cannot be
 undone from Yappr:** every agent that uses the connection uses the new key from that moment, and a
 wrong key leaves it broken until a person enters a working one (the old key, if it still works).
-Tools built on the old key stop working until a five-minute clean-up rebuilds them, hand-made ones
-included: usually within a few minutes, longer when many tools use the account, so tell the customer
-that calls to an agent using the account can fail in that window. The old provider account is not
+Tools built on the old key stop working until they are rebuilt on the new one. Yappr starts rebuilding them the
+moment the key is replaced (hand-made tools included) and an agent that uses several of them switches
+in one step: how long it takes grows with the number of tools and agents involved. A rebuild that
+fails is tried again by a check that runs every five minutes, waiting longer after each failure. Tell
+the customer that calls to an agent using the account can fail in that short window, and that a call
+already in progress keeps failing its app tools until it ends. The old provider account is not
 deleted: they revoke the old key in the app. For the few apps Yappr can test on the spot (Mapbox
 today) a key the app refuses is turned down on the page and nothing changes; for the others the page
 can only say the key is saved but not tested, and a wrong one shows on the first call. Afterwards read
