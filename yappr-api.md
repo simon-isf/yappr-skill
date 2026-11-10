@@ -8268,9 +8268,12 @@ have nothing to test the key against, so for them the page can only say "saved, 
 **It takes effect at once and Yappr cannot undo it:** the connection keeps its `id`, `label` and
 bindings; `binding_revision` and `authorization_epoch` each go up by one; every agent that uses the
 connection uses the new key from that moment; and a tool pinned to the old account stops working
-until a five-minute clean-up rebuilds it (tools made from the account's action list and tools built
-by hand on it alike; usually within a few minutes, longer when many tools use the account). The old
-provider account is not deleted, so the customer revokes the old key in the app. Read
+until it is rebuilt on the new one. Yappr starts rebuilding the moment the key is replaced (tools made
+from the account's action list and tools built by hand on it alike) and an agent that uses several of
+them switches in one step: how long it takes grows with the number of tools and agents involved. A
+rebuild that fails is tried again by a check every five minutes, waiting longer after each failure, and
+a call already in progress keeps failing its app tools until it ends. The old provider account is not
+deleted, so the customer revokes the old key in the app. Read
 `GET /tool-connections/{id}` afterwards: the new revision, and `check` (from
 `POST /tool-connections/{id}/check`) once it has run.
 
