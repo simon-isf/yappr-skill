@@ -1474,9 +1474,21 @@ model reads it.
   caller may already be on the other line. A transfer the carrier refuses takes its `failed`
   edge like any other step.
 - A comparison that cannot be made (the answer has no such field, or the wrong type) is false
-  and the next edge is tried; it never fails the call. `unknown_source_path` only when the
-  tool's output schema is closed (`"additionalProperties": false`) and the path is not in it.
+  and the next edge is tried; it never fails the call. `unknown_source_path` when the tool's
+  output schema rules the path out: a closed shape (`"additionalProperties": false`) that does
+  not list the field, a field below a value that is text, a number or true/false, or a step
+  into a list with something that is not a position (`/trips/first`, `/trips/-1`, `/trips/01`).
+  An open shape is not checked, so a misspelt field in one is not caught at Check.
   The sequence condition codes (`condition_type_mismatch`, `condition_value_type`, …) apply.
+- A `path` may step into a list by position, optional lists included (connected-app tools declare
+  most lists as `"type": ["array", "null"]`): `/data/trips/0/distance` is the first trip's
+  distance, `/data/waypoints/0/name` the first waypoint's name. A `null`, empty, missing or too
+  short list makes the comparison false, so that edge is skipped and the otherwise edge is taken.
+  There is no "any item" or "last item". `not` turns that false into true, so for "there is a
+  trip and it is not long" write the positive comparison, `lte` 8000 on `/data/trips/0/distance`
+  (`lte` is the opposite of `gt`, `lt` of `gte`), never `not` around `gt`: it also holds when the
+  answer has no trip or the trip has no distance. `exists` is true for a `null` value, so `exists` plus `not` does not fix that.
+  `not_exists` on `/data/trips/0` is true when the list is `null`, empty or shorter.
 - A document with a `when` is `compiler_version` `1.10.0`; one without keeps the level and the
   bytes it had. A workspace whose voice engine is older than 1.10.0 refuses it at Check and
   publish with `result_guard_reader_unavailable` (one issue per edge, nothing published): remove
