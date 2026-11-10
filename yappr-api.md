@@ -8204,7 +8204,7 @@ Connection control is available on deployments that enable the workspace connect
 | `POST /tool-connections` | `tool-connections:manage` | Body `{ "toolkit": "gmail", "label": "Team mailbox", "locale": "en" }`; returns `201 {connection, attempt, handoff_url}`. Hosted OAuth only; no provider ownership fields or manual secrets accepted here. |
 | `GET /tool-connection-auth-attempts/{id}` | `tool-connections:read` | Exact local attempt plus safe connection state. Never infer success from list differences or browser messages. |
 | `GET /tool-connections/attempts/{id}` | `tool-connections:read` | The same read under the path the attempt is cancelled at; both answer the same. Takes the attempt id, not the connection id, and no query parameters (`400 CONNECTION_INVALID`). |
-| `POST /tool-connections/{id}/reconnect` | `tool-connections:manage` | Body `{ "mode": "replace", "locale": "en" }`; returns a fresh one-time human handoff. Same-account reauthorization is not yet exposed. |
+| `POST /tool-connections/{id}/reconnect` | `tool-connections:manage` | Body `{ "mode": "replace", "locale": "en" }`; returns a fresh one-time human handoff. For an app connected with a key (`connect.kind: "credentials"`) the link opens the page that asks a person for the new key and replaces it in place at once, with no undo: same connection id, label and bindings, `binding_revision` and `authorization_epoch` each +1. Same-account reauthorization is not yet exposed. |
 | `DELETE /tool-connections/{id}` | `tool-connections:manage` | Returns `202 {connection}` after immediate local denial; removal at the connected-app service and manual revocation in the provider account may still be outstanding. Repeated requests do not advance the authorization epoch again. |
 | `POST /tool-connections/{id}/remove` | `tool-connections:manage` | Takes a record that is **already disconnected** off the list. `200 {connection}`; repeating it is safe. Not a delete: nothing is disconnected, revoked or erased. |
 | `POST /tool-connections/cleanup` | `tool-connections:manage` | No body (or `{}`), no query. Disconnects and takes off the list every connection in the workspace that never had an account and has no sign-in open. `200 {"removed": n}`. Always the whole workspace. |
@@ -8222,6 +8222,27 @@ an optional `locale` — a reconnect without it (or with any other `mode`) is
 `400 CONNECTION_REPLACEMENT_REQUIRED`, and nothing starts. Replace is the only mode: the
 person who opens the handoff signs in again, and the account they choose becomes the
 connection's account.
+
+**Replacing the key of a key app.** `POST /tool-connections/{id}/reconnect {"mode":"replace"}`
+works the same for an app whose `GET /tool-apps/connection-options` entry has
+`connect.kind: "credentials"`, but the handoff page asks the signed-in person for the app's
+fields instead of sending them to a sign-in. The key is typed in their browser: it never
+travels over the public API, the builder chat or the link. The reconnect body takes `mode` and
+`locale` only (`credentials` there is `400 CONNECTION_INVALID`), and a key sent to
+`POST /tool-connections` by an API key is `409 CONNECTION_CREDENTIALS_NEED_PERSON`. The link of a key
+app opens only that page; there is no hosted sign-in behind it. Before the page says it worked, the
+apps Yappr has checked against a live call (Mapbox today) are asked whether they accept the key:
+one that refuses it is turned down on the page and nothing changes; for every app the page then
+runs the account's check and reads its actions, and says in plain words if either fails. Most apps
+have nothing to test the key against, so for them the page can only say "saved, not tested".
+**It takes effect at once and Yappr cannot undo it:** the connection keeps its `id`, `label` and
+bindings; `binding_revision` and `authorization_epoch` each go up by one; every agent that uses the
+connection uses the new key from that moment; and a tool pinned to the old account stops working
+until a five-minute clean-up rebuilds it (tools made from the account's action list and tools built
+by hand on it alike; usually within a few minutes, longer when many tools use the account). The old
+provider account is not deleted, so the customer revokes the old key in the app. Read
+`GET /tool-connections/{id}` afterwards: the new revision, and `check` (from
+`POST /tool-connections/{id}/check`) once it has run.
 
 **Reconnecting beside an open sign-in.** A connection holds one open sign-in at a time, and
 every connection read carries it as `open_attempt` — `{id, status, expires_at}`, whoever
