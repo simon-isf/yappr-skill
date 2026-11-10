@@ -632,6 +632,9 @@ The eight expressive voices (`Keren`, `Eitan`, `Hila`, `Ido`, `Boaz`, `Tali`,
 `vad_*` fields are rejected with `400` on an agent using one. They are
 interrupted exactly like every other agent.
 
+On the Gemini voices a `temperature` below `0.3` is stored and returned as sent, and the agent
+speaks as if it were `0.3`: lower values sometimes made a call open on one word and a pause.
+
 **Extraction parameters have a kind.** Each entry in `extraction_parameters` may carry
 `type`: `number`, `yes_no` or `date`. Send no `type` for text — that is what text has
 always meant, and it is the spelling the dashboard and the stored call settings both use;
