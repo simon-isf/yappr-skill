@@ -1136,6 +1136,26 @@ one a person is in the middle of answers `409 CONNECTION_ATTEMPT_OPEN` naming it
 sign-in still open on it as `open_attempt` (or `null`), and `app_name` is the app's display
 name ("Google Calendar") beside the `toolkit` slug.
 
+**Replacing the key of an app that is connected with a key** (`GET /tool-apps/connection-options`
+shows `connect.kind: "credentials"` for it: Mapbox, Pipedrive and the like). The key is never
+yours to handle. Send `POST /tool-connections/{id}/reconnect {"mode":"replace"}` (just `mode` and
+`locale`: `credentials` there is `400 CONNECTION_INVALID`) and give the `handoff_url` to a signed-in
+member: the page asks them for the new key and says how many agents use the account. Never ask the
+customer to paste a key into chat, a prompt or a request body, and never put one in a URL; an API key
+cannot send one either (`POST /tool-connections` with `credentials` is `409 CONNECTION_CREDENTIALS_NEED_PERSON`).
+The connection stays the same record (`id`, `label` and bindings kept; `binding_revision` and
+`authorization_epoch` each go up by one). **Say plainly that it takes effect at once and cannot be
+undone from Yappr:** every agent that uses the connection uses the new key from that moment, and a
+wrong key leaves it broken until a person enters a working one (the old key, if it still works).
+Tools built on the old key stop working until a five-minute clean-up rebuilds them, hand-made ones
+included: usually within a few minutes, longer when many tools use the account, so tell the customer
+that calls to an agent using the account can fail in that window. The old provider account is not
+deleted: they revoke the old key in the app. For the few apps Yappr can test on the spot (Mapbox
+today) a key the app refuses is turned down on the page and nothing changes; for the others the page
+can only say the key is saved but not tested, and a wrong one shows on the first call. Afterwards read
+`GET /tool-connections/{id}` (`binding_revision` moved) and run `POST /tool-connections/{id}/check`
+to see that the app answers; `not_checked` is not the same as working.
+
 **Connecting an app opens one authorization at a time.** Starting another one calls off
 the one that was left open; if the one in the way was opened in a different browser or
 by another member, the handoff page says so and offers to call those off and carry on. A
