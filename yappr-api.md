@@ -3404,8 +3404,9 @@ curl -s -X POST "https://api.goyappr.com/sip-endpoints" \
 **Response:** `201`, the endpoint with `slug` and `sip_uri` `null` and a `register` object:
 `server`, `username`, `auth_username`, `transport`, `region`, `pbx_feature_code`,
 `pbx_feature_code_hangup_after_secs` (`null` when unset), `status`, `status_detail`,
-`status_checked_at` and `allow_list` (`sip_ip`, `sip_ports` `[5060, 5061]`, `rtp_ports`
-`"16384-32768"`, `note`). The password is not in the response.
+`status_checked_at`, `last_activity_at`, `last_activity_kind` and `allow_list` (`sip_ip`,
+`sip_ports` `[5060, 5061]`, `rtp_ports` `"16384-32768"`, `note`). The password is not in
+the response.
 
 **`register.status`:** `pending` (just created or changed; the carrier is still applying
 it: a few minutes. An endpoint that is switched off and still `pending` after a failed
@@ -3417,6 +3418,23 @@ reachable", "no answer from your phone system", "extension username already in u
 20 extension endpoints serves stored values: check `status_checked_at`). **`registered`
 does not prove calls and transfers work**: a wrong password saved later can leave it
 `registered` while transfers fail. Always send a test call and a test transfer.
+
+**`unknown` with `status_detail` "we cannot read the carrier status right now (this does not
+mean the extension is not working)"** means Yappr can't read the carrier's status at the
+moment: it is not `failed` and calls are not stopped. While it lasts, `last_activity_at` and
+`last_activity_kind` name the newest call that went through the extension in the last 24
+hours and after its settings last changed (a call from before a change used the old
+settings): `inbound_call` is a call from the customer's system that reached Yappr through
+the extension (counted on arrival, answered or not); `outbound_call` is an answered call the
+agent placed out through it, which shows outbound calls work and does not confirm that
+incoming calls arrive. That is **evidence that a call went through, never a registration**:
+`status` stays `unknown`, and you must not report it as registered. Both are `null` in every
+other state, and when no such call exists (an outbound call nobody picked up, or one the
+phone system refused, is not one): tell the customer to find the extension in their phone
+system's list of registered extensions or devices, or send a test call. Only `GET
+/sip-endpoints/{id}` and the list fill them: the answers to create and PATCH carry `null`, so
+read the endpoint again. Never fill the gap from the carrier's own connection record: its
+registration field reads "Not Registered" for an extension that is carrying calls.
 
 `PATCH /sip-endpoints/{id}` takes `register` with any of `server`, `username`,
 `auth_username`, `transport`, `region`, `password`. Changing `username` or
