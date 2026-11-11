@@ -268,7 +268,7 @@ Hook: "קבעתי לך תור ליום שלישי בעשר בבוקר — השע
 - Spell out numbers and times: "January twenty-fourth", "four thirty PM"
 - Provide phonetic guidance for brand names and technical terms in the prompt
 - Use ellipses and letter repetition for TTS pacing hints: "Well... I-I'd need to check on that"
-- Temperature 0.1–0.2 for precision-critical flows; higher temperatures increase conversational naturalness but reduce instruction adherence
+- Temperature 0.3 for precision-critical flows (a Gemini voice treats anything lower as 0.3, so do not set 0.1–0.2); higher temperatures increase conversational naturalness but reduce instruction adherence
 
 ---
 
