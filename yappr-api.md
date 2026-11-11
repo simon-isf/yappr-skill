@@ -2208,6 +2208,19 @@ vendor evidence or reusable execution input; inspect `redaction`, `receipt_settl
 and `resolution` alongside IDs/status. Fixed account, URL, action and destination remain
 immutable through testing. Tool tests and call tests are separate authorization subjects.
 
+**Long answers.** A tool's answer is held to 4,096 values, and a list to 256 items. When the
+agent calls a tool during the conversation (a test with `phase: "during"` shows it) and the
+answer is over that, it is cut, not refused: the first items of its largest list are kept and
+the rest of the answer is untouched. The cut is recorded on the outcome as `output_trimmed`
+(`[{ "path": "/data/items", "kept": 60, "of": 305 }]`; a workflow-owned tool's test result and
+the call record show it), the agent is told the list is partial, and a rule or a later step
+never reads a cut list, or an item past the cut, as if it were whole. Refused as before: an
+answer over 256 KB; an object with more than 256 members or nesting deeper than 32 levels; one
+item that is itself too large, or more than ten lists to cut; an answer to a step before or
+after the call, or inside a sequence; and the calendar availability check. The code is
+`response_too_large` (HTTP tool) or `broker_output_contract_invalid` (connected app); fix it by
+returning fewer items, paging, or narrowing the request.
+
 ### GET /tools
 
 List all tools. Optionally filter to a specific agent. `GET /tools` and
@@ -8249,6 +8262,19 @@ Connection control is available on deployments that enable the workspace connect
 `GET /tool-apps`; anything else is `409 CONNECTION_APP_UNAVAILABLE`. If connection
 options returns `{"data": []}`, nothing can be connected in that workspace yet and every
 create will `409`.
+
+**Which apps connection options lists.** `GET /tool-apps/connection-options` answers
+`{ "data": [{ "slug", "name", "connect": { "kind": "oauth" | "credentials" } }] }`, with
+`categories` and `logo_url` where known; `?toolkit={slug}` adds the fields a `credentials` app
+takes. An app Yappr already has set up that the catalogue no longer carries is still listed,
+without `connect.kind` (the list does not say how it connects: ask `?toolkit={slug}`, never
+assume a sign-in). An app is not listed, and cannot be connected, when it needs an OAuth app
+Yappr has not set up (`409 CONNECTION_APP_NEEDS_CREDENTIALS`) or when it has no dated version
+yet, so none of its actions can be used (`409 CONNECTION_APP_NO_DATED_VERSION`; reading such an
+app's detail or actions answers `422 WORKFLOW_DATED_VERSION_REQUIRED`). An app with no actions
+at all is not listed either, though it still connects. `?toolkit={slug}` still describes an app
+with no dated version and the fields it takes: only `POST /tool-connections` refuses it. Neither
+refusal is fixed by retrying: pick another app. The list refreshes once a day.
 
 `POST /tool-connections/{id}/reconnect` takes `{"mode": "replace"}` and nothing else but
 an optional `locale` — a reconnect without it (or with any other `mode`) is
