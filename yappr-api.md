@@ -8954,6 +8954,8 @@ the path, the query string or a body; `company_id` in the query is
 **Paid purchases only.** Commission is based on completed payments actually collected,
 excluding tax. Gift, onboarding and promotional credits earn no commission. Refunds and
 chargebacks subtract the commission earned on the original payment.
+Partial refunds reverse a cumulative proportion of the original rounded commission;
+do not recalculate them from the refund month's revenue or today's rate.
 
 | Method | Path | Purpose |
 |---|---|---|
