@@ -8951,6 +8951,10 @@ the path, the query string or a body; `company_id` in the query is
 `payout_sent_cents` whatever currency a payout was wired in. Rates are percentages
 (`commission_rate_pct`).
 
+**Paid purchases only.** Commission is based on completed payments actually collected,
+excluding tax. Gift, onboarding and promotional credits earn no commission. Refunds and
+chargebacks subtract the commission earned on the original payment.
+
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/affiliates/stats` | Lifetime summary plus a trailing month-by-month breakdown |
@@ -8968,6 +8972,11 @@ error, and not clamped to zero.
 **Tiers.** Tier 1 (direct) is the companies that signed up through the workspace's own
 link. Tier 2 (override) is the companies referred by a partner Yappr enrolled beneath it.
 Most workspaces are tier 1 only: their override fields read `0` and the downline is empty.
+`override_basis` says how the current tier-2 rate is applied: `revenue` uses the customer's
+paid revenue; `affiliate_commission` uses the sub-affiliate's earned commission. For
+example, a partner earning 5% on $100 earns $5; a 15% commission-based override earns
+$0.75. The partner keeps their full $5. Rates and basis are effective-dated, so use the
+returned earned amounts rather than recalculating historical earnings from today's terms.
 
 ---
 
@@ -8985,6 +8994,7 @@ sent twice or with no value is `400 AFFILIATES_QUERY_INVALID`, naming it.
   "ref_code": "AB12CD34",          // the link is https://app.goyappr.com/signup?ref=AB12CD34
   "commission_rate_pct": 10,       // today's tier-1 rate
   "override_rate_pct": 2.5,        // today's tier-2 rate; 0 with no tier-2 terms
+  "override_basis": "revenue",    // or "affiliate_commission"; applies to today's tier-2 rate
   "hold_days": 30,                 // 0 = payable as soon as earned
   "months_window_months": 12,      // echoes `months`
   "summary": {                     // lifetime
@@ -9042,7 +9052,7 @@ workspaces get `{"data": []}`.
       "name": "string",
       "ref_code": "EF56GH78",
       "customers": 4,                      // its referred customers that generate an override
-      "downline_revenue_cents": 80000,     // the base the override is computed on
+      "downline_revenue_cents": 80000,     // customers' paid revenue; not always the override base
       "my_override_cents": 2000,           // the workspace's tier-2 commission through it
       "my_override_payable_cents": 1600,   // the part past the hold
       "my_direct_cents": 900               // tier-1 commission on the partner's own spend
@@ -9051,8 +9061,11 @@ workspaces get `{"data": []}`.
 }
 ```
 
-`my_direct_cents` (the partner's own spend) and `my_override_cents` (its customers' spend)
-are different money: never add them into one figure without saying so.
+`my_direct_cents` (commission on the partner's own purchases) and `my_override_cents`
+(commission earned through that partner) are different money: never add them into one
+figure without saying so. With `override_basis: "affiliate_commission"` on
+`GET /affiliates/stats`, the override is a share of the partner's commission, not a second
+percentage of `downline_revenue_cents`. Both modes leave the partner's own commission intact.
 
 ---
 
