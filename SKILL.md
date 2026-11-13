@@ -15,6 +15,41 @@ This skill is organized into phases. Work through them sequentially. Each phase'
 
 **Before writing any code or making any API call**, run Phase 0 discovery — query the live account and ask the user the questions. The answers determine everything that follows.
 
+### Journey — connect an AI app with account sign-in
+
+When the user is working through a Yappr MCP connector, use that authenticated
+connection. Do not ask them for a Yappr API key or require this skill to be
+installed again. The remote endpoint is `https://mcp.goyappr.com/mcp` (`POST /mcp`),
+with Streamable HTTP and OAuth account authorization. The person chooses a
+workspace and approves its permissions on Yappr's own sign-in screen.
+
+1. Check the connected workspace with `whoami`, then use the individually
+   described MCP tools available to that connection. Discovery before questions
+   still applies, using only the resources the connection may read.
+2. `yappr.read` reads setup and call statistics; `yappr.build` creates agents and
+   edits drafts. `yappr.manage` enables live workspace operations only when the
+   client requests it and the person explicitly approves it. Do not assume an
+   older read/build connection has management access.
+3. Follow the same create, read, save, check and publish journey below. Confirm
+   with the person before publishing, calling people, launching campaigns, or
+   buying or releasing numbers; consequential tools require an explicit
+   confirmation argument as well.
+4. Call content is a separate permission. Respect call-content redaction and
+   agent limits, and never work around a refused operation with another key.
+5. Connecting a business app may return a sign-in or setup URL. Have the person
+   open it and enter credentials in Yappr or the app provider's own page. Do not
+   request API keys, passwords, payment-card details, or one-time codes in chat.
+6. Subscription and credit purchases stay in Yappr. Explain an unavailable
+   entitlement without starting checkout through the connector. The app's
+   directory policies and account settings may restrict available operations.
+
+The dashboard's **Build with AI** panel opens a published directory listing when
+available and otherwise provides that app's custom connection instructions.
+Claude and ChatGPT listings require separate platform review; never imply a
+listing is approved or has a Verified badge until that is confirmed.
+Connections can be inspected and revoked under **Settings → API keys → AI apps**.
+See the **MCP account connection** section in `yappr-api.md` for protocol details.
+
 ### One kind of agent
 
 There is one kind of agent. Never ask the user to choose a prompt or a flow type:

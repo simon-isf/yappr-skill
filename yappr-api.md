@@ -2,6 +2,55 @@
 
 ---
 
+## MCP account connection
+
+For Claude, ChatGPT, Codex and other supported MCP clients, connect the remote
+MCP endpoint instead of asking the person to create or paste an API key:
+
+```
+POST https://mcp.goyappr.com/mcp
+```
+
+The connector uses Streamable HTTP and OAuth authorization-code flow with PKCE
+S256. Follow the protected-resource metadata in the unauthenticated endpoint's
+`WWW-Authenticate` challenge to discover authorization and token endpoints.
+The person signs in to Yappr, chooses a workspace where they are an owner or
+admin, and explicitly approves permissions.
+
+| OAuth scope | Permission |
+|---|---|
+| `yappr.read` | Read setup and call statistics; always included. |
+| `yappr.build` | Create agents and edit drafts. |
+| `yappr.manage` | Manage live workspace operations after explicit approval. Older grants do not gain this automatically. |
+| `offline_access` | Continue the authorized connection using a refresh token. |
+
+Call content is a separate consent choice: workspace management does not grant
+transcripts or recordings. A selected-agent restriction also applies to every
+operation. Treat a refusal as an authorization boundary, not an invitation to
+obtain another key.
+
+Use MCP `tools/list` for the individually described operations and their exact
+input schemas. Do not substitute a catch-all REST executor. Consequential tools
+require explicit confirmation after the person approves the specific action.
+Agent/workflow operations retain the same version and conflict requirements as
+the REST API described below.
+
+Authorization codes are single-use, and refresh tokens rotate. Save the new
+refresh token after each successful refresh. On `401`, follow OAuth discovery
+and reconnect when needed; a revoked connection cannot be refreshed. On `429`,
+respect `Retry-After`. In Yappr, **Settings → API keys → AI apps** lists access,
+expiry and revocation controls.
+
+Keep provider sign-in, API keys, passwords and payment details outside chat.
+Open the sign-in/setup URL returned by a connection tool. Subscription and
+credit checkout remain in Yappr. Directory availability is reviewed separately
+by each AI platform and is not implied by the existence of this endpoint.
+
+Customer guide: https://docs.goyappr.com/connect-ai
+Protocol reference: https://docs.goyappr.com/api-reference/mcp/connect
+
+---
+
 ## Authentication
 
 All requests require:
