@@ -124,6 +124,15 @@ on the same draft, so a person and an API key can take turns on one agent.
 9. **Read what happened.** `GET /agents/{id}/workflow/versions` lists publications newest first
    (`version`, `draft_version`, `content_hash`, `published_at`); **⋯ → Versions** is the
    dashboard's version list. Calls are read as in PHASE 4, **Journey — read what happened on a call**.
+10. **Undo and teach.** Every version in **⋯ → Versions** has a **Restore** button, and
+    `POST /agents/{id}/workflow/restore` does the same (`version_id` from the list, `expected_version`
+    from `GET /agents/{id}/workflow`): it publishes the old document as a new version, so history
+    only grows. A `409 WORKFLOW_DRAFT_HAS_UNPUBLISHED_CHANGES` means the draft holds edits nobody
+    published; ask the person before sending `discard_draft: true`. To improve a live agent from
+    what was said on a browser test call, turn on **Teach** before the call (or
+    `POST /agents/{id}/workflow/train {"call_id"}` afterwards): only a clear instruction from the
+    tester becomes an edit, it goes live at once, and the result lists every change with an Undo.
+    Owners and admins only, browser test calls on the current version only.
 
 ### What each phase actually runs
 
