@@ -1153,6 +1153,10 @@ changed, retry.
 | `POST /agents/:id/workflow/validate` | `agents:update` | `{expected_version}`; check the saved draft without saving or publishing. |
 | `POST /agents/:id/workflow/publish` | `agents:update` | `{expected_version}`; explicit publication after the canonical validator and freshness checks. |
 | `GET /agents/:id/workflow/versions` | `agents:read` | Immutable publication summaries, with optional numeric cursor. |
+| `GET /agents/:id/workflow/versions/{version_id}` | `agents:read` | One publication with its full `document`. `version_id` is `data[].id` from the list; an unknown or other agent's id is `404 WORKFLOW_NOT_FOUND`. |
+| `POST /agents/:id/workflow/restore` | `agents:update` | `{version_id or version, expected_version, discard_draft}`; publishes an older version's document as a NEW version (roll forward, never rewrites history). `201` with the new revision and `settings_updated_at`. |
+| `POST /agents/:id/workflow/train` | `agents:update` + `calls:read` | `{call_id, retry?}`; teach the agent from one finished browser test call (below). `200` terminal, `202` still working: send the same request again after `retry_after_ms`. |
+| `GET /agents/:id/workflow/train?call_id=` | `agents:read` + `calls:read` | The run for that call, or `{"run": null}`. Read only. |
 | `POST /agents/:id/workflow/rebind` | `agents:update` | `{expected_version, bindings: {binding_id: tool_id}}`; moves one or more existing bindings to another tool's current revision. Edits the draft only. |
 | `GET /tools/workflow-catalog` | `tools:read` | Safe versioned builder choices, full typed input/output schemas; limit 1–50, opaque cursor, up to 10 exact revision_ids. |
 | `GET /agents/:id/settings` | `agents:read` | Ordinary settings and original updated_at; no native secret configuration or document. |
@@ -1205,6 +1209,15 @@ Which call you need:
   `GET /tools/{id}` until `workflow.status` is `current`, then rebind.
 - stay on an older revision forever → `PUT …/workflow` with
   `tool_revision_policy: "pinned"` on that binding.
+
+**Version history, restore and Teach.** Each row of `GET /agents/{id}/workflow/versions` now carries `source` (`"teach"` for a version Teach wrote, `"restore"` for any restore, otherwise `null`), `source_run_id` and `restored_from_version`.
+
+    POST /agents/{agent_id}/workflow/restore
+    { "version_id": "<data[].id>", "expected_version": 7, "discard_draft": false }
+
+Send exactly one of `version_id` or `version` (the publication number). `expected_version` is `draft.version`. Restore is not idempotent: every call makes a new version, and the document is the old one but the version number is new. Errors: `400 WORKFLOW_REQUEST_INVALID`, `404 WORKFLOW_NOT_FOUND`, `409 WORKFLOW_CONFLICT` (stale `expected_version`), `409 WORKFLOW_VERSION_IS_CURRENT`, `409 WORKFLOW_DRAFT_HAS_UNPUBLISHED_CHANGES` (the draft holds edits that were never published, with `reason: "draft_has_unpublished_changes"`: send `discard_draft: true` only when the person agrees to lose them), `422 WORKFLOW_REFERENCE_INVALID` / `WORKFLOW_VALIDATION_FAILED` (a tool or connection the old version used has since changed; the draft is put back as it was), `503 WORKFLOW_COMPILER_UNAVAILABLE`.
+
+**Teach: update an agent from a test call.** The person calls the published agent from the browser, says how it should behave ("from now on always ask for the order number first"), and `POST /agents/{id}/workflow/train {"call_id": "<call id>"}` reads the transcript, edits only the global instructions and the instructions of conversation steps, and publishes the result. Rules: the key needs `calls:read` as well as `agents:update` (the run reads the call's transcript), browser test calls only (not phone), the call must have run on the current published version, the key's owner must be an owner or admin of the workspace (any owner or admin can teach from a recent browser test call of the agent, not only the person who took it), the draft must have no unpublished changes, at most three applies per agent per day. The call may still be finishing: a `202` with `run: null` or a run still working means send the same request again after `retry_after_ms`. A run ends as `applied` (the answer lists `changes[]` with before and after text and the quotes it was based on; `summary` is one sentence on what changed, or `null` when none could be written, so read `changes[]`), `no_change` (nothing in the call was a clear instruction) or `held` / `failed` with `reason` (`retry: true` retries, up to five times, and only for the person who requested the run; `can_retry` says so). To undo an applied run, call restore with the run's `base_revision.id`. Train errors keep their own codes: `TEACH_FORBIDDEN_ROLE`, `TEACH_DISABLED`, `TEACH_AGENT_NOT_PUBLISHED`, `TEACH_CALL_NOT_FOUND`, `TEACH_CALL_AGENT_MISMATCH`, `TEACH_CALL_NOT_WEB`, `TEACH_CALL_TOO_OLD`, `TEACH_CALL_RUN_UNAVAILABLE`, `TEACH_CALL_NOT_ON_LIVE_VERSION`, `TEACH_DAILY_LIMIT`, `TEACH_AGENT_BUSY`, `TEACH_RETRY_NOT_ALLOWED`, `TEACH_ACTOR_REQUIRED` (the key has no owner), `AGENT_ENGINE_UNSUPPORTED`. Check the result before relying on it: the change is live as soon as the run reads `applied`.
 
 **The dashboard edits a shared tool for one agent the same way.** Editing a webhook or
 a transfer from inside an agent's step never changes it for the other agents that use
@@ -8108,8 +8121,8 @@ member can reach in the dashboard has a public endpoint behind it.
 | POST /agents (create) | `agents:create` |
 | PATCH /agents/:id | `agents:update` |
 | DELETE /agents/:id | `agents:update` |
-| GET /agents/:id/workflow, GET /agents/:id/workflow/versions | `agents:read` |
-| PUT /agents/:id/workflow, POST /agents/:id/workflow/validate \| /publish \| /rebind | `agents:update` |
+| GET /agents/:id/workflow, GET /agents/:id/workflow/versions[/:version_id], GET /agents/:id/workflow/train | `agents:read` |
+| PUT /agents/:id/workflow, POST /agents/:id/workflow/validate \| /publish \| /rebind \| /restore \| /train | `agents:update` |
 | POST /agents/:id/duplicate | `agents:create` |
 | GET /agents/:id/integrations, GET /agents/:id/tools-and-integrations | `agents:read` |
 | POST /agents/:id/integrations, PATCH/DELETE /agents/:id/integrations/:integration_id | `agents:update` |
