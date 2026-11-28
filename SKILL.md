@@ -13,7 +13,7 @@ This skill takes a coding agent through building a complete, production-ready vo
 
 This skill is organized into phases. Work through them sequentially. Each phase's output feeds the next.
 
-**Before writing any code or making any API call**, run Phase 0 discovery — query the live account and ask the user the questions. The answers determine everything that follows.
+**Start with a working connection:** an authenticated Yappr MCP connector, or an API key — with neither, go to **Account and API Key** below. **Then, before writing any code or changing anything**, run Phase 0 discovery — query the live account and ask the user the questions. The answers determine everything that follows.
 
 ### Journey — connect an AI app with account sign-in
 
@@ -683,7 +683,7 @@ deno check *.ts
 
 ### Principle: Execute, Don't Teach
 
-When a user asks you to do something, DO IT — don't explain how they could do it themselves. You have full API access. Create the agent, attach the tool, trigger the call. The only exceptions are genuinely destructive actions (deleting/deactivating) where you confirm first, and billing charges where you always get explicit approval.
+When a user asks you to do something, DO IT — don't explain how they could do it themselves. Once their account is connected, you act through it. Create the agent, attach the tool, trigger the call. The only exceptions are genuinely destructive actions (deleting/deactivating) where you confirm first, billing charges where you always get explicit approval, and signing up and creating the first API key (**Account and API Key**), which only a person can do.
 
 ### Principle: Discovery First
 
@@ -709,9 +709,83 @@ Before doing anything else, check if a newer version of this skill is available:
 
 ---
 
+## Account and API Key (only when none is configured)
+
+Over a Yappr MCP connector, skip this section: the user has already signed in. Otherwise,
+from the project root, look for a key without printing it:
+
+```bash
+[ -n "${YAPPR_API_KEY:-}" ] || export YAPPR_API_KEY="$(sed -n 's/^YAPPR_API_KEY=//p' .env 2>/dev/null | tail -1 | tr -d "\"' \r")"
+[ -n "$YAPPR_API_KEY" ] && echo "key found" || echo "no key"
+```
+
+If your shell forgets variables between commands, start every command that calls the API
+with that first line. `key found`: go to PHASE 0. `no key`: walk the user through steps
+1–3, one at a time (theirs to do), then run step 4.
+
+1. **Open an account** at https://app.goyappr.com/signup (an existing one signs in at
+   https://app.goyappr.com/login). It takes an email, a password of 8+ characters and
+   accepting the terms. Setup then asks for a company name, a mobile number that receives a
+   6-digit SMS code, the industry and the company size. Payment can be skipped for now.
+2. **Create a key** at https://app.goyappr.com/settings/api-keys (**Workspace settings →
+   API keys → Create key**; workspace owners and admins only). Name it, keep the **Standard**
+   access preset, and under **Choose permissions one by one** add what the preset leaves out:
+
+   | Add | For |
+   |---|---|
+   | **Phone numbers · Search**, **Billing · Read**, **Outcomes · Read** | PHASE 0 discovery (Outcomes are dispositions) |
+   | **Outcomes · Manage** | creating dispositions |
+   | **Phone numbers · Configure** | putting the agent on a number |
+   | **Connected accounts · Read** and **Manage** | calendars, mailboxes and other apps |
+
+   Add more only when the work reaches it: buying a number takes **Phone numbers ·
+   Purchase**, card and top-up links take **Billing · Manage**, and the rest is in
+   `yappr-api.md` → **Scope Map**. Then **Create key** and **Copy key** — it is shown once.
+3. **Save it in the project's `.env`.** First make sure git ignores the file:
+
+   ```bash
+   if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+     echo ".env is tracked by git: stop and tell the user"
+   else
+     git check-ignore -q .env || printf '\n.env\n' >> .gitignore
+   fi
+   ```
+
+   Then the user adds `YAPPR_API_KEY=` followed by the key as one line of `.env`, in their
+   editor, never in chat. Never print the key: no `cat .env`, no `echo $YAPPR_API_KEY`, no
+   `curl -v`.
+4. **Verify** with one read-only call (`GET /agents` in `yappr-api.md`), after loading the
+   key with the first command above:
+
+   ```bash
+   curl -s -w '\nHTTP %{http_code}\n' "https://api.goyappr.com/agents?limit=1" \
+     -H "Authorization: Bearer $YAPPR_API_KEY"
+   ```
+
+   `200`: connected. `401`: the key was not accepted (`MISSING_KEY`, `INVALID_KEY`,
+   `EXPIRED_KEY`) — check the `.env` line, and that no older `YAPPR_API_KEY` is already set
+   in the shell. `403 INSUFFICIENT_SCOPE`: the message names the missing permission; the
+   user adds it to the same key (**Edit access** in the key's menu, which the message calls
+   *Edit scopes*).
+
+**Before a real call can be placed** (creating and publishing an agent need neither):
+
+- **Credit.** Phone and browser calls are paid from prepaid credit and need a balance of at
+  least $1.00 (`GET /billing` → `balance_cents`; an auto top-up that is on can cover it).
+  The user tops up in **Settings → Billing**, or through the payment link in **Billing**
+  below.
+- **A phone number**, for outbound phone calls (`POST /calls`) and incoming ones: buy one
+  (Step 5.1 — needs a saved card, $10/month) or use the customer's own Telnyx numbers or
+  phone system (Steps 5.1b–5.1c say which can call out). A phone test call (Step 5.3) can
+  ring the user without one.
+
+Then continue with PHASE 0 and the build.
+
+---
+
 ## PHASE 0: Discovery
 
-**Run this before asking the user anything.** Make 3 API calls in parallel, then present what you found, then ask your questions.
+**With the account connected, run this before asking the user anything about the build.** Make 3 API calls in parallel, then present what you found, then ask your questions.
 
 ### Step 0.1 — Live Account Discovery
 
@@ -2988,8 +3062,9 @@ Gotchas worth flagging to the user:
 revokes keys, and reads them too — can only be granted in the dashboard, by a person, under
 Settings → API keys. A key issued through `POST /api-keys` can never carry it, however much
 authority the key minting it has, so there is no way to bootstrap key management purely
-from code: ask the user to create one key with that scope checked, hand you its secret,
-and every key after that you can mint yourself.
+from code: ask the user to create one key with that scope checked and save it in `.env`
+(as in **Account and API Key** — never pasted into chat), and every key after that you can
+mint yourself.
 
 Once you hold a key with `api_keys:manage`, mint narrower ones from code instead of
 sending the user back to the dashboard for every integration:
@@ -3009,7 +3084,7 @@ only a **subset** of what the calling key already holds — asking for more is
 `"expires_at": "2026-12-31T23:59:59Z"` (a date-time **with** a time zone) for a key that
 should stop on its own — a contractor's, a trial client's; after it every request is
 `401 EXPIRED_KEY`, and the key stays listed with its `expires_at` until revoked. A person
-can change that end date later in the dashboard (**Edit scopes** → *When this key stops
+can change that end date later in the dashboard (**Edit access** → *When this key stops
 working*: as it is, never, or 7/30/90/365 days out), so read `expires_at` from
 `GET /api-keys` instead of remembering the one you sent.
 
@@ -3048,7 +3123,7 @@ list, calling hours, other keys) is `403 API_KEY_AGENT_SCOPED`, and naming anoth
 `403 AGENT_OUTSIDE_KEY_SCOPE`. It cannot create or duplicate agents, and `POST /calls` must
 name one of its agents and call from a number one of them uses. There is no key update
 (`PATCH` is `405`): change a key's scopes, agents or end date in the dashboard's
-**Edit scopes**, or issue a replacement and revoke the old one.
+**Edit access**, or issue a replacement and revoke the old one.
 
 Field-by-field reference: `yappr-api.md` → **API Keys**.
 
@@ -3082,17 +3157,18 @@ curl -s -X POST "https://api.goyappr.com/billing/setup" \
   -d '{}' | jq .checkoutUrl
 ```
 
-For top-ups, **always get explicit confirmation** before charging:
+For top-ups, **always get explicit confirmation** first:
 
-> "Your balance is low ($X). Would you like to add $20 to your account? This will charge your saved card."
+> "Your balance is low ($X). Would you like to add $20? I'll give you a payment link to complete it."
 
-Only after explicit yes:
+Only after explicit yes, create the link and hand it to the user — this call does not charge
+the saved card; they pay on the page it returns:
 
 ```bash
 curl -s -X POST "https://api.goyappr.com/billing/topup" \
   -H "Authorization: Bearer $YAPPR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"amount_cents": 2000}'
+  -d '{"amount_cents": 2000}' | jq .    # send the user to .checkoutUrl
 ```
 
 ### Journey — invoices and billing details
@@ -3173,7 +3249,7 @@ For exact error codes and HTTP status meanings, see `yappr-api.md`. Quick refere
 | Status | Meaning |
 |--------|---------|
 | 400 | Bad request — check field names and values. A `400`/`422` names every problem at once in `issues[]` (`{code, path, message}`); `error` is the first with a count of the rest |
-| 401 | The key itself was not accepted (`MISSING_KEY`, `INVALID_KEY`, `EXPIRED_KEY`) — fix the key |
+| 401 | The key itself was not accepted (`MISSING_KEY`, `INVALID_KEY`, `EXPIRED_KEY`) — fix the key (**Account and API Key**) |
 | 402 | Billing — add balance (`BILLING_ERROR`), add a card before buying a number (`PAYMENT_METHOD_REQUIRED` on `POST /phone-numbers/purchase`), or the workspace's own monthly spending limit is reached (`SPEND_BUDGET_REACHED` — raise it with `PATCH /billing`, or it lifts on the 1st) |
 | 403 | `INSUFFICIENT_SCOPE` on every route — the key is fine but lacks the scope the message names; widen it, never rotate it. Also a resource that is protected or in another workspace |
 | 404 | `AGENT_NOT_FOUND` — that agent is not in this workspace |
